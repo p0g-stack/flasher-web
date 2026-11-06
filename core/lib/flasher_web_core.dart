@@ -7,13 +7,25 @@ library;
 
 export 'package:logging/logging.dart' show Level, LogRecord, Logger;
 
+export 'src/bloat/bloat_store.dart';
+export 'src/bloat/gunzip.dart';
+export 'src/bloat/manifest.dart';
+export 'src/catalog/catalog_client.dart';
+export 'src/catalog/http_transport.dart';
+export 'src/catalog/ota_catalog.dart';
 export 'src/facts/facts.dart';
 export 'src/log.dart';
 export 'src/native/native.dart' show loadNative, sha256Hex;
 export 'src/places/webui_launcher.dart';
 export 'src/service/hello_service.dart';
+// The pipeline's device/flasher selection wins the name; the strategy picker
+// is internal to `objective.dart` and its callers use inference.
 export 'src/strategy/digest.dart';
 export 'src/strategy/objective.dart';
-export 'src/strategy/strategy.dart';
+export 'src/strategy/strategy.dart' hide Selection;
+export 'src/storage/storage.dart';
+export 'src/upstream/bloat_selection.dart';
+export 'src/upstream/device_layout.dart';
+export 'src/upstream/tables.dart';
 
 // p0g:exports (bricks insert exports above this line)

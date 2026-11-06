@@ -8,3 +8,7 @@ workspace:
   - core
   - app
   - cli
+
+# tool/sync_upstream.dart (run from the workspace root).
+dev_dependencies:
+  archive: ^4.0.7

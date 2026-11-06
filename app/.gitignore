@@ -33,6 +33,9 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Upstream snapshot written by tool/sync_upstream.dart.
+/web/upstream/
+
 # Symbolication related
 app.*.symbols
 

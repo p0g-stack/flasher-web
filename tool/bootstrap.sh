@@ -9,6 +9,10 @@ cd "$(dirname "$0")/.."
 flutter pub get
 (cd cli && dart run squadron_process:squadron_patch ..)
 flutter pub get
+
+# Upstream snapshot at the commit pinned in upstream.lock (app/web/upstream/).
+dart run tool/sync_upstream.dart
+
 bash tool/rust.sh
 
 (cd core && dart run build_runner build --delete-conflicting-outputs)

@@ -9,6 +9,10 @@ app/web/workers/
 # flutter_rust_bridge codegen (tool/bootstrap.sh).
 core/lib/src/rust/
 app/web/pkg/
+# Upstream snapshot at the commit pinned in upstream.lock (tool/bootstrap.sh).
+app/web/upstream/
 rust/src/frb_generated.rs
 rust/target/
+worker/node_modules/
+worker/.wrangler/
 
