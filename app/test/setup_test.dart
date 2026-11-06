@@ -54,6 +54,30 @@ void main() {
     expect(find.text('Not downloaded'), findsOneWidget);
   });
 
+  testWidgets('bloat stream errors stay visible in the panel', (tester) async {
+    final harness = Harness();
+    harness.api.bloatStatusResult = const {
+      'total': 2,
+      'downloaded': 0,
+      'bytes': 1024,
+      'ready': false,
+    };
+    harness.api.bloatStream = (_) =>
+        Stream.error(StateError('download exploded'));
+    await pumpApp(tester, harness: harness);
+
+    await tester.tap(find.byKey(const ValueKey('downloadBloat')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining(
+        'Bloat download failed: Bad state: download exploded',
+      ),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('downloadBloat')), findsOneWidget);
+  });
+
   testWidgets('build gating reports a missing OTA when bloat is ready', (
     tester,
   ) async {

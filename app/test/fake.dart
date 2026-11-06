@@ -41,6 +41,8 @@ final class FakeFlasherApi implements FlasherApi {
 
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   buildStream;
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
+  bloatStream;
 
   Map<String, Object?>? lastBloatRequest;
   Map<String, Object?>? lastBuildRequest;
@@ -56,8 +58,10 @@ final class FakeFlasherApi implements FlasherApi {
   }
 
   @override
-  Stream<Map<String, Object?>> downloadBloat(Map<String, Object?> request) =>
-      const Stream.empty();
+  Stream<Map<String, Object?>> downloadBloat(Map<String, Object?> request) {
+    lastBloatRequest = request;
+    return bloatStream?.call(request) ?? const Stream.empty();
+  }
 
   @override
   Future<Map<String, Object?>> inspectOta(Map<String, Object?> request) async {

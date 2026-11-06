@@ -36,6 +36,8 @@ final class StoreChoice {
 /// Gating texts are ports of upstream `build_requirements_error`,
 /// `update_summary` and `odm_catalog_error`.
 final class SetupState extends ChangeNotifier {
+  static final _log = Logger('ui.setup');
+
   SetupState({
     required this.runtime,
     required this.tables,
@@ -84,6 +86,7 @@ final class SetupState extends ChangeNotifier {
   StreamSubscription<Map<String, Object?>>? _bloatSubscription;
   bool _bloatDownloading = false;
   bool _bloatAwake = false;
+  String? _bloatDownloadError;
   final _bloatLog = <String>[];
   final _bloatProgress = <String, ({int done, int total})>{};
 
@@ -267,7 +270,7 @@ final class SetupState extends ChangeNotifier {
       '$_device|$_kind|$_region|${_bloatStore.isFolder ? _bloatStore.name : 'opfs'}';
 
   bool get bloatChecking => _bloatChecking;
-  String? get bloatError => _bloatError;
+  String? get bloatError => _bloatDownloadError ?? _bloatError;
   Map<String, Object?>? get bloatData => _bloatData;
   bool get bloatDownloading => _bloatDownloading;
   List<String> get bloatLog => List.unmodifiable(_bloatLog);
@@ -362,17 +365,24 @@ final class SetupState extends ChangeNotifier {
   }
 
   Future<void> downloadBloat() async {
+    _log.info(
+      'downloadBloat pressed can=$canDownloadBloat total=$bloatTotal '
+      'checking=$_bloatChecking downloading=$_bloatDownloading ready=$bloatReady',
+    );
     if (!canDownloadBloat || selectionMap == null) return;
     _bloatDownloading = true;
     _bloatError = null;
+    _bloatDownloadError = null;
     _bloatLog.clear();
     _bloatProgress.clear();
     _notify();
+    _log.info('downloadBloat state is downloading');
     _bloatAwake = true;
     try {
       await runtime.bridge.beginKeepAwake();
-    } catch (_) {
-      // Best effort.
+      _log.info('downloadBloat keep awake done');
+    } catch (error) {
+      _log.warning('downloadBloat keep awake failed', error);
     }
     final request = {
       'selection': selectionMap!,
@@ -380,6 +390,7 @@ final class SetupState extends ChangeNotifier {
       'upstreamBase': runtime.upstreamBase,
       'apiBase': runtime.apiBase,
     };
+    _log.info('downloadBloat subscribing');
     _bloatSubscription = runtime.service
         .downloadBloat(request)
         .listen(
@@ -403,6 +414,7 @@ final class SetupState extends ChangeNotifier {
                 if (bloat is Map) {
                   _bloatData = Map<String, Object?>.from(bloat);
                   _bloatDataKey = _bloatKey;
+                  _bloatDownloadError = null;
                 }
               default:
                 break;
@@ -410,11 +422,13 @@ final class SetupState extends ChangeNotifier {
             _notify();
           },
           onError: (Object error) {
-            _bloatError = '$error';
+            _log.warning('downloadBloat stream error', error);
+            _bloatDownloadError = 'Bloat download failed: $error';
             _bloatLog.add('ERROR: $error');
             unawaited(_finishBloat());
           },
           onDone: () {
+            _log.info('downloadBloat stream done');
             unawaited(_finishBloat());
           },
           cancelOnError: false,
