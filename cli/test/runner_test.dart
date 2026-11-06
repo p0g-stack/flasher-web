@@ -3,8 +3,14 @@ import 'package:flasher_web_cli/flasher_web_cli.dart';
 import 'package:flasher_web_core/flasher_web_core.dart';
 
 void main() {
-  test('hello runs', () async {
-    expect(await AppRunner().run(['hello', 'cli']), 0);
+  test('the pipeline commands replace hello and digest', () {
+    final commands = AppRunner().commands.keys.toSet();
+    expect(
+      commands,
+      containsAll(['bloat', 'build', 'facts', 'inspect', 'serve']),
+    );
+    expect(commands, isNot(contains('hello')));
+    expect(commands, isNot(contains('digest')));
   });
 
   test('an unknown command is a usage error', () async {

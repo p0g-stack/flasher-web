@@ -19,9 +19,30 @@ Future<Map<String, Object?>> checkFacts() async {
     Fact.usbWeb: nav != null && nav.has('usb'),
     Fact.processSpawn: false,
     Fact.fsPersistent: await _persisted(nav),
+    Fact.fsPath: false,
+    Fact.fsHandle: globalContext.has('FileSystemDirectoryHandle'),
+    Fact.fsOpfs: await _hasOpfs(nav),
+    Fact.fsPicker: _hasPicker(),
     Fact.net: nav != null && (nav['onLine'] as JSBoolean?)?.toDart == true,
     Fact.native: await nativeShipped(),
   };
+}
+
+bool _hasPicker() {
+  if (!globalContext.has('showDirectoryPicker')) return false;
+  final picker = globalContext['showDirectoryPicker'];
+  return picker != null && picker.isA<JSFunction>();
+}
+
+Future<bool> _hasOpfs(JSObject? nav) async {
+  try {
+    if (nav == null || !nav.has('storage')) return false;
+    final storage = nav['storage'] as web.StorageManager;
+    await storage.getDirectory().toDart;
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 Future<bool> _persisted(JSObject? nav) async {

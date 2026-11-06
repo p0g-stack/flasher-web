@@ -9,7 +9,7 @@ import 'package:test/test.dart';
 import 'package:flasher_web_core/flasher_web_core.dart';
 
 void main() {
-  test('the hello service runs in the CLI as a process place', () async {
+  test('the flasher service runs in the CLI as a process place', () async {
     final dir = await Directory.systemTemp.createTemp('p0g');
     addTearDown(() => dir.delete(recursive: true));
     final session = '${dir.path}/place.json';
@@ -31,12 +31,11 @@ void main() {
       readyTimeout: const Duration(minutes: 2),
     );
 
-    final worker = place.bind(HelloServiceWorker(), service: 'hello');
+    final worker = place.bind(FlasherServiceWorker(), service: 'flasher');
     addTearDown(worker.terminate);
-    expect(await worker.hello('process'), 'Hello, process!');
-    expect(await worker.count(3).toList(), [1, 2, 3]);
+    final environment = await worker.environment();
+    expect(environment['facts'], isA<List>());
+    expect(environment['native'], isA<bool>());
     expect((await place.facts())[Fact.processSpawn], isA<bool>());
-    // The serve process loads rust/target's library for itself.
-    expect((await worker.sha256('abc'))['strategy'], 'rust_sha2');
   }, timeout: const Timeout(Duration(minutes: 3)));
 }

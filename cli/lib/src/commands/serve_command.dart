@@ -8,7 +8,7 @@ import 'package:flasher_web_core/flasher_web_core.dart';
 /// binds with. Each worker runs in its own isolate of this process; wrap it
 /// in [withLogs] so its logs reach this CLI's log.
 Map<String, Invoker> services() => {
-  'hello': withLogs(HelloServiceWorker()),
+  'flasher': withLogs(FlasherServiceWorker()),
   // p0g:services (bricks insert services above this line)
 };
 

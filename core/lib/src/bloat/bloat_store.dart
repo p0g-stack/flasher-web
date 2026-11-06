@@ -74,7 +74,11 @@ final class BloatStep extends BloatEvent {
 
 /// Transport bytes downloaded for one image.
 final class BloatByteProgress extends BloatEvent {
-  const BloatByteProgress({required this.path, required this.bytes, required this.total});
+  const BloatByteProgress({
+    required this.path,
+    required this.bytes,
+    required this.total,
+  });
 
   final String path;
   final int bytes;
@@ -107,7 +111,10 @@ final class BloatStore {
   ///
   /// Never downloads. A file is counted only when its size and SHA-256 match
   /// the manifest, as upstream's `inspect_downloads` does.
-  Future<BloatStatus> inspect(Selection selection, {bool staticOdm = false}) async {
+  Future<BloatStatus> inspect(
+    Selection selection, {
+    bool staticOdm = false,
+  }) async {
     final paths = _selected(selection, staticOdm: staticOdm);
     var downloaded = 0;
     var bytes = 0;
@@ -136,7 +143,10 @@ final class BloatStore {
     bool staticOdm = false,
   }) async* {
     final items = _selected(selection, staticOdm: staticOdm);
-    final totalBytes = items.fold<int>(0, (sum, item) => sum + item.asset.rawBytes);
+    final totalBytes = items.fold<int>(
+      0,
+      (sum, item) => sum + item.asset.rawBytes,
+    );
     yield BloatStarted(total: items.length, bytes: totalBytes);
 
     var completed = 0;
@@ -168,17 +178,28 @@ final class BloatStore {
         bytesTotal: totalBytes,
       );
 
-      final suffix = '${DateTime.now().microsecondsSinceEpoch}-${_random.nextInt(1 << 32)}';
+      final suffix =
+          '${DateTime.now().microsecondsSinceEpoch}-${_random.nextInt(1 << 32)}';
       final partial = '${item.target}.part-$suffix';
-      final transportPath = asset.gzip || asset.parts != null ? '${item.target}.transport-$suffix' : partial;
+      final transportPath = asset.gzip || asset.parts != null
+          ? '${item.target}.transport-$suffix'
+          : partial;
       var keep = false;
       try {
         await for (final fetched in _download(asset, fetch, transportPath)) {
-          yield BloatByteProgress(path: item.target, bytes: fetched, total: asset.bytes);
+          yield BloatByteProgress(
+            path: item.target,
+            bytes: fetched,
+            total: asset.bytes,
+          );
         }
         if (asset.gzip) {
           await for (final decoded in _decode(transportPath, partial, asset)) {
-            yield BloatByteProgress(path: item.target, bytes: decoded, total: asset.rawBytes);
+            yield BloatByteProgress(
+              path: item.target,
+              bytes: decoded,
+              total: asset.rawBytes,
+            );
           }
         } else if (transportPath != partial) {
           await workspace.move(transportPath, partial);
@@ -205,7 +226,11 @@ final class BloatStore {
   }
 
   /// Downloads and verifies one transport asset, yielding bytes written.
-  Stream<int> _download(BloatAsset asset, ByteSource Function(String) fetch, String path) async* {
+  Stream<int> _download(
+    BloatAsset asset,
+    ByteSource Function(String) fetch,
+    String path,
+  ) async* {
     final sink = await workspace.create(path);
     var written = 0;
     final whole = _Hasher();
@@ -230,7 +255,9 @@ final class BloatStore {
           written += bytes.length;
           offset += bytes.length;
           if (written > asset.bytes) {
-            throw BloatError('Release asset exceeds its declared size: ${asset.assetName}');
+            throw BloatError(
+              'Release asset exceeds its declared size: ${asset.assetName}',
+            );
           }
           yield written;
         }
@@ -239,7 +266,9 @@ final class BloatStore {
         }
       }
       if (written != asset.bytes || whole.hex != asset.sha256) {
-        throw BloatError('Release asset size/SHA-256 mismatch: ${asset.assetName}');
+        throw BloatError(
+          'Release asset size/SHA-256 mismatch: ${asset.assetName}',
+        );
       }
       failed = false;
     } finally {
@@ -250,7 +279,11 @@ final class BloatStore {
 
   /// Decodes a verified gzip transport asset into [output], yielding bytes
   /// decoded so far.
-  Stream<int> _decode(String transport, String output, BloatAsset asset) async* {
+  Stream<int> _decode(
+    String transport,
+    String output,
+    BloatAsset asset,
+  ) async* {
     final source = await workspace.open(transport);
     final sink = await workspace.create(output);
     final decoder = _gunzip();
@@ -260,18 +293,39 @@ final class BloatStore {
     try {
       var offset = 0;
       while (offset < source.length) {
-        final bytes = await source.read(offset, min(_chunk, source.length - offset));
-        if (bytes.isEmpty) throw BloatError('Gzip asset ended early: ${asset.assetName}');
+        final bytes = await source.read(
+          offset,
+          min(_chunk, source.length - offset),
+        );
+        if (bytes.isEmpty) {
+          throw BloatError('Gzip asset ended early: ${asset.assetName}');
+        }
         offset += bytes.length;
-        written += await _writeDecoded(sink, decoder.push(bytes), hasher, written, asset);
+        written += await _writeDecoded(
+          sink,
+          decoder.push(bytes),
+          hasher,
+          written,
+          asset,
+        );
         if (written > asset.rawBytes) {
-          throw BloatError('Decompressed bloat image exceeds its declared size');
+          throw BloatError(
+            'Decompressed bloat image exceeds its declared size',
+          );
         }
         yield written;
       }
-      written += await _writeDecoded(sink, decoder.finish(), hasher, written, asset);
+      written += await _writeDecoded(
+        sink,
+        decoder.finish(),
+        hasher,
+        written,
+        asset,
+      );
       if (written != asset.rawBytes || hasher.hex != asset.rawSha256) {
-        throw BloatError('Original image size/SHA-256 mismatch: ${asset.assetName}');
+        throw BloatError(
+          'Original image size/SHA-256 mismatch: ${asset.assetName}',
+        );
       }
       failed = false;
     } finally {
@@ -280,10 +334,18 @@ final class BloatStore {
     }
   }
 
-  Future<int> _writeDecoded(ByteSink sink, List<int> bytes, _Hasher hasher, int offset, BloatAsset asset) async {
+  Future<int> _writeDecoded(
+    ByteSink sink,
+    List<int> bytes,
+    _Hasher hasher,
+    int offset,
+    BloatAsset asset,
+  ) async {
     if (bytes.isEmpty) return 0;
     if (offset + bytes.length > asset.rawBytes) {
-      throw const BloatError('Decompressed bloat image exceeds its declared size');
+      throw const BloatError(
+        'Decompressed bloat image exceeds its declared size',
+      );
     }
     hasher.add(bytes);
     await sink.write(Uint8List.fromList(bytes), offset);
@@ -291,12 +353,18 @@ final class BloatStore {
   }
 
   List<_Item> _selected(Selection selection, {required bool staticOdm}) {
-    final relativePaths = selectedPaths(manifest.source, selection, staticOdm: staticOdm);
+    final relativePaths = selectedPaths(
+      manifest.source,
+      selection,
+      staticOdm: staticOdm,
+    );
     final items = <_Item>[];
     for (final relative in relativePaths) {
       final key = manifest.files[relative];
       final asset = key == null ? null : manifest.assets[key];
-      if (asset == null) throw BloatError('Bloat path references a missing asset: $relative');
+      if (asset == null) {
+        throw BloatError('Bloat path references a missing asset: $relative');
+      }
       final target = _target(relative);
       items.add(_Item(relative: relative, target: target, asset: asset));
     }
@@ -310,7 +378,8 @@ final class BloatStore {
       throw BloatError('Unsafe bloat destination in manifest: $relative');
     }
     final target = relative.substring(root.length);
-    if (target.isEmpty || target.split('/').any((part) => part.isEmpty || part == '..')) {
+    if (target.isEmpty ||
+        target.split('/').any((part) => part.isEmpty || part == '..')) {
       throw BloatError('Unsafe bloat destination in manifest: $relative');
     }
     return target;
@@ -318,14 +387,18 @@ final class BloatStore {
 
   Future<bool> _matches(String target, BloatAsset asset) async {
     try {
-      if (!await workspace.exists(target) || await workspace.size(target) != asset.rawBytes) {
+      if (!await workspace.exists(target) ||
+          await workspace.size(target) != asset.rawBytes) {
         return false;
       }
       final source = await workspace.open(target);
       final hasher = _Hasher();
       var offset = 0;
       while (offset < asset.rawBytes) {
-        final bytes = await source.read(offset, min(_chunk, asset.rawBytes - offset));
+        final bytes = await source.read(
+          offset,
+          min(_chunk, asset.rawBytes - offset),
+        );
         if (bytes.isEmpty) return false;
         offset += bytes.length;
         hasher.add(bytes);
@@ -366,7 +439,11 @@ final class BloatStore {
 }
 
 final class _Item {
-  const _Item({required this.relative, required this.target, required this.asset});
+  const _Item({
+    required this.relative,
+    required this.target,
+    required this.asset,
+  });
 
   final String relative;
   final String target;

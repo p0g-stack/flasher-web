@@ -4,9 +4,10 @@ import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
 import 'package:flasher_web_core/flasher_web_core.dart';
 
-import 'commands/digest_command.dart';
+import 'commands/bloat_command.dart';
+import 'commands/build_command.dart';
 import 'commands/facts_command.dart';
-import 'commands/hello_command.dart';
+import 'commands/inspect_command.dart';
 import 'commands/serve_command.dart';
 
 // p0g:imports (bricks insert imports above this line)
@@ -21,9 +22,10 @@ class AppRunner extends CommandRunner<int> {
     argParser
       ..addFlag('verbose', abbr: 'v', help: 'Log everything.')
       ..addFlag('json', help: 'Log records as JSON lines.');
-    addCommand(DigestCommand());
+    addCommand(BloatCommand());
+    addCommand(BuildCommand());
     addCommand(FactsCommand());
-    addCommand(HelloCommand());
+    addCommand(InspectCommand());
     addCommand(ServeCommand());
     // p0g:commands (bricks insert commands above this line)
   }

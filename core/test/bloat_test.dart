@@ -56,21 +56,30 @@ void main() {
     expect(leftovers, isEmpty);
   });
 
-  test('materialize replaces a corrupt image and keeps verified ones', () async {
-    final fixture = _Fixture();
-    final store = BloatStore(workspace: workspace, manifest: fixture.manifest);
-    final sink = await workspace.create('13/EU_BLOAT/single.img');
-    await sink.write(Uint8List(fixture.single.length), 0);
-    await sink.close();
+  test(
+    'materialize replaces a corrupt image and keeps verified ones',
+    () async {
+      final fixture = _Fixture();
+      final store = BloatStore(
+        workspace: workspace,
+        manifest: fixture.manifest,
+      );
+      final sink = await workspace.create('13/EU_BLOAT/single.img');
+      await sink.write(Uint8List(fixture.single.length), 0);
+      await sink.close();
 
-    final status = await store.inspect(_Fixture.selection);
-    expect(status.downloaded, 0);
-    expect(status.ready, isFalse);
+      final status = await store.inspect(_Fixture.selection);
+      expect(status.downloaded, 0);
+      expect(status.ready, isFalse);
 
-    await store.materialize(_Fixture.selection, fixture.fetch).drain<void>();
-    expect(await _readAll(workspace, '13/EU_BLOAT/single.img'), fixture.single);
-    expect(fixture.fetched, contains('bloat-single.img'));
-  });
+      await store.materialize(_Fixture.selection, fixture.fetch).drain<void>();
+      expect(
+        await _readAll(workspace, '13/EU_BLOAT/single.img'),
+        fixture.single,
+      );
+      expect(fixture.fetched, contains('bloat-single.img'));
+    },
+  );
 
   test('a bad part checksum fails and leaves no destination', () async {
     final fixture = _Fixture();
@@ -79,7 +88,14 @@ void main() {
       _Fixture.selection,
       (name) => _BytesSource(Uint8List.fromList(List<int>.filled(16, 7))),
     );
-    await expectLater(events, emitsInOrder([isA<BloatStarted>(), isA<BloatStep>(), emitsError(isA<BloatError>())]));
+    await expectLater(
+      events,
+      emitsInOrder([
+        isA<BloatStarted>(),
+        isA<BloatStep>(),
+        emitsError(isA<BloatError>()),
+      ]),
+    );
     expect(await workspace.exists('13/EU_BLOAT/single.img'), isFalse);
     expect(await workspace.exists('13/EU_BLOAT/multi.img'), isFalse);
     expect(await workspace.exists('13/EU_BLOAT/gzip.img'), isFalse);
@@ -102,7 +118,9 @@ final class _Fixture {
     final second = Uint8List.sublistView(zipped, 0, 20000);
     final rest = Uint8List.sublistView(zipped, 20000);
     final firstGzip = Uint8List.fromList(GZipCodec().encode(second));
-    final secondGzip = Uint8List.fromList(GZipCodec().encode(Uint8List.fromList(rest)));
+    final secondGzip = Uint8List.fromList(
+      GZipCodec().encode(Uint8List.fromList(rest)),
+    );
 
     final manifest = <String, dynamic>{
       'schema_version': 1,
@@ -158,10 +176,15 @@ final class _Fixture {
       },
     };
 
-    final concatenatedGzip = Uint8List(gzipTransport.length + firstGzip.length + secondGzip.length);
+    final concatenatedGzip = Uint8List(
+      gzipTransport.length + firstGzip.length + secondGzip.length,
+    );
     concatenatedGzip.setAll(0, gzipTransport);
     concatenatedGzip.setAll(gzipTransport.length, firstGzip);
-    concatenatedGzip.setAll(gzipTransport.length + firstGzip.length, secondGzip);
+    concatenatedGzip.setAll(
+      gzipTransport.length + firstGzip.length,
+      secondGzip,
+    );
 
     this.manifest = BloatManifest.fromJson(manifest);
     sources = {
@@ -208,7 +231,9 @@ final class _BytesSource implements ByteSource {
   @override
   Future<Uint8List> read(int offset, int length) async {
     checkReadRange(offset, length, _bytes.length);
-    return Uint8List.fromList(Uint8List.sublistView(_bytes, offset, offset + length));
+    return Uint8List.fromList(
+      Uint8List.sublistView(_bytes, offset, offset + length),
+    );
   }
 }
 

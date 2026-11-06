@@ -58,7 +58,15 @@ final class BloatAsset {
 
   /// The transport units to fetch, in order.
   List<BloatPart> get transportParts =>
-      parts ?? [BloatPart(assetId: assetId, assetName: assetName, bytes: bytes, sha256: sha256)];
+      parts ??
+      [
+        BloatPart(
+          assetId: assetId,
+          assetName: assetName,
+          bytes: bytes,
+          sha256: sha256,
+        ),
+      ];
 }
 
 /// One part of a multipart release asset.
@@ -108,7 +116,9 @@ final class BloatManifest {
     try {
       decoded = jsonDecode(text);
     } on FormatException catch (error) {
-      throw BloatError('The bloat manifest is not valid JSON: ${error.message}');
+      throw BloatError(
+        'The bloat manifest is not valid JSON: ${error.message}',
+      );
     }
     if (decoded is! Map<String, dynamic>) {
       throw const BloatError('The bloat manifest is not an object');
@@ -185,7 +195,10 @@ final class BloatManifest {
     }
     final assetId = json['asset_id'];
     final assetName = json['asset_name'];
-    if (assetId is! int || assetId <= 0 || assetName is! String || !_assetName.hasMatch(assetName)) {
+    if (assetId is! int ||
+        assetId <= 0 ||
+        assetName is! String ||
+        !_assetName.hasMatch(assetName)) {
       throw const BloatError('Invalid release asset ID');
     }
 
@@ -238,7 +251,12 @@ final class BloatManifest {
     if (assetName is! String || !_assetName.hasMatch(assetName)) {
       throw const BloatError('Invalid release asset name');
     }
-    return BloatPart(assetId: assetId, assetName: assetName, bytes: bytes, sha256: sha256);
+    return BloatPart(
+      assetId: assetId,
+      assetName: assetName,
+      bytes: bytes,
+      sha256: sha256,
+    );
   }
 
   /// A destination must stay under `bloat/`, use `/`, and name an `.img`.

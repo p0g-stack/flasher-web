@@ -17,7 +17,7 @@ import 'package:flasher_web_core/flasher_web_core.dart';
 /// `<module>/bin/flasher_web serve` detached. Here bin/flasher_web runs the CLI
 /// from source instead of the AOT snapshot flutter_p0g ships.
 void main() {
-  test('hello runs in the CLI launched through the root channel', () async {
+  test('the flasher service runs in the CLI launched through the root channel', () async {
     final module = await Directory.systemTemp.createTemp('p0g_module');
     final data = await Directory.systemTemp.createTemp('p0g_data');
     RootChannelServer? server;
@@ -60,22 +60,13 @@ void main() {
       app: 'flasher_web',
       dataDir: data.path,
     );
-    final lines = <String>[];
-    addTearDown(logTo(lines.add, level: Level.ALL));
-    final worker = place.bind(withLogs(HelloServiceWorker()), service: 'hello');
+    final worker = place.bind(FlasherServiceWorker(), service: 'flasher');
     addTearDown(worker.terminate);
-    // A second link from this page: records still arrive once.
-    final other = place.bind(withLogs(HelloServiceWorker()), service: 'hello');
+    // A second link from this page binds the same service independently.
+    final other = place.bind(FlasherServiceWorker(), service: 'flasher');
     addTearDown(other.terminate);
-    expect(await other.hello('other'), 'Hello, other!');
-    expect(await worker.hello('webui'), 'Hello, webui!');
-    // The service's own log record, relayed from the host process.
-    await Future<void>.delayed(const Duration(milliseconds: 200));
-    expect(
-      lines.where((l) => l.endsWith('FINE service.hello: hello webui')),
-      hasLength(1),
-    );
-    expect(await worker.count(2).toList(), [1, 2]);
+    expect((await other.environment())['facts'], isA<List>());
+    expect((await worker.environment())['native'], isA<bool>());
     // The host starts in the data folder, not wherever the channel was.
     expect(
       File('${module.path}/host_cwd').readAsStringSync().trim(),

@@ -16,12 +16,19 @@ export 'src/catalog/ota_catalog.dart';
 export 'src/facts/facts.dart';
 export 'src/log.dart';
 export 'src/native/native.dart' show loadNative, sha256Hex;
+export 'src/pipeline/assets.dart';
+export 'src/pipeline/build.dart';
+export 'src/pipeline/errors.dart';
+export 'src/pipeline/extract.dart';
+export 'src/pipeline/local_source.dart';
+export 'src/pipeline/ota.dart';
+export 'src/pipeline/package.dart';
 export 'src/places/webui_launcher.dart';
-export 'src/service/hello_service.dart';
+export 'src/service/flasher_service.dart';
 // The pipeline's device/flasher selection wins the name; the strategy picker
 // is internal to `objective.dart` and its callers use inference.
-export 'src/strategy/digest.dart';
 export 'src/strategy/objective.dart';
+export 'src/strategy/store.dart';
 export 'src/strategy/strategy.dart' hide Selection;
 export 'src/storage/storage.dart';
 export 'src/upstream/bloat_selection.dart';

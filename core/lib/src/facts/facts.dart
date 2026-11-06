@@ -32,6 +32,20 @@ abstract final class Fact {
   /// on WebUI persistent files belong to the process place.
   static const fsPersistent = 'fs.persistent';
 
+  /// The place can open a workspace at a host directory path.
+  static const fsPath = 'fs.path';
+
+  /// The place can wrap a browser `FileSystemDirectoryHandle` in a workspace.
+  static const fsHandle = 'fs.handle';
+
+  /// The place can open a workspace in the browser's origin-private file
+  /// system (`navigator.storage.getDirectory()`).
+  static const fsOpfs = 'fs.opfs';
+
+  /// The place can ask the user for a directory through File System Access
+  /// (`showDirectoryPicker`). A Web Worker cannot; the page can.
+  static const fsPicker = 'fs.picker';
+
   /// The place has a network interface other than loopback that is up.
   static const net = 'net';
 
@@ -45,6 +59,10 @@ abstract final class Fact {
     usbWeb,
     processSpawn,
     fsPersistent,
+    fsPath,
+    fsHandle,
+    fsOpfs,
+    fsPicker,
     net,
     native,
   ];

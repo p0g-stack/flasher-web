@@ -49,6 +49,20 @@ abstract interface class Workspace {
   Future<void> delete(String path);
 }
 
+/// Releases a source's handle when its implementation has one.
+///
+/// [ByteSource] has no `close`: a browser `Blob` has nothing to release, while
+/// a file or an HTTP client does. Sources that own a handle expose `close()`;
+/// this calls it when present and ignores its absence.
+Future<void> closeByteSource(ByteSource source) async {
+  final dynamic closable = source;
+  try {
+    await closable.close();
+  } on NoSuchMethodError {
+    // Nothing to release.
+  }
+}
+
 /// Checks that the half-open range starting at [offset] with [length] bytes
 /// lies inside a source of [sourceLength] bytes.
 void checkReadRange(int offset, int length, int sourceLength) {

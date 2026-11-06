@@ -17,6 +17,10 @@ Future<Map<String, Object?>> checkFacts() async {
     Fact.usbWeb: false,
     Fact.processSpawn: await _canSpawn(),
     Fact.fsPersistent: await _canWriteWorkingDir(),
+    Fact.fsPath: await _canWriteWorkingDir(),
+    Fact.fsHandle: false,
+    Fact.fsOpfs: false,
+    Fact.fsPicker: false,
     Fact.net: await _hasNetwork(),
     Fact.native: await loadNative(),
   };
