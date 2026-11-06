@@ -178,8 +178,10 @@ final class BloatStore {
         bytesTotal: totalBytes,
       );
 
+      // 2^31 - 1 works on both the VM and dart2js, where `1 << 32` is 0.
       final suffix =
-          '${DateTime.now().microsecondsSinceEpoch}-${_random.nextInt(1 << 32)}';
+          '${DateTime.now().microsecondsSinceEpoch}-'
+          '${_random.nextInt(0x7FFFFFFF)}';
       final partial = '${item.target}.part-$suffix';
       final transportPath = asset.gzip || asset.parts != null
           ? '${item.target}.transport-$suffix'
