@@ -1,0 +1,318 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:flasher_web_core/flasher_web_core.dart';
+
+import '../format.dart';
+import '../runtime.dart';
+import '../widgets/common.dart';
+
+/// The facts, storage and browser support of this build environment.
+class EnvironmentPage extends StatefulWidget {
+  const EnvironmentPage({
+    super.key,
+    required this.runtime,
+    required this.tables,
+    required this.initial,
+  });
+
+  final AppRuntime runtime;
+  final UpstreamTables tables;
+  final EnvironmentInfo initial;
+
+  @override
+  State<EnvironmentPage> createState() => _EnvironmentPageState();
+}
+
+class _EnvironmentPageState extends State<EnvironmentPage> {
+  late EnvironmentInfo _environment = widget.initial;
+  bool _loading = false;
+  bool _requesting = false;
+  String? _error;
+
+  Future<void> _refresh() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final value = await widget.runtime.service.environment();
+      if (!mounted) return;
+      setState(() => _environment = EnvironmentInfo.fromJson(value));
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _requestPersistent() async {
+    setState(() => _requesting = true);
+    try {
+      final granted = await widget.runtime.bridge.requestPersistentStorage();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            granted
+                ? 'Persistent storage granted for this origin.'
+                : 'The browser did not grant persistent storage.',
+          ),
+        ),
+      );
+      await _refresh();
+    } finally {
+      if (mounted) setState(() => _requesting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final storage = _environment.storage;
+    final picker = widget.runtime.bridge.canPickDirectory;
+    final upstream = _environment.upstream.isNotEmpty
+        ? _environment.upstream
+        : widget.tables.commit;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.only(bottom: 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SectionCard(
+            title: 'Build environment',
+            trailing: TextButton.icon(
+              key: const ValueKey('refreshEnvironment'),
+              onPressed: _loading ? null : _refresh,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Refresh'),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Check the local engine and verify the build pipeline.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                if (_loading) ...[
+                  const SizedBox(height: 10),
+                  const LinearProgressIndicator(minHeight: 3),
+                ],
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  HintText(_error!, error: true),
+                ],
+                const SizedBox(height: 16),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final two = constraints.maxWidth >= 720;
+                    final values = <Widget>[
+                      LabeledValue(
+                        label: 'WASM',
+                        value: _environment.native
+                            ? 'Rust library available in the worker'
+                            : 'Dart worker (Rust library unavailable)',
+                      ),
+                      LabeledValue(
+                        label: 'Facts',
+                        value: _environment.facts.isEmpty
+                            ? 'Not reported'
+                            : _environment.facts.join(', '),
+                      ),
+                      LabeledValue(
+                        label: 'Upstream commit',
+                        value: upstream.isEmpty ? 'Unknown' : upstream,
+                        monospace: true,
+                      ),
+                      LabeledValue(
+                        label: 'Workflow catalog',
+                        value:
+                            '${widget.tables.builders.length} supported device, '
+                            'flasher and region combinations',
+                      ),
+                      LabeledValue(
+                        label: 'Persistent storage',
+                        value: storage.persisted ? 'Granted' : 'Not granted',
+                      ),
+                      LabeledValue(
+                        label: 'Storage',
+                        value: storage.quota > 0
+                            ? '${formatBytes(storage.usage)} of '
+                                  '${formatBytes(storage.quota)} used'
+                            : 'Not reported',
+                      ),
+                    ];
+                    if (!two) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: values,
+                      );
+                    }
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: values.sublist(0, 3),
+                          ),
+                        ),
+                        const SizedBox(width: 24),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: values.sublist(3),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+                if (storage.quota > 0) ...[
+                  const SizedBox(height: 10),
+                  LinearProgressIndicator(
+                    value: storage.fraction,
+                    minHeight: 6,
+                  ),
+                ],
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    FilledButton.icon(
+                      key: const ValueKey('requestPersistentStorage'),
+                      onPressed: storage.persisted || _requesting
+                          ? null
+                          : _requestPersistent,
+                      icon: const Icon(Icons.shield_outlined, size: 18),
+                      label: Text(
+                        _requesting
+                            ? 'Requesting…'
+                            : storage.persisted
+                            ? 'Storage is persistent'
+                            : 'Request persistent storage',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const HintText(
+                  'Persistent storage asks the browser not to evict cached '
+                  'bloat and unfinished work. It is best effort and can be '
+                  'revoked by the browser.',
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          SectionCard(
+            title: 'Browser support',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _SupportRow(
+                  title: 'File System Access',
+                  available: picker && storage.handle,
+                  detail: picker && storage.handle
+                      ? 'Available: choose a folder for bloat, output and '
+                            'packages.'
+                      : 'Not available: bloat and packages use origin-private '
+                            'storage.',
+                ),
+                const SizedBox(height: 10),
+                _SupportRow(
+                  title: 'Origin-private file system',
+                  available: storage.opfs,
+                  detail: storage.opfs
+                      ? 'Available: bloat and package bytes stay in browser '
+                            'storage until downloaded.'
+                      : 'Not available: a folder must be chosen.',
+                ),
+                const SizedBox(height: 10),
+                _SupportRow(
+                  title: 'Streaming ZIP download',
+                  available: true,
+                  detail:
+                      'Finished ZIPs download as a Blob from the selected '
+                      'store; no upload is involved.',
+                ),
+                const SizedBox(height: 10),
+                _SupportRow(
+                  title: 'Screen wake lock',
+                  available: true,
+                  detail:
+                      'Held while a build or bloat download runs, together '
+                      'with a leave guard.',
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          SectionCard(
+            title: 'Runtime facts',
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (_environment.facts.isEmpty)
+                  const HintText('The service has not reported facts yet.')
+                else
+                  for (final fact in _environment.facts)
+                    Chip(
+                      label: Text(fact),
+                      visualDensity: VisualDensity.compact,
+                    ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SupportRow extends StatelessWidget {
+  const _SupportRow({
+    required this.title,
+    required this.available,
+    required this.detail,
+  });
+
+  final String title;
+  final bool available;
+  final String detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          available ? Icons.check_circle : Icons.info_outline,
+          size: 18,
+          color: available
+              ? theme.colorScheme.primary
+              : theme.colorScheme.onSurfaceVariant,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: theme.textTheme.bodyMedium),
+              Text(
+                detail,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}

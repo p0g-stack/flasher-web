@@ -13,15 +13,7 @@ dependencies:
   dynamic_color: ^2.1.0
   material_ui: ^1.0.0
   squadron: ^7.4.4
-  squadron_process:
-    git:
-      url: https://github.com/p0g-stack/squadron_process
-      ref: 28c37ced3034695697802b17ee818a11a36411d3
-  flutter_webui_client:
-    git:
-      url: https://github.com/p0g-stack/flutter-webui
-      path: packages/flutter_webui_client
-      ref: a1835cab0a5b8809911a14d6cfa56a7c764229f7
+  web: ^1.1.0
   flasher_web_core: any
 
 dev_dependencies:

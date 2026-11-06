@@ -1,12 +1,12 @@
 {
-    "name": "flasher_web",
-    "short_name": "flasher_web",
+    "name": "Flasher Builder",
+    "short_name": "Flasher",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#F3F6FC",
+    "theme_color": "#3268D9",
+    "description": "Turn a full OTA into a ready-to-use flasher package in your browser.",
+    "orientation": "any",
     "prefer_related_applications": false,
     "icons": [
         {
