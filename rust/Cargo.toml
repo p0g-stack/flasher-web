@@ -18,3 +18,16 @@ flutter_rust_bridge = { version = "=2.14.0-beta.2", default-features = false, fe
     "anyhow", "dart-opaque", "log", "portable-atomic", "rust-async", "user-utils", "wasm-start",
 ] }
 sha2 = "0.10"
+# Pure-Rust deflate (miniz_oxide) and CRC-32: both compile to wasm.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
+# Payload operation codecs and the gzip stream decoder, all pure Rust.
+anyhow = "1"
+bzip2 = "0.6"
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+miniz_oxide = "0.9"
+ruzstd = "0.9"
+
+[dev-dependencies]
+# Tests build their own bzip2/xz/zstd fixtures with these encoders.
+lzma-rust2 = { version = "0.25", default-features = false, features = ["encoder"] }
