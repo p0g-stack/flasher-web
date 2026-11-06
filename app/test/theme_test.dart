@@ -7,8 +7,9 @@ void main() {
   Future<ColorScheme> schemeWith(WidgetTester tester, Object? accent) async {
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
       DynamicColorPlugin.channel,
-      (call) async =>
-          call.method == DynamicColorPlugin.accentColorMethodName ? accent : null,
+      (call) async => call.method == DynamicColorPlugin.accentColorMethodName
+          ? accent
+          : null,
     );
     late ColorScheme scheme;
     await tester.pumpWidget(

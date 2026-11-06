@@ -32,9 +32,8 @@ Future<bool>? _loaded;
 Future<bool> _load() async {
   try {
     final library = await platform.openNativeLibrary(_stem);
-    await RustLib.init(externalLibrary: library).timeout(
-      const Duration(seconds: 5),
-    );
+    await RustLib.init(externalLibrary: library)
+        .timeout(const Duration(seconds: 5));
     return true;
   } on Object {
     return false;

@@ -62,16 +62,10 @@ void main() {
     );
     final lines = <String>[];
     addTearDown(logTo(lines.add, level: Level.ALL));
-    final worker = place.bind(
-      withLogs(HelloServiceWorker()),
-      service: 'hello',
-    );
+    final worker = place.bind(withLogs(HelloServiceWorker()), service: 'hello');
     addTearDown(worker.terminate);
     // A second link from this page: records still arrive once.
-    final other = place.bind(
-      withLogs(HelloServiceWorker()),
-      service: 'hello',
-    );
+    final other = place.bind(withLogs(HelloServiceWorker()), service: 'hello');
     addTearDown(other.terminate);
     expect(await other.hello('other'), 'Hello, other!');
     expect(await worker.hello('webui'), 'Hello, webui!');

@@ -38,7 +38,6 @@ abstract final class Fact {
   /// The app's Rust library (`rust/`) is loaded in this place.
   static const native = 'native';
 
-
   static const all = [
     root,
     blockDevices,

@@ -8,11 +8,16 @@ import 'commands/digest_command.dart';
 import 'commands/facts_command.dart';
 import 'commands/hello_command.dart';
 import 'commands/serve_command.dart';
+
 // p0g:imports (bricks insert imports above this line)
 
 /// The `flasher_web` command runner.
 class AppRunner extends CommandRunner<int> {
-  AppRunner() : super('flasher_web', r'''Build OnePlus flasher packages from full OTAs in the browser.''') {
+  AppRunner()
+    : super(
+        'flasher_web',
+        r'''Build OnePlus flasher packages from full OTAs in the browser.''',
+      ) {
     argParser
       ..addFlag('verbose', abbr: 'v', help: 'Log everything.')
       ..addFlag('json', help: 'Log records as JSON lines.');
@@ -49,4 +54,5 @@ class AppRunner extends CommandRunner<int> {
 }
 
 /// The CLI running a command itself, with facts checked here.
-Future<PlaceInfo> cliPlace() async => PlaceInfo('cli', Facts(await checkFacts()));
+Future<PlaceInfo> cliPlace() async =>
+    PlaceInfo('cli', Facts(await checkFacts()));

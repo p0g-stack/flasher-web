@@ -117,10 +117,7 @@ class _HelloPanelState extends State<HelloPanel> {
                   onPressed: _countToFive,
                   child: const Text('Count to 5'),
                 ),
-                OutlinedButton(
-                  onPressed: _hash,
-                  child: const Text('SHA-256'),
-                ),
+                OutlinedButton(onPressed: _hash, child: const Text('SHA-256')),
               ],
             ),
             if (_greeting != null) Text(_greeting!),

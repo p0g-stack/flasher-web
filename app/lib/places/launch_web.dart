@@ -13,7 +13,8 @@ ProcessPlace? openProcessPlace() {
   try {
     host = WebUi.host;
   } on Object catch (e) {
-    Logger('places').warning('WebUI host detection failed; no process place', e);
+    Logger('places')
+        .warning('WebUI host detection failed; no process place', e);
     return null;
   }
   final moduleDir = host.moduleDir;

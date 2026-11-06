@@ -119,13 +119,17 @@ void main() {
     });
 
     test('missing facts win over waiting', () {
-      final s = Objective<String, String>('fetch', [OverUsb()]).selectRead(page);
+      final s = Objective<String, String>('fetch', [
+        OverUsb(),
+      ]).selectRead(page);
       expect(s.waiting, isEmpty);
       expect(s.why, 'nothing fits: over_usb skipped (missing usb.native)');
     });
 
     test('once the phone is plugged in, it runs', () async {
-      final fetch = Objective<String, String>('fetch', [OverUsb(plugged: true)]);
+      final fetch = Objective<String, String>('fetch', [
+        OverUsb(plugged: true),
+      ]);
       expect(await fetch.run('boot', host), 'usb:boot');
     });
   });

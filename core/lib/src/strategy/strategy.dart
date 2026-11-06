@@ -111,8 +111,7 @@ final class Selection<S extends Strategy<Object?, Object?>> {
     for (final (s, a) in considered) {
       if (a.ok) return (parts..add('${s.name} chosen')).join('; ');
       parts.add(
-        a.waits ? '${s.name} ${a.reason}'
-            : '${s.name} skipped (${a.reason})',
+        a.waits ? '${s.name} ${a.reason}' : '${s.name} skipped (${a.reason})',
       );
     }
     return 'nothing fits: ${parts.join('; ')}';

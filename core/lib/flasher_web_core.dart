@@ -15,4 +15,5 @@ export 'src/service/hello_service.dart';
 export 'src/strategy/digest.dart';
 export 'src/strategy/objective.dart';
 export 'src/strategy/strategy.dart';
+
 // p0g:exports (bricks insert exports above this line)
