@@ -6,8 +6,6 @@ import 'native_stub.dart'
     if (dart.library.js_interop) 'native_web.dart'
     as platform;
 
-export '../rust/api/digest.dart' show sha256Hex;
-
 /// Whether this place has the app's Rust library, without loading it where
 /// loading is expensive. The `native` fact. On the web it asks whether the
 /// wasm was built (its JS glue is there) and leaves loading it to the first

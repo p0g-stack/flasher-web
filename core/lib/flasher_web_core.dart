@@ -15,7 +15,7 @@ export 'src/catalog/http_transport.dart';
 export 'src/catalog/ota_catalog.dart';
 export 'src/facts/facts.dart';
 export 'src/log.dart';
-export 'src/native/native.dart' show loadNative, sha256Hex;
+export 'src/native/native.dart' show loadNative;
 export 'src/pipeline/assets.dart';
 export 'src/pipeline/build.dart';
 export 'src/pipeline/errors.dart';
