@@ -176,9 +176,7 @@ FlashPlan planFlash(
 ) {
   final family = flashFamily(selection);
   final expectation = resolveDeviceExpectation(selection.dev, answers);
-  final usedAnswers = <String>{
-    if (answers.containsKey('product')) 'product',
-  };
+  final usedAnswers = <String>{if (answers.containsKey('product')) 'product'};
   final folder = selection.imageFolder;
   final hasSuper = package.has(_superImage);
   final isSuper = selection.kind.contains('Super');
@@ -203,7 +201,9 @@ FlashPlan planFlash(
       );
     }
     if (!package.has('$folder/boot.img')) {
-      throw FlashPlanException('Incomplete package: $folder/boot.img is missing.');
+      throw FlashPlanException(
+        'Incomplete package: $folder/boot.img is missing.',
+      );
     }
   }
 
@@ -212,11 +212,7 @@ FlashPlan planFlash(
       : _logicalList(family, dev);
   final excluded = family == FlashFamily.neo8
       ? {..._bootPartitions, ..._neo8SuperParts}
-      : {
-          ..._bootPartitions,
-          ...logical,
-          if (family == FlashFamily.x9u) 'abl',
-        };
+      : {..._bootPartitions, ...logical, if (family == FlashFamily.x9u) 'abl'};
 
   Prompt prompt({
     required String id,
@@ -324,11 +320,7 @@ FlashPlan planFlash(
   if (!hasSuper) {
     steps.addAll(
       family == FlashFamily.x9u
-          ? _x9uLogicalSteps(
-              package: package,
-              folder: folder,
-              logical: logical,
-            )
+          ? _x9uLogicalSteps(package: package, folder: folder, logical: logical)
           // Both the older batch templates and their shell counterparts flash
           // these unsuffixed; see the library comment for the `_a` mapping.
           : _logicalSteps(folder: folder, logical: logical),
@@ -341,14 +333,20 @@ FlashPlan planFlash(
     steps.addAll(const [SetActive(FlashSlot.a), RebootTo(FlashMode.fastbootd)]);
     steps.add(const RequireMode(FlashMode.fastbootd));
     steps.add(
-      wipePrompt(question: 'Do you want to wipe data?', defaultChoice: 'reboot'),
+      wipePrompt(
+        question: 'Do you want to wipe data?',
+        defaultChoice: 'reboot',
+      ),
     );
   } else if (family == FlashFamily.x9u) {
     steps.add(ablPrompt());
     steps.addAll(const [SetActive(FlashSlot.a), RebootTo(FlashMode.fastbootd)]);
     steps.add(const RequireMode(FlashMode.fastbootd));
     steps.add(
-      wipePrompt(question: 'Do you want to wipe data?', defaultChoice: 'reboot'),
+      wipePrompt(
+        question: 'Do you want to wipe data?',
+        defaultChoice: 'reboot',
+      ),
     );
   } else if (family == FlashFamily.neo8) {
     steps.add(const SetActive(FlashSlot.a));
@@ -362,7 +360,9 @@ FlashPlan planFlash(
     // Older batch family and its shell counterparts.
     steps.add(const SetActive(FlashSlot.a));
     if (selection.coloros) {
-      steps.add(bloatPrompt(family == FlashFamily.legacyShell ? 'debloat' : null));
+      steps.add(
+        bloatPrompt(family == FlashFamily.legacyShell ? 'debloat' : null),
+      );
     }
     if (!hasSuper) {
       steps.add(

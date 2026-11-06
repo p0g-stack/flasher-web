@@ -32,21 +32,18 @@ void main() {
         logical: const [],
         extras: ['abl', 'pdp'],
       );
-      final plan = planFlash(
-        package,
-        selectionOf('X9U'),
-        answersFor('X9U'),
-      );
+      final plan = planFlash(package, selectionOf('X9U'), answersFor('X9U'));
 
       expect(plan.family, 'x9u');
       expect(promptOf(plan, 'abl').defaultChoice, 'keep-abl');
       expect(flashPartitions(plan), [..._x9uBoot, 'super', 'pdp_a', 'pdp_b']);
       expect(flashPartitions(plan), isNot(contains('abl_a')));
       final steps = execution(plan);
-      expect(
-        steps.whereType<RebootTo>().map((step) => step.mode),
-        [FlashMode.fastbootd, FlashMode.fastbootd, FlashMode.android],
-      );
+      expect(steps.whereType<RebootTo>().map((step) => step.mode), [
+        FlashMode.fastbootd,
+        FlashMode.fastbootd,
+        FlashMode.android,
+      ]);
       final setActiveIndex = steps.indexWhere((step) => step is SetActive);
       expect(setActiveIndex, greaterThan(indexOfFlash(steps, 'pdp_b')));
       expect(
@@ -74,20 +71,14 @@ void main() {
       );
       final steps = execution(plan);
       final partitions = flashPartitions(plan);
-      expect(
-        partitions.sublist(partitions.length - 2),
-        ['abl_a', 'abl_b'],
-      );
+      expect(partitions.sublist(partitions.length - 2), ['abl_a', 'abl_b']);
       expect(
         indexOfFlash(steps, 'abl_b'),
         lessThan(steps.indexWhere((step) => step is SetActive)),
       );
       expect(partitions.where((p) => p == 'abl_a'), hasLength(1));
       expect(
-        flashes(plan)
-            .where((flash) => flash.partition == 'abl_a')
-            .single
-            .image,
+        flashes(plan).where((flash) => flash.partition == 'abl_a').single.image,
         'OTA_FILES_HERE/abl.img',
       );
     });
@@ -134,20 +125,13 @@ void main() {
     });
 
     test('super packages still flash the boot list and require boot.img', () {
-      final package = flashPackage(
-        folder: 'OTA_FILES_HERE',
-        logical: const [],
-      );
-      final plan = planFlash(
-        package,
-        selectionOf('X9U'),
-        answersFor('X9U'),
-      );
+      final package = flashPackage(folder: 'OTA_FILES_HERE', logical: const []);
+      final plan = planFlash(package, selectionOf('X9U'), answersFor('X9U'));
       expect(flashPartitions(plan).take(2), ['boot_a', 'boot_b']);
       expect(
-        (execution(plan).firstWhere((step) => step is GetvarCheck)
-                as GetvarCheck)
-            .expected,
+        (execution(
+          plan,
+        ).firstWhere((step) => step is GetvarCheck) as GetvarCheck).expected,
         'test-X9U',
       );
     });

@@ -2,6 +2,7 @@
 library;
 
 enum FlashMode { bootloader, fastbootd, android }
+
 enum FlashSlot { a, b }
 
 final class FlashPlanException implements Exception {
@@ -34,8 +35,10 @@ final class GetvarCheck extends FlashStep {
 final class Flash extends FlashStep {
   const Flash(this.partition, this.image, {this.sparse});
   final String partition;
+
   /// Relative to the indexed package root, never a host filesystem path.
   final String image;
+
   /// True for the generated super; null means inspect the image header.
   final bool? sparse;
   @override
@@ -80,13 +83,16 @@ final class Instruct extends FlashStep {
 /// Answers select substeps in place, never reorder them. A null default means
 /// upstream's batch `choice` has no default and requires an explicit answer.
 final class Prompt extends FlashStep {
-  Prompt({required this.id, required this.question,
+  Prompt({
+    required this.id,
+    required this.question,
     required Map<String, List<FlashStep>> choices,
-    required this.defaultChoice, required this.answer})
-    : choices = Map<String, List<FlashStep>>.unmodifiable({
-        for (final e in choices.entries)
-          e.key: List<FlashStep>.unmodifiable(e.value),
-      });
+    required this.defaultChoice,
+    required this.answer,
+  }) : choices = Map<String, List<FlashStep>>.unmodifiable({
+         for (final e in choices.entries)
+           e.key: List<FlashStep>.unmodifiable(e.value),
+       });
   final String id;
   final String question;
   final Map<String, List<FlashStep>> choices;
@@ -95,14 +101,19 @@ final class Prompt extends FlashStep {
   String? get selectedChoice => answer ?? defaultChoice;
   List<FlashStep>? get selectedSteps => choices[selectedChoice];
   @override
-  String get text => '$question (choices: ${choices.keys.join('/')}; '
+  String get text =>
+      '$question (choices: ${choices.keys.join('/')}; '
       'default: ${defaultChoice ?? 'explicit answer required'}; '
       'selected: ${selectedChoice ?? 'unanswered'})';
 }
 
 final class DeviceExpectation {
-  const DeviceExpectation({required this.dev, required this.product,
-    required this.confidence, this.overrideText});
+  const DeviceExpectation({
+    required this.dev,
+    required this.product,
+    required this.confidence,
+    this.overrideText,
+  });
   final String dev;
   final String product;
   final String confidence;
@@ -114,17 +125,23 @@ final class DeviceExpectation {
 /// fastbootd is followed by an explicit mode check. The final reboot leaves
 /// fastboot, so it carries no fastboot mode check.
 final class FlashPlan {
-  FlashPlan({required this.identity, required this.family,
-    required this.template, required List<FlashStep> steps})
-    : steps = List<FlashStep>.unmodifiable(steps);
+  FlashPlan({
+    required this.identity,
+    required this.family,
+    required this.template,
+    required List<FlashStep> steps,
+  }) : steps = List<FlashStep>.unmodifiable(steps);
   final DeviceExpectation identity;
   final String family;
   final String template;
   final List<FlashStep> steps;
 
   bool get isResolved {
-    bool resolved(Iterable<FlashStep> steps) => steps.every((step) =>
-      step is! Prompt || (step.selectedSteps != null && resolved(step.selectedSteps!)));
+    bool resolved(Iterable<FlashStep> steps) => steps.every(
+      (step) =>
+          step is! Prompt ||
+          (step.selectedSteps != null && resolved(step.selectedSteps!)),
+    );
     return resolved(steps);
   }
 
@@ -144,6 +161,7 @@ final class FlashPlan {
         }
       }
     }
+
     expand(steps);
     return List<FlashStep>.unmodifiable(result);
   }

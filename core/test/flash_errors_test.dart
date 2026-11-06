@@ -132,18 +132,17 @@ void main() {
       );
     });
 
-    test('unanswered batch prompts block execution but still produce a plan', () {
-      final package = flashPackage(folder: 'OOS_FILES_HERE');
-      final plan = planFlash(
-        package,
-        selectionOf('13'),
-        answersFor('13'),
-      );
-      expect(plan.isResolved, isFalse);
-      expect(promptOf(plan, 'root').defaultChoice, isNull);
-      expect(promptOf(plan, 'wipe').defaultChoice, isNull);
-      expect(() => plan.executionSteps, throwsPlanError('Answer required'));
-    });
+    test(
+      'unanswered batch prompts block execution but still produce a plan',
+      () {
+        final package = flashPackage(folder: 'OOS_FILES_HERE');
+        final plan = planFlash(package, selectionOf('13'), answersFor('13'));
+        expect(plan.isResolved, isFalse);
+        expect(promptOf(plan, 'root').defaultChoice, isNull);
+        expect(promptOf(plan, 'wipe').defaultChoice, isNull);
+        expect(() => plan.executionSteps, throwsPlanError('Answer required'));
+      },
+    );
 
     test('X9U super package without super.img is refused', () {
       expect(
@@ -181,10 +180,7 @@ void main() {
       );
       expect(
         () => planFlash(
-          flashPackage(
-            folder: 'COS_FILES_HERE',
-            boot: const [],
-          ),
+          flashPackage(folder: 'COS_FILES_HERE', boot: const []),
           selectionOf('NEO8', region: 'CN'),
           answersFor('NEO8'),
         ),
@@ -213,10 +209,7 @@ void main() {
         'D/nested/b.img',
         'D/notes.txt',
       ]);
-      expect(
-        package.imagesIn('D').map((image) => image.stem),
-        ['z', 'a'],
-      );
+      expect(package.imagesIn('D').map((image) => image.stem), ['z', 'a']);
     });
 
     test('refuses unsafe or duplicate entries', () {
@@ -242,10 +235,7 @@ void main() {
   group('device identity table', () {
     test('OnePlus 13 is confirmed and the rest stay unknown', () {
       expect(deviceIdentities['13']!.product, 'sun');
-      expect(
-        deviceIdentities['13']!.evidence,
-        ProductEvidence.observedGetvar,
-      );
+      expect(deviceIdentities['13']!.evidence, ProductEvidence.observedGetvar);
       expect(deviceIdentities['13']!.source, contains('xdaforums.com'));
       expect(deviceIdentities['13R']!.product, isNull);
       expect(deviceIdentities['13R']!.evidence, ProductEvidence.unknown);

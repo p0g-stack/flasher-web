@@ -67,10 +67,7 @@ PackageIndex flashPackage({
 Map<String, String> answersFor(
   String dev, [
   Map<String, String> answers = const {},
-]) => {
-  'product': dev == '13' ? 'sun' : 'test-$dev',
-  ...answers,
-};
+]) => {'product': dev == '13' ? 'sun' : 'test-$dev', ...answers};
 
 List<Flash> flashes(FlashPlan plan) => [
   for (final step in plan.executionSteps)
@@ -83,9 +80,8 @@ List<String> flashPartitions(FlashPlan plan) => [
 
 List<FlashStep> execution(FlashPlan plan) => plan.executionSteps;
 
-int indexOfFlash(List<FlashStep> steps, String partition) => steps.indexWhere(
-  (step) => step is Flash && step.partition == partition,
-);
+int indexOfFlash(List<FlashStep> steps, String partition) =>
+    steps.indexWhere((step) => step is Flash && step.partition == partition);
 
 T singleStep<T extends FlashStep>(FlashPlan plan) =>
     plan.executionSteps.whereType<T>().single;

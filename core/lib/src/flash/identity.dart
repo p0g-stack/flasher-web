@@ -61,8 +61,7 @@ const Map<String, DeviceIdentity> deviceIdentities = {
     dev: '13',
     product: 'sun',
     evidence: ProductEvidence.observedGetvar,
-    source:
-        'https://xdaforums.com/t/solved-question-help-oneplus-13-cph2653-bootloop-on-oos-16-0-5-701-flashed-incompatible-kernel.4791171/',
+    source: 'https://xdaforums.com/t/solved-question-help-oneplus-13-cph2653-bootloop-on-oos-16-0-5-701-flashed-incompatible-kernel.4791171/',
   ),
   '13R': DeviceIdentity(
     dev: '13R',

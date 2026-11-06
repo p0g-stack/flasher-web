@@ -11,19 +11,16 @@ void main() {
         extras: ['pdp'],
         logical: [...testBaselineLogical, 'system_dlkm_oki'],
       );
-      final plan = planFlash(
-        package,
-        selectionOf('15'),
-        answersFor('15'),
-      );
+      final plan = planFlash(package, selectionOf('15'), answersFor('15'));
 
       expect(plan.family, 'newer');
       expect(plan.isResolved, isTrue);
       final steps = execution(plan);
-      expect(
-        steps.whereType<RebootTo>().map((step) => step.mode),
-        [FlashMode.fastbootd, FlashMode.fastbootd, FlashMode.android],
-      );
+      expect(steps.whereType<RebootTo>().map((step) => step.mode), [
+        FlashMode.fastbootd,
+        FlashMode.fastbootd,
+        FlashMode.android,
+      ]);
       expect(steps.whereType<RequireMode>().map((s) => s.mode), [
         FlashMode.bootloader,
         FlashMode.fastbootd,
@@ -98,9 +95,8 @@ void main() {
         indexOfFlash(steps, 'my_preload_a'),
         lessThan(steps.indexWhere((step) => step is SetActive)),
       );
-      final preload = flashes(
-        plan,
-      ).singleWhere((flash) => flash.partition == 'my_preload_a');
+      final preload = flashes(plan)
+          .singleWhere((flash) => flash.partition == 'my_preload_a');
       expect(preload.image, 'OOS_FILES_HERE/my_preload.img');
       expect(
         steps.whereType<DeleteLogical>().map((step) => step.name),

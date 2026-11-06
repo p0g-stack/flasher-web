@@ -27,10 +27,7 @@ const _bootFlashes = <String>[
 void main() {
   group('legacy batch family', () {
     test('13 OOS super follows the script order', () {
-      final package = flashPackage(
-        folder: 'OOS_FILES_HERE',
-        extras: ['pdp'],
-      );
+      final package = flashPackage(folder: 'OOS_FILES_HERE', extras: ['pdp']);
       final plan = planFlash(
         package,
         selectionOf('13'),
@@ -75,10 +72,7 @@ void main() {
       );
       expect(rebootIndex, greaterThan(indexOfFlash(steps, 'super')));
       expect(steps[rebootIndex + 1], isA<RequireMode>());
-      expect(
-        (steps[rebootIndex + 1] as RequireMode).mode,
-        FlashMode.fastbootd,
-      );
+      expect((steps[rebootIndex + 1] as RequireMode).mode, FlashMode.fastbootd);
       expect(indexOfFlash(steps, 'pdp_a'), greaterThan(rebootIndex));
 
       final setActiveIndex = steps.indexWhere((step) => step is SetActive);
@@ -112,9 +106,8 @@ void main() {
       expect(plan.family, 'legacyBatch');
       final steps = execution(plan);
       expect(flashPartitions(plan), contains('my_preload_a'));
-      final preload = flashes(
-        plan,
-      ).singleWhere((flash) => flash.partition == 'my_preload_a');
+      final preload = flashes(plan)
+          .singleWhere((flash) => flash.partition == 'my_preload_a');
       expect(preload.image, 'OOS_FILES_HERE/my_preload.img');
       expect(
         steps.whereType<DeleteLogical>().map((step) => step.name),
@@ -126,10 +119,7 @@ void main() {
         ]),
       );
       final setActiveIndex = steps.indexWhere((step) => step is SetActive);
-      expect(
-        indexOfFlash(steps, 'my_preload_a'),
-        greaterThan(setActiveIndex),
-      );
+      expect(indexOfFlash(steps, 'my_preload_a'), greaterThan(setActiveIndex));
       expect(steps.last, isA<Instruct>());
       expect(
         steps.skip(setActiveIndex).whereType<RebootTo>(),
@@ -163,10 +153,7 @@ void main() {
       expect(promptOf(plan, 'bloat').defaultChoice, isNull);
       expect(promptOf(plan, 'bloat').selectedSteps, isNull);
       expect(plan.isResolved, isFalse);
-      expect(
-        () => plan.executionSteps,
-        throwsA(isA<FlashPlanException>()),
-      );
+      expect(() => plan.executionSteps, throwsA(isA<FlashPlanException>()));
     });
 
     test('13T signal branch prepares ODM and writes explicit slot A', () {
