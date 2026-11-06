@@ -1,0 +1,33 @@
+name: flasher_web_cli
+description: The flasher_web command line. On WebUI it is also the root process (serve).
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+executables:
+  flasher_web: flasher_web
+
+dependencies:
+  args: ^2.7.0
+  squadron: ^7.4.4
+  flasher_web_core: any
+  squadron_process:
+    git:
+      url: https://github.com/p0g-stack/squadron_process
+      ref: 28c37ced3034695697802b17ee818a11a36411d3
+
+dev_dependencies:
+  flutter_webui_client:
+    git:
+      url: https://github.com/p0g-stack/flutter-webui
+      path: packages/flutter_webui_client
+      ref: a1835cab0a5b8809911a14d6cfa56a7c764229f7
+  flutter_webui_root:
+    git:
+      url: https://github.com/p0g-stack/flutter-webui
+      path: packages/flutter_webui_root
+      ref: a1835cab0a5b8809911a14d6cfa56a7c764229f7
+  lints: ^6.1.0
+  test: ^1.31.1
