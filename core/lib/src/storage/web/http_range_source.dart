@@ -15,23 +15,48 @@ import 'interop.dart';
 /// a server that ignores `Range`, shortens the body or changes the length is
 /// an error.
 final class HttpRangeSource implements ByteSource {
-  HttpRangeSource._(this._uri, this._headers, {required this.length});
+  HttpRangeSource._(
+    this._uri,
+    this._headers, {
+    required this.length,
+    required this.etag,
+  });
 
   /// Probes [uri] and returns a source whose [length] is the remote length.
+  ///
+  /// A hosted artifact passes its immutable `expectedLength` and
+  /// `expectedEtag`; the probe and every later read must match both, so a
+  /// server that swaps the artifact cannot feed a flash.
   static Future<HttpRangeSource> open(
     Uri uri, {
     Map<String, String> headers = const {},
+    int? expectedLength,
+    String? expectedEtag,
   }) async {
-    final total = await _probe(uri, headers);
+    final probe = await _probe(uri, headers);
+    if (expectedLength != null && probe.length != expectedLength) {
+      throw RangeException(
+        'remote length is ${probe.length}, expected $expectedLength for $uri',
+      );
+    }
+    validatePinnedEtag(
+      expected: expectedEtag,
+      actual: probe.etag,
+      context: 'probe of $uri',
+    );
     return HttpRangeSource._(
       uri,
       Map<String, String>.unmodifiable(headers),
-      length: total,
+      length: probe.length,
+      etag: expectedEtag,
     );
   }
 
   final Uri _uri;
   final Map<String, String> _headers;
+
+  /// The pinned strong ETag, when this source must stay immutable.
+  final String? etag;
   bool _closed = false;
 
   @override
@@ -43,9 +68,20 @@ final class HttpRangeSource implements ByteSource {
     if (length == 0) return Uint8List(0);
     if (_closed) throw StateError('HTTP range source is closed: $_uri');
 
-    final response = await _send(_uri, _headers, offset, length);
+    final response = await _send(
+      _uri,
+      _headers,
+      offset,
+      length,
+      ifRange: etag,
+    );
     final contentLength = _contentLength(response);
     try {
+      validatePinnedEtag(
+        expected: etag,
+        actual: response.headers.get('etag'),
+        context: 'range $offset-$length of $_uri',
+      );
       validateRangeResponse(
         status: response.status,
         contentRange: response.headers.get('content-range'),
@@ -74,9 +110,13 @@ final class HttpRangeSource implements ByteSource {
     _closed = true;
   }
 
-  static Future<int> _probe(Uri uri, Map<String, String> headers) async {
+  static Future<({int length, String? etag})> _probe(
+    Uri uri,
+    Map<String, String> headers,
+  ) async {
     final response = await _send(uri, headers, 0, 1);
     final contentRange = response.headers.get('content-range');
+    final etag = response.headers.get('etag');
 
     if (response.status == 416) {
       await _cancel(response);
@@ -86,13 +126,13 @@ final class HttpRangeSource implements ByteSource {
           'server rejected a one-byte probe for a $total-byte resource',
         );
       }
-      return 0;
+      return (length: 0, etag: etag);
     }
 
     if (response.status == 200) {
       final total = _contentLength(response);
       await _cancel(response);
-      if (total == 0) return 0;
+      if (total == 0) return (length: 0, etag: etag);
       throw RangeException('server ignored Range for $uri');
     }
 
@@ -125,19 +165,21 @@ final class HttpRangeSource implements ByteSource {
         'probe of $uri returned ${bytes.length} bytes, wanted 1',
       );
     }
-    return range.total;
+    return (length: range.total, etag: etag);
   }
 
   static Future<web.Response> _send(
     Uri uri,
     Map<String, String> headers,
     int offset,
-    int length,
-  ) {
+    int length, {
+    String? ifRange,
+  }) {
     final requestHeaders = web.Headers();
     headers.forEach((name, value) => requestHeaders.set(name, value));
     requestHeaders.set('range', 'bytes=$offset-${offset + length - 1}');
     requestHeaders.set('accept-encoding', 'identity');
+    if (ifRange != null) requestHeaders.set('if-range', ifRange);
     return webFetch(
       uri.toString().toJS,
       web.RequestInit(headers: requestHeaders),

@@ -15,6 +15,7 @@ export 'src/catalog/http_transport.dart';
 export 'src/catalog/ota_catalog.dart';
 export 'src/facts/facts.dart';
 export 'src/flash/executor.dart';
+export 'src/flash/hosted.dart';
 export 'src/flash/identity.dart';
 export 'src/flash/model.dart';
 export 'src/flash/package_index.dart';

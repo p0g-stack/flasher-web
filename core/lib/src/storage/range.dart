@@ -72,6 +72,40 @@ final class ContentRange {
   }
 }
 
+/// Returns a strong ETag header value unchanged, or null for a missing or
+/// weak validator.
+///
+/// An immutable hosted artifact is addressed by its SHA-256 in a strong ETag;
+/// `W/"..."` is a different representation and cannot pin byte identity.
+String? strongEtag(String? header) {
+  final value = header?.trim();
+  if (value == null || value.isEmpty) return null;
+  if (value.length >= 2 &&
+      (value.startsWith('W/') || value.startsWith('w/'))) {
+    return null;
+  }
+  return value;
+}
+
+/// Requires every response for a pinned artifact to carry the same strong
+/// ETag. Missing, weak or changed validators are an error, never a new read.
+void validatePinnedEtag({
+  required String? expected,
+  required String? actual,
+  required String context,
+}) {
+  if (expected == null) return;
+  final strong = strongEtag(actual);
+  if (strong == null) {
+    throw RangeException('$context has no strong ETag; wanted $expected');
+  }
+  if (strong != expected.trim()) {
+    throw RangeException(
+      '$context ETag changed from ${expected.trim()} to $strong',
+    );
+  }
+}
+
 /// Validates a `206` response for the exact requested range.
 void validateRangeResponse({
   required int status,

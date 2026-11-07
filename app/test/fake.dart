@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flasher_web/api/flasher_api.dart';
 import 'package:flasher_web/api/platform_bridge.dart';
+import 'package:flasher_web/build/hosted_api.dart';
 import 'package:flasher_web/preferences.dart';
 import 'package:flasher_web/runtime.dart';
 import 'package:flasher_web/shell.dart';
@@ -333,6 +334,7 @@ final class Harness {
     FakePlatformBridge? bridge,
     UpstreamTables? tables,
     EnvironmentInfo? environment,
+    this.hosted,
   }) : bridge = bridge ?? FakePlatformBridge(),
        tables = tables ?? testTables(),
        environment = environment ?? testEnvironment();
@@ -341,6 +343,7 @@ final class Harness {
   final FakePlatformBridge bridge;
   final UpstreamTables tables;
   final EnvironmentInfo environment;
+  final HostedApiClient? hosted;
   final preferences = const SetupPreferences();
 
   AppRuntime get runtime => AppRuntime(
@@ -365,6 +368,7 @@ Future<Harness> pumpApp(WidgetTester tester, {Harness? harness}) async {
         tables: h.tables,
         environment: h.environment,
         preferences: h.preferences,
+        hosted: h.hosted,
       ),
     ),
   );

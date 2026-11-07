@@ -121,7 +121,9 @@ final class FlashController extends ChangeNotifier {
   bool get regranting => _regranting;
   String? get regrantMessage => _regrantMessage;
   String get logText => _log.join('\n');
-  String get receiptPath => '${target.job}/flash-receipt.json';
+  String get receiptPath => target.isHosted
+      ? 'this browser download (hosted job ${target.job})'
+      : '${target.job}/flash-receipt.json';
 
   bool get answersComplete {
     final prepared = _prepared;
@@ -334,15 +336,23 @@ final class FlashController extends ChangeNotifier {
     });
   }
 
-  Map<String, Object?> _request({String? token}) => {
-    'output': target.store,
-    'job': target.job,
-    'selection': target.selection,
-    'upstreamBase': upstreamBase,
-    if (_serial != null) 'serial': _serial,
-    'answers': Map<String, String>.from(_answers),
-    'confirmationToken': ?token,
-  };
+  Map<String, Object?> _request({String? token}) {
+    final request = <String, Object?>{
+      'job': target.job,
+      'selection': target.selection,
+      'upstreamBase': upstreamBase,
+      if (_serial != null) 'serial': _serial,
+      'answers': Map<String, String>.from(_answers),
+      'confirmationToken': ?token,
+    };
+    final hosted = target.hostedRequest;
+    if (hosted != null) {
+      request['hosted'] = hosted;
+    } else {
+      request['output'] = target.store;
+    }
+    return request;
+  }
 
   Future<void> prepare() async {
     if (_disposed || running) return;
@@ -505,6 +515,9 @@ final class FlashController extends ChangeNotifier {
     }
     if (!_sameMap(request['selection'], prepared['selection'])) return false;
     if (!_sameMap(request['answers'], prepared['answers'])) return false;
+    if (target.isHosted) {
+      return _sameMap(request['hosted'], prepared['hosted']);
+    }
     return _sameStore(request['output'], prepared['output']);
   }
 
@@ -589,11 +602,19 @@ final class FlashController extends ChangeNotifier {
               'the affected partitions before preparing a new flash.';
         } else if (_phase == FlashPhase.succeeded) {
           final persistence = _receipt?['persistenceWarnings'];
-          _guidance = persistence is List && persistence.isNotEmpty
-              ? 'Flashing finished, but the receipt could not be fully saved. '
-                    'Download it now. ${persistence.join('; ')}'
-              : 'The service saved the receipt at $receiptPath. Wiping and '
-                    'rooting stay manual on the phone.';
+          _guidance = target.isHosted
+              ? (persistence is List && persistence.isNotEmpty
+                    ? 'Flashing finished, but the hosted receipt warning is: '
+                          '${persistence.join('; ')} Download the receipt now.'
+                    : 'The hosted build has no local job, so download the '
+                          'receipt now; it is not written into a local folder. '
+                          'Wiping and rooting stay manual on the phone.')
+              : (persistence is List && persistence.isNotEmpty
+                    ? 'Flashing finished, but the receipt could not be fully '
+                          'saved. Download it now. '
+                          '${persistence.join('; ')}'
+                    : 'The service saved the receipt at $receiptPath. Wiping '
+                          'and rooting stay manual on the phone.');
         }
         _finish(cancelSubscription: false);
       default:
@@ -690,7 +711,7 @@ final class FlashController extends ChangeNotifier {
         'Cancelled. No rollback was performed. Commands already sent stay '
         'applied, and a write in flight may have left the phone partially '
         'written. Reconnect it in fastboot and inspect it before flashing '
-        'again. The service may still persist a receipt at $receiptPath.';
+        'again. ${target.isHosted ? 'Download the receipt from this page; a hosted job has no local folder.' : 'The service may still persist a receipt at $receiptPath.'}';
     _guidance =
         'This is not a rollback. Do not retry automatically; reconnect the '
         'phone and inspect its state.';

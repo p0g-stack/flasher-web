@@ -264,7 +264,7 @@ class _TargetCard extends StatelessWidget {
           ),
           LabeledValue(
             label: 'Store',
-            value: '${target.store['kind'] ?? 'unknown'}',
+            value: target.isHosted ? 'Hosted ZIP' : '${target.store['kind'] ?? 'unknown'}',
           ),
         ],
       ),
@@ -1029,9 +1029,12 @@ class _ResultCard extends StatelessWidget {
           ],
           const SizedBox(height: 8),
           HintText(
-            'The service persists the receipt at ${controller.receiptPath} and '
-            'merges its status into build.json, so history shows it after a '
-            'reload.',
+            controller.target.isHosted
+                ? 'The hosted build has no local job. Download the receipt '
+                      'after flashing; it is not written into a local folder.'
+                : 'The service persists the receipt at '
+                      '${controller.receiptPath} and merges its status into '
+                      'build.json, so history shows it after a reload.',
           ),
         ],
       ),

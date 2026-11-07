@@ -1,0 +1,18 @@
+name: flasher_web_hosted
+description: Hosted catalog-only OTA builds for flasher_web.
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+executables:
+  flasher_web_hosted: server
+
+dependencies:
+  crypto: ^3.0.6
+  flasher_web_core: any
+
+dev_dependencies:
+  lints: ^6.1.0
+  test: ^1.31.1

@@ -8,7 +8,21 @@ final class FlashTarget {
     required this.store,
     required this.selection,
     required this.label,
-  });
+  }) : hostedSha256 = null,
+       hostedBytes = null;
+
+  /// A hosted, catalog-owned build. The service fetches the ZIP through
+  /// same-origin ranges; [store] stays empty and nothing is written locally.
+  const FlashTarget.hosted({
+    required String jobId,
+    required String sha256,
+    required int bytes,
+    required this.selection,
+    required this.label,
+  }) : job = jobId,
+       store = const {},
+       hostedSha256 = sha256,
+       hostedBytes = bytes;
 
   final String job;
 
@@ -20,6 +34,23 @@ final class FlashTarget {
 
   /// A human label for the package row.
   final String label;
+
+  /// The immutable artifact digest, for a hosted build.
+  final String? hostedSha256;
+
+  /// The exact ZIP length, for a hosted build.
+  final int? hostedBytes;
+
+  bool get isHosted => hostedSha256 != null;
+
+  /// The only hosted input the service accepts: a capability id and the
+  /// immutable digest and length. No URL or upload is ever sent.
+  Map<String, Object?>? get hostedRequest {
+    final sha256 = hostedSha256;
+    final bytes = hostedBytes;
+    if (sha256 == null || bytes == null) return null;
+    return {'jobId': job, 'sha256': sha256, 'bytes': bytes};
+  }
 
   String get device => '${selection['device'] ?? ''}';
   String get kind => '${selection['kind'] ?? ''}';

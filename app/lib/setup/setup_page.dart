@@ -252,6 +252,13 @@ class _BloatCard extends StatelessWidget {
             style: theme.textTheme.bodySmall,
             overflow: TextOverflow.ellipsis,
           ),
+          if (setup.hostedBuild) ...[
+            const SizedBox(height: 6),
+            HintText(
+              'The hosted builder uses its own verified bloat cache. This '
+              'local copy is only needed for local builds.',
+            ),
+          ],
           const SizedBox(height: 6),
           Wrap(
             spacing: 8,
@@ -383,6 +390,61 @@ class _OtaCard extends StatelessWidget {
             _LocalOtaPanel(setup: setup)
           else
             _CatalogOtaPanel(setup: setup),
+          const SizedBox(height: 10),
+          Container(
+            key: const ValueKey('hostedBuildPanel'),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: theme.colorScheme.outlineVariant),
+              color: setup.hostedBuild
+                  ? theme.colorScheme.primaryContainer.withValues(alpha: 0.3)
+                  : null,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  setup.hostedBuild
+                      ? Icons.cloud_done_outlined
+                      : Icons.cloud_outlined,
+                  size: 18,
+                  color: setup.hostedAvailable
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Build on the hosted server',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        setup.hostedAvailable
+                            ? 'Catalog OTA only · the server uses the release '
+                                  'ID, never a local file or custom URL.'
+                            : 'Switch to Version catalog to use a hosted build.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch(
+                  key: const ValueKey('hostedBuildSwitch'),
+                  value: setup.hostedBuild,
+                  onChanged: setup.hostedAvailable
+                      ? setup.setHostedBuild
+                      : null,
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: 10),
           HintText(setup.sourceHint),
           const SizedBox(height: 8),
@@ -759,7 +821,9 @@ class _OutputBar extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final compact = constraints.maxWidth < 760;
-          final storage = Column(
+          final storage = setup.hostedBuild
+              ? _HostedOutputInfo(setup: setup)
+              : Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -825,17 +889,18 @@ class _OutputBar extends StatelessWidget {
           final actions = Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Checkbox(
-                    key: const ValueKey('zipBuild'),
-                    value: setup.zipOutput,
-                    onChanged: (value) => setup.setZipOutput(value ?? true),
-                  ),
-                  const Text('ZIP build'),
-                ],
-              ),
+              if (!setup.hostedBuild)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Checkbox(
+                      key: const ValueKey('zipBuild'),
+                      value: setup.zipOutput,
+                      onChanged: (value) => setup.setZipOutput(value ?? true),
+                    ),
+                    const Text('ZIP build'),
+                  ],
+                ),
               const SizedBox(width: 10),
               Tooltip(
                 message: error.isEmpty ? 'Build the package' : error,
@@ -843,7 +908,9 @@ class _OutputBar extends StatelessWidget {
                   key: const ValueKey('buildButton'),
                   onPressed: setup.canBuild ? onBuild : null,
                   icon: const Icon(Icons.arrow_forward, size: 18),
-                  label: const Text('Build package'),
+                  label: Text(
+                    setup.hostedBuild ? 'Build on server' : 'Build package',
+                  ),
                 ),
               ),
             ],
@@ -890,6 +957,71 @@ class _OutputBar extends StatelessWidget {
           );
         },
       ),
+    );
+  }
+}
+
+class _HostedOutputInfo extends StatelessWidget {
+  const _HostedOutputInfo({required this.setup});
+
+  final SetupState setup;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final version = setup.selectedVersion;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const FieldLabel('BUILD LOCATION'),
+        const SizedBox(height: 5),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.cloud_outlined,
+              size: 18,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                'Hosted server',
+                key: const ValueKey('hostedOutput'),
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          version == null
+              ? 'Catalog release · ZIP only · no local output store is used.'
+              : '$version · ZIP only · the finished artifact stays on the '
+                    'server.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'The ZIP can be downloaded or range-flashed from the same origin.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Identical requests may reuse a cached build. The operator retains '
+          'catalog OTAs and ZIPs for its configured period (default 150 days '
+          'since last use).',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
     );
   }
 }

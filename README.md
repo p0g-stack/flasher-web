@@ -4,8 +4,9 @@ Build OnePlus flasher packages from full OTAs, then flash finished jobs from
 the browser or CLI: a port of
 [koaaN/Flasher_Builder](https://github.com/koaaN/Flasher_Builder). Choose a
 device, flasher type and region, provide a full OTA (a local ZIP or catalog
-version), and build the same ZIP or folder the desktop app builds. Nothing is
-uploaded; catalog OTAs are read in place by HTTP ranges, not downloaded in full.
+version), and build the same ZIP or folder the desktop app builds. Local builds
+read catalog OTAs by HTTP ranges. Optional hosted builds cache approved catalog
+OTAs and finished ZIPs on the operator's server; local files are never uploaded.
 
 Upstream stays the source of truth for device tables, flasher templates,
 Platform-Tools and the bloat manifest; `upstream.lock` pins its commit and
@@ -24,6 +25,7 @@ Design: [docs/design.md](docs/design.md); service contract:
 | `rust/` | app frb library: synchronous compute and asynchronous fastboot transport adapters | native and single-threaded wasm |
 | `rust/crates/ota-payload/` | reusable full-OTA parsing, operation decoding and SHA-256 compute; otaripper/AOSP provenance | native and wasm, no frb or I/O |
 | `rust/crates/fastboot-link/` | reusable USB discovery, serial-bound sessions and streaming fastboot | native nusb / browser WebUSB, no frb |
+| `hosted/` | catalog-only native build service and persistent OTA, verified-bloat and ZIP caches | Linux server with delegated cgroup v2 CPU controller |
 | `worker/` | Cloudflare Worker: static site plus `/api/catalog`, `/api/resolve`, `/api/ota`, `/api/bloat` | Cloudflare Workers (`wrangler dev` locally) |
 
 ## Start
@@ -34,7 +36,7 @@ Needs Flutter 3.47.5, flutter_p0g with its patched frb
 ```sh
 PLATFORMS=web bash tool/bootstrap.sh       # upstream snapshot, codegen, Rust + wasm, workers
 dart analyze --fatal-infos
-(cd core && dart test) && (cd cli && dart test) && (cd app && flutter test)
+(cd core && dart test) && (cd cli && dart test) && (cd app && flutter test) && (cd hosted && dart test)
 (cd rust && cargo test --workspace) && (cd worker && npm install && npx vitest run)
 (cd app && flutter_p0g build web --release)
 (cd worker && npx wrangler dev --port 8787)  # open http://127.0.0.1:8787
@@ -65,6 +67,36 @@ required choice using repeated `--answer id=value` flags, then rerun with
 writes. Unknown product mappings require `--answer product=VERIFIED_PRODUCT`;
 verify the selected model and the reported product yourself. Do not guess
 answers or confirm a different phone.
+
+## Hosted builds
+
+The hosted service is optional and is **not configured by `wrangler dev`**.
+The browser submits catalog IDs only; it cannot upload a local ZIP or supply an
+arbitrary OTA URL. Completed ZIPs are served with byte ranges, and WebUSB
+flashing still runs on the user's machine after serial-bound confirmation.
+Hosted receipts are downloaded, not saved to a local job folder.
+
+The operator needs a persistent Linux host, the native library, `prlimit`, the
+pinned upstream snapshot, a private service endpoint, and a delegated cgroup v2
+CPU subtree. Configure `hosted/deploy.env.example`, including a unique secret
+and `HOSTED_BUILDER_REVISION` identifying the exact deployed builder, then start
+`dart run hosted/bin/server.dart` from the workspace. Change the builder
+revision whenever the builder, core or Rust implementation changes.
+Set the Cloudflare Worker's `HOSTED_ORIGIN` to the HTTPS origin of a TLS proxy to that
+private service, and its `HOSTED_TOKEN` secret to the same value. The service
+does not bind publicly. The proxy must protect the origin and preserve range,
+ETag and content-length headers.
+
+OTA and ZIP retention defaults to 150 days since last use, subject to the
+configured disk budget. Concurrent builds, queue size, CPU utilization and
+CPU time are bounded. Workspace usage is monitored and each file is limited,
+but the monitor can overshoot between checks: use a dedicated filesystem with
+a hard quota and sufficient free space before exposing the service publicly.
+Rate-limit public job requests at the edge; the shared backend token protects
+the backend, not against abuse by visitors to the website.
+
+This repository does not provision a server or publish the site. A real-host
+OTA build and physical-device flashing remain unqualified.
 
 ## In the browser
 

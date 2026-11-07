@@ -268,6 +268,87 @@ void main() {
     );
   });
 
+  testWidgets('a hosted target binds the artifact and never names a store', (
+    tester,
+  ) async {
+    const hostedId = 'hosted-job-0123456789abcdef';
+    const hostedSha =
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const hostedTarget = FlashTarget.hosted(
+      jobId: hostedId,
+      sha256: hostedSha,
+      bytes: 4096,
+      selection: {
+        'device': 'Realme NEO8',
+        'kind': 'Super Flasher',
+        'region': 'CN',
+      },
+      label: 'Realme NEO8 / Super Flasher',
+    );
+    final harness = Harness();
+    final events = StreamController<Map<String, Object?>>();
+    addTearDown(events.close);
+    harness.api.prepareFlashResult = (_) => {
+      ...resolvedPrepare(),
+      'job': hostedId,
+    };
+    harness.api.flashStream = (_) => events.stream;
+    final controller = await pumpFlash(
+      tester,
+      harness,
+      target: hostedTarget,
+    );
+    await selectDevice(tester, controller);
+
+    final prepareRequest = harness.api.lastPrepareRequest!;
+    expect(prepareRequest.containsKey('output'), isFalse);
+    expect(prepareRequest['hosted'], {
+      'jobId': hostedId,
+      'sha256': hostedSha,
+      'bytes': 4096,
+    });
+    expect(controller.receiptPath, contains('browser download'));
+
+    await confirmAndFlash(tester);
+    final flashRequest = harness.api.lastFlashRequest!;
+    expect(flashRequest.containsKey('output'), isFalse);
+    expect(flashRequest['hosted'], {
+      'jobId': hostedId,
+      'sha256': hostedSha,
+      'bytes': 4096,
+    });
+    expect(flashRequest['confirmationToken'], 'token-1');
+
+    events.add({
+      'type': 'result',
+      'status': 'succeeded',
+      'receipt': {
+        'status': 'succeeded',
+        'serial': _serial,
+        'job': hostedId,
+        'hosted': {
+          'jobId': hostedId,
+          'sha256': hostedSha,
+          'bytes': 4096,
+        },
+        'persistenceWarnings': <String>[],
+        'steps': <Map<String, Object?>>[],
+      },
+    });
+    await tester.pumpAndSettle();
+    expect(find.textContaining('no local job'), findsWidgets);
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('downloadFlashReceipt')),
+    );
+    await tester.tap(find.byKey(const ValueKey('downloadFlashReceipt')));
+    await tester.pumpAndSettle();
+    expect(
+      harness.bridge.downloads,
+      contains('flash-$hostedId-SERIAL123.json'),
+    );
+  });
+
   testWidgets('an unresolved prompt refuses execution and needs an answer', (
     tester,
   ) async {

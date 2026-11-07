@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flasher_web_core/flasher_web_core.dart';
 
 import 'build/build_controller.dart';
+import 'build/hosted_api.dart';
 import 'build/output_page.dart';
 import 'docs/docs_page.dart';
 import 'environment/environment_page.dart';
@@ -27,12 +28,17 @@ class AppShell extends StatefulWidget {
     required this.tables,
     required this.environment,
     required this.preferences,
+    this.hosted,
   });
 
   final AppRuntime runtime;
   final UpstreamTables tables;
   final EnvironmentInfo environment;
   final SetupPreferences preferences;
+
+  /// Test seam for the hosted job client; production uses its same-origin
+  /// default. Hosted requests never fall back to the local build worker.
+  final HostedApiClient? hosted;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -48,6 +54,7 @@ class _AppShellState extends State<AppShell> {
   late final BuildController _build = BuildController(
     api: widget.runtime.service,
     bridge: widget.runtime.bridge,
+    hosted: widget.hosted,
   );
 
   AppPage _page = AppPage.setup;
@@ -152,27 +159,44 @@ class _AppShellState extends State<AppShell> {
     final result = _build.result;
     final request = _build.request;
     final selection = request?['selection'];
-    final output = request?['output'];
     final job = result?['job'];
     if (result == null ||
         job is! String ||
         job.isEmpty ||
-        selection is! Map ||
-        output is! Map) {
+        selection is! Map) {
       return;
     }
     final summary = _build.summary;
     final device = '${selection['device'] ?? ''}';
     final kind = '${selection['kind'] ?? ''}';
+    final label = summary == null
+        ? '$device / $kind'
+        : '${summary['device'] ?? device} / ${summary['kind'] ?? kind}';
+    final selectionMap = Map<String, Object?>.from(selection);
+    if (result['hosted'] == true) {
+      final sha256 = result['sha256'];
+      final bytes = result['bytes'];
+      if (sha256 is! String || bytes is! num) return;
+      _openFlash(
+        FlashTarget.hosted(
+          jobId: job,
+          sha256: sha256,
+          bytes: bytes.toInt(),
+          selection: selectionMap,
+          label: label,
+        ),
+        back: AppPage.output,
+      );
+      return;
+    }
+    final output = request?['output'];
+    if (output is! Map) return;
     _openFlash(
       FlashTarget(
         job: job,
         store: Map<String, Object?>.from(output),
-        selection: Map<String, Object?>.from(selection),
-        label: summary == null
-            ? '$device / $kind'
-            : '${summary['device'] ?? device} / '
-                  '${summary['kind'] ?? kind}',
+        selection: selectionMap,
+        label: label,
       ),
       back: AppPage.output,
     );
@@ -180,9 +204,17 @@ class _AppShellState extends State<AppShell> {
 
   String? get _flashUnavailable {
     if (_build.result == null) return 'Build a package before flashing it.';
-    if (_build.request?['selection'] is! Map ||
-        _build.request?['output'] is! Map) {
-      return 'The build request has no store or selection to reopen.';
+    if (_build.request?['selection'] is! Map) {
+      return 'The build request has no selection to reopen.';
+    }
+    if (_build.result?['hosted'] == true) {
+      final sha256 = _build.result?['sha256'];
+      final bytes = _build.result?['bytes'];
+      if (sha256 is! String || bytes is! num) {
+        return 'The hosted result has no digest and length to flash.';
+      }
+    } else if (_build.request?['output'] is! Map) {
+      return 'The build request has no store to reopen.';
     }
     if (!widget.environment.has('usb.web')) {
       return 'This browser context reports no WebUSB support (usb.web). '
@@ -345,11 +377,14 @@ class _AppShellState extends State<AppShell> {
   Widget _pageView() {
     return switch (_page) {
       AppPage.setup => SetupPage(setup: _setup, onBuild: _startBuild),
-      AppPage.output => BuildOutputPage(
-        controller: _build,
-        onBack: () => _navigate(AppPage.setup),
-        onFlash: _flashUnavailable == null ? _flashBuiltPackage : null,
-        flashUnavailable: _flashUnavailable,
+      AppPage.output => AnimatedBuilder(
+        animation: _build,
+        builder: (context, _) => BuildOutputPage(
+          controller: _build,
+          onBack: () => _navigate(AppPage.setup),
+          onFlash: _flashUnavailable == null ? _flashBuiltPackage : null,
+          flashUnavailable: _flashUnavailable,
+        ),
       ),
       AppPage.flash => FlashPage(
         controller: _flash!,

@@ -2,11 +2,34 @@
 
 A browser port of [koaaN/Flasher_Builder](https://github.com/koaaN/Flasher_Builder):
 choose a device, flasher type and region, provide a full OTA, and build the
-same flasher package the desktop app builds — in the tab, with no server-side
-build. Upstream stays the source of truth for the device tables, flasher
-templates, Platform-Tools and the bloat manifest; this app pins a commit of it.
+same flasher package the desktop app builds either locally or with the optional
+hosted catalog builder. Upstream stays the source of truth for the device
+tables, flasher templates, Platform-Tools and the pinned bloat manifest.
 Finished jobs can then be flashed from the browser or CLI under the same
 read-only preparation, confirmation and receipt rules.
+
+## Hosted build and cache policy
+
+The operator hosts builds and caches catalog OTAs, verified bloat images and
+finished ZIPs. Users cannot upload ZIPs or supply arbitrary fetch URLs. Only
+approved catalog releases and allowlisted OTA origins are accepted. Catalog
+OTAs are retained for a configurable 4–6 months since last use; completed ZIPs
+are reused when their complete input identity matches and their expiry is
+extended on use. Bloat is verified against the pinned manifest. A disk budget
+can require earlier eviction; active builds and transfers pin their inputs.
+
+Builds use isolated temporary workspaces with bounded CPU and concurrency;
+identical in-flight requests share a build. Publish artifacts only after they
+finish and are hashed. Cache identity includes OTA content, selection,
+upstream revision, verified bloat and every output-affecting option. The site
+offers ZIP download or range-based browser flashing of the hosted artifact.
+USB stays on the user's machine and still requires the exact-serial
+confirmation and receipt flow. The Cloudflare Worker proxies to a separate
+persistent service; it does not provide the build workspace itself.
+CPU utilization uses a delegated cgroup v2 `cpu.max`; the server refuses to
+start without it. The workspace monitor and per-file limit are not a strict
+total filesystem quota: public deployments need a dedicated quota-limited
+filesystem and edge request-rate limits.
 
 ## Pieces
 
@@ -19,6 +42,7 @@ read-only preparation, confirmation and receipt rules.
 | Core | `core/` (pure Dart) | Upstream tables and selection rules, storage interfaces, the build pipeline, flash plans, read-only preparation and execution as services/streams, catalog client, bloat materializer. Drives I/O and calls Rust. |
 | CLI | `cli/` | `flasher_web build …`, `inspect`, `bloat`, `devices`, `flash`, `facts` and `serve`, running the same service natively (dart:io + the native library). |
 | App | `app/` (Flutter web) | The build and flash UI. The page owns permission choosers; the service runs in a Squadron Web Worker. |
+| Hosted builder | `hosted/` | Private Linux service: catalog-only jobs, isolated native builds, persistent verified OTA/bloat/ZIP caches, range delivery and retention leases. |
 | Edge worker | `worker/` (Cloudflare Workers) | Serves `app/build/web` and the same-origin `/api/*` routes the browser cannot do itself (CORS). Local: `wrangler dev`. |
 | Upstream sync | `tool/sync_upstream.dart` | Fetches the pinned upstream commit and writes `app/web/upstream/` (gitignored). |
 
@@ -41,6 +65,7 @@ Pinned in `upstream.lock` (repository + commit). Produced by `dart run tool/sync
 | `POST /api/resolve` body = catalog release entry JSON | Port of `ota_catalog.resolve_link`; returns `{"url": "..."}` (a fresh signed link). Never cached or logged. |
 | `GET /api/ota?u=<url>` | Range proxy for a resolved OTA link. Allowlisted hosts only (`*.allawnofs.com`, `*.allawnos.com`, `roms.danielspringer.at/download.php`, `*.oneplus.com`, `*.oppo.com`, `*.coloros.com`); `Range` required; passes 206/Content-Range/Content-Length; adds upstream's OTA request headers. |
 | `GET /api/bloat/<asset_name>` | Proxy `https://github.com/koaaN/Flasher_Builder/releases/download/bloat-assets-v1/<asset_name>` (following the redirect); `Range` passed through. Asset names validated against `[A-Za-z0-9._-]+`. |
+| `/api/hosted/jobs` and `/api/hosted/jobs/<id>/…` | Authenticated edge-to-origin proxy for catalog-only jobs, metadata, manifest, ZIP ranges and bounded flash leases. Returns 503 if the operator has not configured the origin and secret. |
 
 The worker never sees OTA or bloat bytes at rest; it streams them.
 

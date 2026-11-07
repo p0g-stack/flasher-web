@@ -76,6 +76,16 @@ Request:
  "answers": {promptId: choice}?, "upstreamBase": String}
 ```
 
+For a hosted ZIP, omit `output` and supply
+`"hosted": {"jobId": String, "sha256": String, "bytes": int}` with `job`
+equal to `jobId`. The worker constructs same-origin URLs from the validated
+capability ID; it never accepts a caller-supplied artifact URL. The hosted
+manifest and ZIP are read through bounded ranges pinned to the artifact's
+strong SHA-256 ETag. A renewable, bounded lease prevents cache eviction during
+preparation and execution; expiry or failed renewal stops further device
+commands and reads. Hosted receipts are returned to the page for download
+rather than written into a local job store.
+
 The call is read-only: it opens the granted device with the exact serial for
 `getvar` reads, checks product, mode and `max-download-size`, and, once the
 plan is resolved, inspects every image a `Flash` step would send. It sends no

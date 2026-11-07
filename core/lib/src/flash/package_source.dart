@@ -86,6 +86,30 @@ Future<FlashPackage> openFlashPackage(
   throw FlashException('build.json has an unknown output_format: $format');
 }
 
+/// Reads a ZIP's central directory from [source], without extracting entries.
+///
+/// The source is read, not closed: the caller owns it.
+Future<Map<String, rust_zip.ZipEntry>> parseZipEntries(ByteSource source) async {
+  final length = source.length;
+  final tailLength = math.min(length, 128 * 1024);
+  final tail = await source.read(length - tailLength, tailLength);
+  final directory = rust_zip.zipEntries(
+    tail: tail,
+    fileLen: BigInt.from(length),
+  );
+  List<rust_zip.ZipEntry> parsed = directory.entries;
+  final needs = directory.needs;
+  if (needs != null) {
+    final (offset, size) = needs;
+    final cd = await source.read(offset.toInt(), size.toInt());
+    parsed = rust_zip.zipParseCentral(cd: cd);
+  }
+  return {
+    for (final entry in parsed)
+      if (!entry.name.endsWith('/')) entry.name: entry,
+  };
+}
+
 /// Reads `job/build.json` with a small bound.
 Future<Map<String, Object?>> readJobManifest(
   Workspace workspace,
@@ -269,26 +293,9 @@ final class ZipFlashPackage implements FlashPackage {
       );
     }
     final source = await workspace.open(archivePath);
-    var entries = <String, rust_zip.ZipEntry>{};
+    final Map<String, rust_zip.ZipEntry> entries;
     try {
-      final length = source.length;
-      final tailLength = math.min(length, 128 * 1024);
-      final tail = await source.read(length - tailLength, tailLength);
-      final directory = rust_zip.zipEntries(
-        tail: tail,
-        fileLen: BigInt.from(length),
-      );
-      List<rust_zip.ZipEntry> parsed = directory.entries;
-      final needs = directory.needs;
-      if (needs != null) {
-        final (offset, size) = needs;
-        final cd = await source.read(offset.toInt(), size.toInt());
-        parsed = rust_zip.zipParseCentral(cd: cd);
-      }
-      entries = {
-        for (final entry in parsed)
-          if (!entry.name.endsWith('/')) entry.name: entry,
-      };
+      entries = await parseZipEntries(source);
     } finally {
       await closeByteSource(source);
     }
@@ -338,9 +345,9 @@ final class ZipFlashPackage implements FlashPackage {
             localHeaderOffset: entry.localHeaderOffset,
           )
           .toInt();
-      return _ZipEntrySource(
-        workspace: _workspace,
-        archivePath: _archivePath,
+      return ZipEntrySource(
+        openArchive: () => _workspace.open(_archivePath),
+        closeArchive: true,
         dataOffset: dataOffset,
         compressedSize: entry.compressedSize.toInt(),
         length: entry.uncompressedSize.toInt(),
@@ -371,10 +378,10 @@ final class ZipFlashPackage implements FlashPackage {
   }
 }
 
-final class _ZipEntrySource implements FlashSource {
-  _ZipEntrySource({
-    required this.workspace,
-    required this.archivePath,
+final class ZipEntrySource implements FlashSource {
+  ZipEntrySource({
+    required this.openArchive,
+    required this.closeArchive,
     required this.dataOffset,
     required this.compressedSize,
     required this.length,
@@ -382,8 +389,12 @@ final class _ZipEntrySource implements FlashSource {
     required this.method,
   });
 
-  final Workspace workspace;
-  final String archivePath;
+  /// Opens the archive for one read or stream. The opener owns sharing: a
+  /// local workspace returns a fresh handle; a hosted source returns the one
+  /// pinned range source.
+  final Future<ByteSource> Function() openArchive;
+  /// Whether each opened source is single-use and must be closed.
+  final bool closeArchive;
   final int dataOffset;
   final int compressedSize;
   final int crc32;
@@ -392,7 +403,11 @@ final class _ZipEntrySource implements FlashSource {
   @override
   final int length;
 
-  Future<ByteSource> _openArchive() => workspace.open(archivePath);
+  Future<ByteSource> _openArchive() => openArchive();
+
+  Future<void> _closeArchive(ByteSource source) async {
+    if (closeArchive) await closeByteSource(source);
+  }
 
   @override
   Future<Uint8List> read(int offset, int length) async {
@@ -409,7 +424,7 @@ final class _ZipEntrySource implements FlashSource {
       try {
         return await archive.read(dataOffset + offset, length);
       } finally {
-        await closeByteSource(archive);
+        await _closeArchive(archive);
       }
     }
     // A small header read. The stream is still bounded; callers that need
@@ -503,13 +518,12 @@ final class _ZipEntrySource implements FlashSource {
         }
       }
     } finally {
-      await closeByteSource(archive);
+      await _closeArchive(archive);
     }
   }
 
   @override
   Future<FlashCursor> cursor() async => _ZipCursor(this);
-
   @override
   Future<void> close() async {}
 }
@@ -517,7 +531,7 @@ final class _ZipEntrySource implements FlashSource {
 final class _ZipCursor implements FlashCursor {
   _ZipCursor(this._source);
 
-  final _ZipEntrySource _source;
+  final ZipEntrySource _source;
   StreamIterator<Uint8List>? _iterator;
   Uint8List _current = Uint8List(0);
   var _currentOffset = 0;

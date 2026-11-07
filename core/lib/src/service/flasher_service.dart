@@ -14,6 +14,7 @@ import '../catalog/catalog_client.dart';
 import '../catalog/http_transport.dart';
 import '../facts/facts.dart';
 import '../flash/executor.dart';
+import '../flash/hosted.dart';
 import '../flash/identity.dart';
 import '../flash/model.dart' as flash_model;
 import '../flash/package_source.dart';
@@ -247,70 +248,103 @@ base class FlasherService {
         _stringArg(selectionMap, 'kind', 'selection'),
         _stringArg(selectionMap, 'region', 'selection'),
       );
+      final hosted = _hostedArg(req);
       final output = req['output'];
-      if (output is! Map) throw const BuildException('Missing output store.');
-      final workspace = await _openStoreWorkspace(output);
-      final rawJob = req['job'];
-      if (rawJob is! String || rawJob.isEmpty) {
-        throw const BuildException('Missing job directory.');
+      late final FlashPackage package;
+      HostedFlashSession? hostedSession;
+      final String job;
+      final String storeKey;
+      if (hosted != null) {
+        job = hosted.jobId;
+        storeKey = _hostedStoreKey(hosted);
+      } else {
+        if (output is! Map) {
+          throw const BuildException('Missing output store.');
+        }
+        final rawJob = req['job'];
+        if (rawJob is! String || rawJob.isEmpty) {
+          throw const BuildException('Missing job directory.');
+        }
+        job = normalizeWorkspacePath(rawJob);
+        storeKey = _storeKey(output);
       }
-      final job = normalizeWorkspacePath(rawJob);
-      final storeKey = _storeKey(output);
       final lockKey = '$storeKey|$job';
       if (_jobLocks.containsKey(lockKey)) {
         throw const flash_model.FlashException('This job is being flashed.');
       }
-      final buildJson = await readJobManifest(workspace, job);
-      final package = await openFlashPackage(workspace, job, buildJson);
       final serial = req['serial'];
       if (serial is! String || serial.trim().isEmpty) {
         throw const BuildException('Choose a fastboot device serial.');
       }
       final answers = _flashAnswers(req['answers']);
-      if (deviceIdentities[selection.dev]?.product == null &&
-          (answers['product'] ?? '').trim().isEmpty) {
-        final device = await nativeFastbootTransport().open(serial);
-        try {
-          if (device.serial != serial) {
-            throw const flash_model.FlashException(
-              'The connected serial changed.',
-            );
+      if (hosted != null) {
+        hostedSession = await HostedFlashSession.open(artifact: hosted);
+        package = hostedSession.package;
+      }
+      try {
+        // A hosted preparation also needs the lease guard: every getvar and
+        // partition read below happens only while the server-side job is
+        // pinned, and a lost lease aborts before the next command.
+        final transport = hostedSession != null
+            ? hostedSession.guardedTransport(nativeFastbootTransport())
+            : nativeFastbootTransport();
+        if (deviceIdentities[selection.dev]?.product == null &&
+            (answers['product'] ?? '').trim().isEmpty) {
+          final device = await transport.open(serial);
+          try {
+            if (device.serial != serial) {
+              throw const flash_model.FlashException(
+                'The connected serial changed.',
+              );
+            }
+            final product = await flash_prepare.readProduct(device);
+            return {
+              'productRequired': true,
+              'serial': serial,
+              'observedProduct': product,
+              'message':
+                  'Connected product: $product. No confirmed product mapping '
+                  'exists for ${selection.device}. Check the selected model, then '
+                  'type the product explicitly to continue.',
+            };
+          } finally {
+            await device.close();
           }
-          final product = await flash_prepare.readProduct(device);
-          return {
-            'productRequired': true,
-            'serial': serial,
-            'observedProduct': product,
-            'message':
-                'Connected product: $product. No confirmed product mapping '
-                'exists for ${selection.device}. Check the selected model, then '
-                'type the product explicitly to continue.',
-          };
-        } finally {
-          await device.close();
         }
-      }
-      final token = _newToken();
-      final prepared = await flash_prepare.prepareFlash(
-        package: package,
-        selection: selection,
-        answers: answers,
-        serial: serial,
-        transport: nativeFastbootTransport(),
-        job: job,
-        upstreamBase: req['upstreamBase'] as String? ?? '',
-        storeKey: storeKey,
-        token: token,
-      );
-      if (prepared.resolved) {
-        _prepared.removeWhere((_, entry) => entry.lockKey == lockKey);
-        _prepared[token] = _PreparedEntry(
-          prepared,
-          lockKey,
-          Map<String, Object?>.unmodifiable(output),
+        if (hosted == null) {
+          final workspace = await _openStoreWorkspace(output);
+          final buildJson = await readJobManifest(workspace, job);
+          package = await openFlashPackage(workspace, job, buildJson);
+        }
+        final token = _newToken();
+        final prepared = await flash_prepare.prepareFlash(
+          package: package,
+          selection: selection,
+          answers: answers,
+          serial: serial,
+          transport: transport,
+          job: job,
+          upstreamBase: req['upstreamBase'] as String? ?? '',
+          storeKey: storeKey,
+          token: token,
         );
+        if (prepared.resolved) {
+          _prepared.removeWhere((_, entry) => entry.lockKey == lockKey);
+          _prepared[token] = _PreparedEntry(
+            prepared,
+            lockKey,
+            hosted == null
+                ? Map<String, Object?>.unmodifiable(
+                    Map<String, Object?>.from(output! as Map),
+                  )
+                : null,
+            hosted,
+          );
+        }
+        return prepared.toMap();
+      } finally {
+        await hostedSession?.close();
       }
-      return prepared.toMap();
     } on LinkFailure catch (error) {
       return {'error': error.toMap()};
     } on flash_model.FlashException catch (error, stack) {
@@ -334,10 +368,11 @@ base class FlasherService {
 }
 
 final class _PreparedEntry {
-  const _PreparedEntry(this.prepared, this.lockKey, this.store);
+  const _PreparedEntry(this.prepared, this.lockKey, this.store, this.hosted);
   final flash_prepare.PreparedFlash prepared;
   final String lockKey;
-  final Map<String, Object?> store;
+  final Map<String, Object?>? store;
+  final HostedArtifact? hosted;
 }
 
 final class _FlashRun {
@@ -362,6 +397,8 @@ final class _FlashRun {
     if (_cancelled) {
       cancellation.cancel('cancelled before preparation completed');
     }
+    HostedArtifact? hosted;
+    HostedFlashSession? session;
     try {
       final token = _req['confirmationToken'];
       if (token is! String || token.isEmpty) {
@@ -376,9 +413,27 @@ final class _FlashRun {
           'Prepare again.',
         );
       }
-      final storeKey = _storeKey(_req['output']);
+      hosted = _hostedArg(_req);
+      if (entry.hosted != null &&
+          (hosted == null || !entry.hosted!.sameIdentity(hosted))) {
+        throw const flash_model.FlashException(
+          'The flash request names a different hosted artifact than the '
+          'confirmed plan. Prepare again.',
+        );
+      }
+      if (entry.hosted == null && hosted != null) {
+        throw const flash_model.FlashException(
+          'The confirmed plan is a local job, not a hosted artifact. '
+          'Prepare again.',
+        );
+      }
+      final storeKey = hosted != null
+          ? _hostedStoreKey(hosted)
+          : _storeKey(_req['output']);
       final rawJob = _req['job'];
-      final job = rawJob is String ? normalizeWorkspacePath(rawJob) : '';
+      final job = hosted != null
+          ? hosted.jobId
+          : (rawJob is String ? normalizeWorkspacePath(rawJob) : '');
       final bound = <String, Object?>{..._req, 'job': job};
       if (!entry.prepared.binding.matches(bound, storeKey: storeKey)) {
         throw const flash_model.FlashException(
@@ -386,53 +441,92 @@ final class _FlashRun {
           'Prepare again.',
         );
       }
-      final output = _req['output'];
-      if (output is! Map) throw const BuildException('Missing output store.');
-      if (!await sameFlashStore(
-        entry.store,
-        Map<String, Object?>.from(output),
-      )) {
-        throw const flash_model.FlashException(
-          'The output folder changed. Prepare again.',
+      Workspace? workspace;
+      final FlashPackage currentPackage;
+      if (hosted != null) {
+        if (_req['output'] != null) {
+          throw const flash_model.FlashException(
+            'A hosted flash cannot name a local output store.',
+          );
+        }
+        session = await HostedFlashSession.open(artifact: hosted);
+        currentPackage = session.package;
+      } else {
+        final output = _req['output'];
+        if (output is! Map) throw const BuildException('Missing output store.');
+        final store = entry.store;
+        if (store == null ||
+            !await sameFlashStore(store, Map<String, Object?>.from(output))) {
+          throw const flash_model.FlashException(
+            'The output folder changed. Prepare again.',
+          );
+        }
+        workspace = await _openStoreWorkspace(output);
+        final manifest = await readJobManifest(workspace, job);
+        currentPackage = await openFlashPackage(workspace, job, manifest);
+      }
+      try {
+        final digest = await flash_prepare.packageDigest(currentPackage);
+        if (digest != entry.prepared.binding.packageDigest) {
+          throw const flash_model.FlashException(
+            'The job or its images changed after preparation. Prepare again.',
+          );
+        }
+        // Every byte the plan will write is read and hashed through the
+        // pinned hosted source before the first device command.
+        await flash_prepare.verifyPreparedImages(
+          entry.prepared,
+          package: currentPackage,
         );
-      }
-      final workspace = await _openStoreWorkspace(output);
-      final manifest = await readJobManifest(workspace, job);
-      final currentPackage = await openFlashPackage(workspace, job, manifest);
-      final digest = await flash_prepare.packageDigest(currentPackage);
-      if (digest != entry.prepared.binding.packageDigest) {
-        throw const flash_model.FlashException(
-          'The job or its images changed after preparation. Prepare again.',
+        final runPrepared = hosted != null
+            ? entry.prepared.withPackage(currentPackage)
+            : entry.prepared;
+        if (_service._jobLocks.containsKey(entry.lockKey)) {
+          throw const flash_model.FlashException(
+            'This job is already being flashed.',
+          );
+        }
+        _service._jobLocks[entry.lockKey] = token;
+        _lockKey = entry.lockKey;
+        if (_cancelled) {
+          cancellation.cancel('cancelled while checking the package');
+        }
+        final flashTransport = session != null
+            ? session.guardedTransport(nativeFastbootTransport())
+            : nativeFastbootTransport();
+        final receipt = await applyConfirmedFlash(
+          runPrepared,
+          flashTransport,
+          await PlaceInfo.current(),
+          emit: _emit,
+          cancellation: cancellation,
         );
+        if (hosted != null) {
+          // A hosted job has no local directory to persist into. The receipt
+          // is returned in full; the page downloads it.
+          receipt['hosted'] = hosted.toMap();
+          receipt['persistenceWarnings'] = <String>[];
+          if (session!.leaseLost) {
+            receipt['persistenceWarnings'] = [
+              'The hosted retention lease was lost while flashing. The '
+                  'returned receipt is the only copy.',
+            ];
+          }
+        } else {
+          receipt['persistenceWarnings'] = await _persistReceipt(
+            workspace!,
+            entry.prepared.job,
+            receipt,
+          );
+        }
+        _emit({
+          'type': 'result',
+          'status': receipt['status'],
+          'receipt': receipt,
+        });
+      } finally {
+        await session?.close();
       }
-      await flash_prepare.verifyPreparedImages(entry.prepared);
-      if (_service._jobLocks.containsKey(entry.lockKey)) {
-        throw const flash_model.FlashException(
-          'This job is already being flashed.',
-        );
-      }
-      _service._jobLocks[entry.lockKey] = token;
-      _lockKey = entry.lockKey;
-      if (_cancelled) {
-        cancellation.cancel('cancelled while checking the package');
-      }
-      final receipt = await applyConfirmedFlash(
-        entry.prepared,
-        nativeFastbootTransport(),
-        await PlaceInfo.current(),
-        emit: _emit,
-        cancellation: cancellation,
-      );
-      receipt['persistenceWarnings'] = await _persistReceipt(
-        workspace,
-        entry.prepared.job,
-        receipt,
-      );
-      _emit({
-        'type': 'result',
-        'status': receipt['status'],
-        'receipt': receipt,
-      });
     } on LinkFailure catch (error) {
       _emit({
         'type': 'result',
@@ -442,6 +536,7 @@ final class _FlashRun {
           'status': 'failed',
           'serial': _req['serial'],
           'job': _req['job'],
+          if (hosted != null) 'hosted': hosted.toMap(),
           'writes': <Map<String, Object?>>[],
           'steps': <Map<String, Object?>>[],
           'verification': {'status': 'not-run'},
@@ -532,6 +627,21 @@ String _storeKey(Object? value) {
   if (value['handle'] != null) return '$kind|handle';
   return kind;
 }
+
+/// A hosted request names exactly one immutable artifact; a local store and
+/// a hosted artifact cannot be mixed.
+HostedArtifact? _hostedArg(Map<String, Object?> req) {
+  final hosted = HostedArtifact.tryParse(req['hosted']);
+  if (hosted != null && req['output'] != null) {
+    throw const flash_model.FlashException(
+      'A hosted flash cannot name a local output store.',
+    );
+  }
+  return hosted;
+}
+
+String _hostedStoreKey(HostedArtifact artifact) =>
+    'hosted|${artifact.jobId}|${artifact.sha256}|${artifact.bytes}';
 
 Map<String, String> _flashAnswers(Object? value) {
   if (value == null) return const {};

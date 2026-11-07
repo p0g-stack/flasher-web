@@ -121,6 +121,31 @@ final class PreparedFlash {
 
   bool get resolved => plan.isResolved;
 
+  /// Returns the same confirmed ticket, but reads images through [package].
+  ///
+  /// A hosted preparation releases its server-side range source when it
+  /// returns, so execution reopens the pinned artifact and swaps the package
+  /// in without changing the token or any confirmed input.
+  PreparedFlash withPackage(FlashPackage package) => PreparedFlash(
+    token: token,
+    serial: serial,
+    product: product,
+    expectedProduct: expectedProduct,
+    mode: mode,
+    maxDownloadSize: maxDownloadSize,
+    selection: selection,
+    answers: answers,
+    job: job,
+    format: format,
+    version: version,
+    plan: plan,
+    package: package,
+    images: images,
+    binding: binding,
+    createdAt: createdAt,
+    warnings: warnings,
+  );
+
   bool get modeOk => mode == FlashMode.bootloader;
 
   List<FlashPromptInfo> get prompts => [
@@ -396,9 +421,13 @@ Future<PreparedFlash> prepareFlash({
 /// Re-inspects every image the ticket names. The service calls this
 /// immediately before a write, so a package changed after preparation is
 /// refused even when its file sizes stayed the same.
-Future<void> verifyPreparedImages(PreparedFlash prepared) async {
+Future<void> verifyPreparedImages(
+  PreparedFlash prepared, {
+  FlashPackage? package,
+}) async {
+  final current = package ?? prepared.package;
   for (final info in prepared.images.values) {
-    final source = await prepared.package.open(info.path);
+    final source = await current.open(info.path);
     try {
       if (source.length != info.bytes) {
         throw FlashException(

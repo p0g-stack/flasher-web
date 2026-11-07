@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../format.dart';
 import '../widgets/common.dart';
 import 'build_controller.dart';
 
@@ -143,12 +144,22 @@ class _StatusCard extends StatelessWidget {
   String get _title => switch (controller.phase) {
     BuildPhase.idle => 'Ready when you are',
     BuildPhase.running =>
-      controller.stepTitle.isEmpty
+      controller.hosted
+          ? controller.stepTitle.isEmpty
+                ? controller.hostedStatusText
+                : '${controller.hostedStatusText} · ${controller.stepTitle}'
+          : controller.stepTitle.isEmpty
           ? 'Preparing your build'
           : controller.stepTitle,
-    BuildPhase.succeeded => 'Package complete · ready in your output folder',
+    BuildPhase.succeeded =>
+      controller.hosted
+          ? 'Hosted package ready · download or flash it'
+          : 'Package complete · ready in your output folder',
     BuildPhase.failed => 'Build failed · see output below',
-    BuildPhase.canceled => 'Build cancelled · output cleaned',
+    BuildPhase.canceled =>
+      controller.hosted
+          ? 'Stopped waiting · the server job continues'
+          : 'Build cancelled · output cleaned',
   };
 
   @override
@@ -183,7 +194,12 @@ class _StatusCard extends StatelessWidget {
             value: switch (controller.phase) {
               BuildPhase.idle => 0,
               BuildPhase.running =>
-                controller.stepIndex / controller.totalSteps,
+                controller.totalSteps <= 0
+                    ? 0.0
+                    : (controller.stepIndex / controller.totalSteps).clamp(
+                        0.0,
+                        1.0,
+                      ),
               BuildPhase.succeeded => 1,
               BuildPhase.failed || BuildPhase.canceled => 0,
             },
@@ -392,10 +408,13 @@ class _ResultCard extends StatelessWidget {
         ? Map<String, Object?>.from(result['manifest']! as Map)
         : const <String, Object?>{};
     final arb = manifest['arb'] ?? result['arb'];
+    final hosted = result['hosted'] == true;
     final format = '${result['format'] ?? 'zip'}';
     final artifact = '${result['artifact'] ?? ''}';
     final job = '${result['job'] ?? ''}';
     final sha = result['sha256'];
+    final bytes = result['bytes'];
+    final cache = controller.cacheText;
     return SectionCard(
       key: const ValueKey('buildResult'),
       title: 'Result',
@@ -408,8 +427,13 @@ class _ResultCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           LabeledValue(label: 'Artifact', value: artifact),
-          LabeledValue(label: 'Format', value: format),
+          LabeledValue(
+            label: 'Format',
+            value: hosted ? 'Hosted ZIP' : format,
+          ),
           LabeledValue(label: 'Job', value: job),
+          if (bytes is num)
+            LabeledValue(label: 'Size', value: formatBytes(bytes.toInt())),
           if (arb is Map)
             LabeledValue(
               label: 'ARB index',
@@ -421,19 +445,34 @@ class _ResultCard extends StatelessWidget {
             LabeledValue(label: 'ARB index', value: '$arb'),
           if (sha is String)
             LabeledValue(label: 'SHA-256', value: sha, monospace: true),
+          if (cache != null) ...[
+            const SizedBox(height: 4),
+            HintText(cache),
+          ],
           const SizedBox(height: 10),
           if (format == 'zip')
             FilledButton.icon(
               key: const ValueKey('downloadZip'),
               onPressed: () => _download(context),
               icon: const Icon(Icons.download, size: 18),
-              label: const Text('Download ZIP'),
+              label: Text(
+                hosted ? 'Download hosted ZIP' : 'Download ZIP',
+              ),
             )
           else
             HintText(
               'This build kept a flasher folder in the chosen output store. '
               'Folder builds are not a single download.',
             ),
+          if (hosted) ...[
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              key: const ValueKey('openManifest'),
+              onPressed: () => _openManifest(context),
+              icon: const Icon(Icons.description_outlined, size: 18),
+              label: const Text('Open build.json'),
+            ),
+          ],
           const SizedBox(height: 10),
           FilledButton.tonalIcon(
             key: const ValueKey('flashBuild'),
@@ -447,9 +486,14 @@ class _ResultCard extends StatelessWidget {
           ],
           const SizedBox(height: 6),
           HintText(
-            'The package and build.json are in $job in the selected store. '
-            'Flashing reopens this job through the service, including ZIP '
-            'builds; no temporary stage path is needed.',
+            hosted
+                ? 'Hosted job $job stays on the server. The ZIP and build.json '
+                      'are served same-origin; flashing reads the exact '
+                      'digest and length by ranges.'
+                : 'The package and build.json are in $job in the selected '
+                      'store. Flashing reopens this job through the service, '
+                      'including ZIP builds; no temporary stage path is '
+                      'needed.',
           ),
         ],
       ),
@@ -458,6 +502,13 @@ class _ResultCard extends StatelessWidget {
 
   Future<void> _download(BuildContext context) async {
     final message = await controller.downloadArtifact();
+    if (!context.mounted || message == null) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _openManifest(BuildContext context) async {
+    final message = await controller.openManifest();
     if (!context.mounted || message == null) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));

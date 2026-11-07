@@ -14,6 +14,7 @@ dependencies:
   material_ui: ^1.0.0
   squadron: ^7.4.4
   web: ^1.1.0
+  http: ^1.6.0
   flasher_web_core: any
 
 dev_dependencies:

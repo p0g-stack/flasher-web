@@ -67,6 +67,7 @@ final class SetupState extends ChangeNotifier {
   bool? _vulnerableAbl;
 
   OtaMode _otaMode = OtaMode.localFile;
+  bool _hostedBuild = false;
 
   StoreChoice _bloatStore = const StoreChoice.browser();
   StoreChoice _outputStore = const StoreChoice.browser();
@@ -107,6 +108,17 @@ final class SetupState extends ChangeNotifier {
   bool get zipOutput => _zipOutput;
   bool? get vulnerableAbl => _vulnerableAbl;
   OtaMode get otaMode => _otaMode;
+  bool get hostedBuild => _hostedBuild;
+
+  /// Hosted builds exist only for catalog sources with mapped releases.
+  bool get hostedAvailable {
+    if (_otaMode != OtaMode.catalog || !selectionValid) return false;
+    try {
+      return otaCatalogTargets(_device, _kind, _region).isNotEmpty;
+    } on CatalogException {
+      return false;
+    }
+  }
   StoreChoice get bloatStore => _bloatStore;
   StoreChoice get outputStore => _outputStore;
   bool get pickerAvailable =>
@@ -173,6 +185,10 @@ final class SetupState extends ChangeNotifier {
   }
 
   String get sourceHint {
+    if (_hostedBuild) {
+      return 'The server builds from these catalog release IDs. No local file '
+          'or custom URL is uploaded.';
+    }
     if (needsMatchedOdm) {
       return 'Only odm.img is streamed; the donor must have the same '
           'security patch.';
@@ -248,14 +264,36 @@ final class SetupState extends ChangeNotifier {
   void setOtaMode(OtaMode mode) {
     if (_otaMode == mode) return;
     _otaMode = mode;
+    if (mode != OtaMode.catalog) _hostedBuild = false;
     _notify();
     if (mode == OtaMode.catalog && _catalogData == null && !_catalogLoading) {
       unawaited(fetchCatalog());
     }
   }
 
+  /// Selects server-side building for catalog releases only.
+  ///
+  /// A local file or URL source can never turn this on; switching back to a
+  /// local file clears it so no stale hosted choice survives.
+  void setHostedBuild(bool value) {
+    if (value) {
+      if (!hostedAvailable) return;
+      if (_hostedBuild) return;
+      _hostedBuild = true;
+      _notify();
+      if (_catalogData == null && !_catalogLoading) {
+        unawaited(fetchCatalog());
+      }
+      return;
+    }
+    if (!_hostedBuild) return;
+    _hostedBuild = false;
+    _notify();
+  }
+
   void _afterSelectionChange() {
     _populateCatalog();
+    if (_hostedBuild && !hostedAvailable) _hostedBuild = false;
     _notify();
     _savePreferences();
     unawaited(refreshBloat());
@@ -482,6 +520,7 @@ final class SetupState extends ChangeNotifier {
     if (_otaMode != OtaMode.localFile) {
       _otaMode = OtaMode.localFile;
     }
+    _hostedBuild = false;
     _notify();
     await _inspect(role);
   }
@@ -690,8 +729,12 @@ final class SetupState extends ChangeNotifier {
     'kind': _kind,
     'os': osName,
     'region': regionDisplay,
-    'format': _zipOutput ? 'ZIP + SHA-256' : 'Flasher folder',
-    'engine': environment.native ? 'Rust / WebAssembly' : 'Dart worker',
+    'format': _hostedBuild
+        ? 'Hosted ZIP + SHA-256'
+        : (_zipOutput ? 'ZIP + SHA-256' : 'Flasher folder'),
+    'engine': _hostedBuild
+        ? 'Hosted builder'
+        : (environment.native ? 'Rust / WebAssembly' : 'Dart worker'),
     'version': selectedVersion ?? '—',
   };
 
@@ -771,13 +814,38 @@ final class SetupState extends ChangeNotifier {
 
   // ------------------------------------------------------------------ gating
 
-  /// Port of upstream `build_requirements_error`.
+  /// Port of upstream `build_requirements_error`, plus the hosted rules.
   String get buildRequirementsError {
     if (!selectionValid) {
       return 'Choose a supported device, flasher type and region.';
     }
     if (isX9U && _vulnerableAbl == null) {
       return 'Step 4: choose Yes or No for vulnerable ABL before building.';
+    }
+    if (_hostedBuild) {
+      if (_otaMode != OtaMode.catalog) {
+        return 'Hosted builds require Version catalog as the OTA source.';
+      }
+      final roles = _targets.keys.toList();
+      if (roles.isEmpty) {
+        return 'This device has no catalog target for a hosted build.';
+      }
+      for (final role in roles) {
+        final entry = _selectedReleases[role];
+        final id = entry?['id'];
+        if (id is! String || id.isEmpty) {
+          final title = role == 'ota' ? 'TARGET' : 'BASE';
+          return 'Select a full $title OTA catalog version for the hosted '
+              'build.';
+        }
+      }
+      if (needsMatchedOdm) {
+        if (_selectedReleases['ota'] == null) {
+          return 'Select a target OTA with a matching Ace 6T security patch.';
+        }
+        if (_odmError != null) return _odmError!;
+      }
+      return '';
     }
     if (!bloatReady) {
       return 'Required bloat files must be downloaded and verified before '
@@ -808,10 +876,37 @@ final class SetupState extends ChangeNotifier {
   }
 
   bool get canBuild =>
-      buildRequirementsError.isEmpty && !_bloatDownloading && !catalogLoading;
+      buildRequirementsError.isEmpty &&
+      (_hostedBuild || !_bloatDownloading) &&
+      !catalogLoading;
+
+  /// The catalog-only request sent to the hosted builder.
+  ///
+  /// Null unless hosted mode is valid; unknown fields, local files and URLs
+  /// are never included.
+  Map<String, Object?>? hostedBuildRequest() {
+    if (!_hostedBuild || !canBuild) return null;
+    final target = _selectedReleases['ota'];
+    final catalogId = target?['id'];
+    if (catalogId is! String || catalogId.isEmpty) return null;
+    String? baseCatalogId;
+    if (needsBase) {
+      final baseId = _selectedReleases['base']?['id'];
+      if (baseId is! String || baseId.isEmpty) return null;
+      baseCatalogId = baseId;
+    }
+    return {
+      'hosted': true,
+      'selection': selectionMap!,
+      'catalogId': catalogId,
+      'baseCatalogId': ?baseCatalogId,
+      if (isX9U && _vulnerableAbl != null) 'vulnerableAbl': _vulnerableAbl,
+    };
+  }
 
   Map<String, Object?>? buildRequest() {
     if (!canBuild) return null;
+    if (_hostedBuild) return hostedBuildRequest();
     final ota = otaInput('ota');
     if (ota == null) return null;
     final base = needsBase ? otaInput('base') : null;

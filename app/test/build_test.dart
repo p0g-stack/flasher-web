@@ -91,6 +91,78 @@ void main() {
     );
   });
 
+  testWidgets('flash becomes available when the build result arrives', (
+    tester,
+  ) async {
+    final harness = Harness();
+    harness.api.inspectResult = inspection();
+    final controller = StreamController<Map<String, Object?>>();
+    harness.api.buildStream = (_) => controller.stream;
+    addTearDown(controller.close);
+    await pumpApp(tester, harness: harness);
+    await pickOta(tester, harness);
+
+    await tester.ensureVisible(find.byKey(const ValueKey('buildButton')));
+    await tester.tap(find.byKey(const ValueKey('buildButton')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('buildResult')), findsNothing);
+
+    controller.add({
+      'type': 'result',
+      'job': '20260101-000000-abcdef',
+      'artifact': 'SuperHybrid Flasher 13 GLO CPH2647.zip',
+      'format': 'zip',
+      'sha256': 'abc123def456',
+      'manifest': const {'device': 'Oneplus 13'},
+    });
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('buildResult')), findsOneWidget);
+    expect(
+      find.text('Build a package before flashing it.'),
+      findsNothing,
+    );
+    final button = tester.widget<FilledButton>(
+      find.byKey(const ValueKey('flashBuild')),
+    );
+    expect(button.onPressed, isNotNull);
+  });
+
+  testWidgets('unsupported USB keeps flash disabled after a result', (
+    tester,
+  ) async {
+    final harness = Harness(
+      environment: testEnvironment(facts: const ['fs.opfs', 'net']),
+    );
+    harness.api.inspectResult = inspection();
+    harness.api.buildStream = (_) => Stream.fromIterable([
+      {
+        'type': 'result',
+        'job': '20260101-000000-abcdef',
+        'artifact': 'SuperHybrid Flasher 13 GLO CPH2647.zip',
+        'format': 'zip',
+        'sha256': 'abc123def456',
+        'manifest': const {'device': 'Oneplus 13'},
+      },
+    ]);
+    await pumpApp(tester, harness: harness);
+    await pickOta(tester, harness);
+
+    await tester.ensureVisible(find.byKey(const ValueKey('buildButton')));
+    await tester.tap(find.byKey(const ValueKey('buildButton')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('buildResult')), findsOneWidget);
+    expect(
+      find.textContaining('reports no WebUSB support'),
+      findsOneWidget,
+    );
+    final button = tester.widget<FilledButton>(
+      find.byKey(const ValueKey('flashBuild')),
+    );
+    expect(button.onPressed, isNull);
+  });
+
   testWidgets('cancel ends the subscription and releases the wake lock', (
     tester,
   ) async {
