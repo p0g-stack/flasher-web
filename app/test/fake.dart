@@ -10,10 +10,10 @@ import 'package:flasher_web_core/flasher_web_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// The six service methods, scripted per test.
+/// The service methods, scripted per test.
 final class FakeFlasherApi implements FlasherApi {
   Map<String, Object?> environmentResult = const {
-    'facts': ['fs.opfs', 'net'],
+    'facts': ['fs.opfs', 'net', 'usb.web'],
     'native': true,
     'upstream': 'abc123',
     'storage': {
@@ -38,14 +38,29 @@ final class FakeFlasherApi implements FlasherApi {
   Map<String, dynamic> catalog = const {'api_version': '1', 'releases': []};
 
   List<Map<String, Object?>> historyItems = const [];
+  List<Map<String, Object?>> fastbootDeviceItems = const [
+    {'serial': 'SERIAL123', 'label': 'Realme NEO8', 'transport': 'usb'},
+  ];
+
+  /// Overrides the whole `{devices, error}` response when set.
+  Map<String, Object?>? fastbootDevicesResponse;
 
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   buildStream;
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   bloatStream;
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
+  flashStream;
+
+  Map<String, Object?> Function(Map<String, Object?> request)?
+  prepareFlashResult;
 
   Map<String, Object?>? lastBloatRequest;
   Map<String, Object?>? lastBuildRequest;
+  Map<String, Object?>? lastPrepareRequest;
+  Map<String, Object?>? lastFlashRequest;
+  int prepareCalls = 0;
+  int flashCalls = 0;
   bool buildCanceled = false;
 
   @override
@@ -82,6 +97,30 @@ final class FakeFlasherApi implements FlasherApi {
   ) async => historyItems;
 
   @override
+  Future<Map<String, Object?>> fastbootDevices() async =>
+      fastbootDevicesResponse ?? {'devices': fastbootDeviceItems};
+
+  @override
+  Future<Map<String, Object?>> prepareFlash(
+    Map<String, Object?> request,
+  ) async {
+    prepareCalls++;
+    lastPrepareRequest = request;
+    final handler = prepareFlashResult;
+    if (handler == null) {
+      throw StateError('No prepareFlash result scripted.');
+    }
+    return handler(request);
+  }
+
+  @override
+  Stream<Map<String, Object?>> flash(Map<String, Object?> request) {
+    flashCalls++;
+    lastFlashRequest = request;
+    return flashStream?.call(request) ?? const Stream.empty();
+  }
+
+  @override
   void dispose() {}
 }
 
@@ -94,12 +133,20 @@ final class FakePlatformBridge implements PlatformBridge {
 
   PickedFile? otaFile;
 
+  @override
+  bool canChooseFastbootDevice = true;
+
+  /// Each call to the chooser consumes one entry; null means cancellation.
+  final List<Object?> fastbootChoices = [];
+  int chooseFastbootCalls = 0;
+
   final prefs = <String, Object?>{};
   final downloads = <String>[];
   final deleted = <String>[];
   final opened = <String>[];
   bool persistentGranted = true;
   int keepAwake = 0;
+  Future<void>? keepAwakeGate;
   final _dropped = StreamController<PickedFile>.broadcast();
 
   @override
@@ -138,6 +185,15 @@ final class FakePlatformBridge implements PlatformBridge {
   Future<PickedFile?> pickOtaFile() async => otaFile;
 
   @override
+  Future<FastbootUsbDevice?> chooseFastbootDevice() async {
+    chooseFastbootCalls++;
+    if (fastbootChoices.isEmpty) return null;
+    final next = fastbootChoices.removeAt(0);
+    if (next is FastbootUsbException) throw next;
+    return next as FastbootUsbDevice?;
+  }
+
+  @override
   Stream<PickedFile> get droppedFiles => _dropped.stream;
 
   void drop(PickedFile file) => _dropped.add(file);
@@ -163,7 +219,10 @@ final class FakePlatformBridge implements PlatformBridge {
   Future<void> openExternal(String url) async => opened.add(url);
 
   @override
-  Future<void> beginKeepAwake() async => keepAwake++;
+  Future<void> beginKeepAwake() async {
+    keepAwake++;
+    await keepAwakeGate;
+  }
 
   @override
   Future<void> endKeepAwake() async => keepAwake--;
@@ -253,11 +312,13 @@ UpstreamTables testTables() => UpstreamTables(
   ],
 );
 
-EnvironmentInfo testEnvironment() => const EnvironmentInfo(
-  facts: ['fs.opfs', 'net'],
+EnvironmentInfo testEnvironment({
+  List<String> facts = const ['fs.opfs', 'net', 'usb.web'],
+}) => EnvironmentInfo(
+  facts: facts,
   native: true,
   upstream: 'abc123',
-  storage: StorageInfo(
+  storage: const StorageInfo(
     opfs: true,
     picker: false,
     handle: false,
@@ -268,14 +329,18 @@ EnvironmentInfo testEnvironment() => const EnvironmentInfo(
 );
 
 final class Harness {
-  Harness({FakePlatformBridge? bridge, UpstreamTables? tables})
-    : bridge = bridge ?? FakePlatformBridge(),
-      tables = tables ?? testTables();
+  Harness({
+    FakePlatformBridge? bridge,
+    UpstreamTables? tables,
+    EnvironmentInfo? environment,
+  }) : bridge = bridge ?? FakePlatformBridge(),
+       tables = tables ?? testTables(),
+       environment = environment ?? testEnvironment();
 
   final FakeFlasherApi api = FakeFlasherApi();
   final FakePlatformBridge bridge;
   final UpstreamTables tables;
-  final environment = testEnvironment();
+  final EnvironmentInfo environment;
   final preferences = const SetupPreferences();
 
   AppRuntime get runtime => AppRuntime(

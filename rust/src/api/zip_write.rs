@@ -14,6 +14,7 @@
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
 use flutter_rust_bridge::frb;
+use sha2::{Digest, Sha256};
 use std::io::Write;
 
 use anyhow::Result;
@@ -46,6 +47,7 @@ struct Entry {
 struct OpenFile {
     entry: Entry,
     hasher: crc32fast::Hasher,
+    image_hasher: Option<Sha256>,
     encoder: Option<DeflateEncoder<Vec<u8>>>,
 }
 
@@ -57,6 +59,7 @@ pub struct ZipWriter {
     open: Option<OpenFile>,
     finished: bool,
     error: Option<String>,
+    finished_image_sha256: Option<String>,
 }
 
 fn push_u16(buffer: &mut Vec<u8>, value: u16) {
@@ -86,6 +89,7 @@ impl ZipWriter {
             open: None,
             finished: false,
             error: None,
+            finished_image_sha256: None,
         }
     }
 
@@ -105,6 +109,8 @@ impl ZipWriter {
             self.error = Some("ZIP entry name is longer than 65535 bytes".into());
             return Vec::new();
         }
+        let image_hasher = name.ends_with(".img").then(Sha256::new);
+        self.finished_image_sha256 = None;
         let name = name.into_bytes();
         let flags = FLAG_DATA_DESCRIPTOR | FLAG_UTF8;
         let method = if deflate { 8 } else { 0 };
@@ -139,6 +145,7 @@ impl ZipWriter {
                 external_attributes: unix_mode << 16,
             },
             hasher: crc32fast::Hasher::new(),
+            image_hasher,
             encoder: if deflate {
                 Some(DeflateEncoder::new(Vec::new(), Compression::new(3)))
             } else {
@@ -157,6 +164,9 @@ impl ZipWriter {
             return Vec::new();
         };
         open.hasher.update(&data);
+        if let Some(hasher) = open.image_hasher.as_mut() {
+            hasher.update(&data);
+        }
         open.entry.uncompressed += data.len() as u64;
         match open.encoder.as_mut() {
             Some(encoder) => {
@@ -196,6 +206,8 @@ impl ZipWriter {
             output.extend_from_slice(&produced);
         }
         open.entry.crc = open.hasher.finalize();
+        self.finished_image_sha256 = open.image_hasher
+            .map(|hasher| format!("{:x}", hasher.finalize()));
         push_u32(&mut output, DATA_DESCRIPTOR_SIGNATURE);
         push_u32(&mut output, open.entry.crc);
         push_u64(&mut output, open.entry.compressed);
@@ -203,6 +215,13 @@ impl ZipWriter {
         self.offset += output.len() as u64;
         self.entries.push(open.entry);
         Ok(output)
+    }
+
+    /// Final image digest, accumulated in the existing write pass without a
+    /// second copy of image buffers across the bridge.
+    #[frb(sync)]
+    pub fn finished_image_sha256(&self) -> Option<String> {
+        self.finished_image_sha256.clone()
     }
 
     /// Ends the archive: returns the central directory, the ZIP64 end of

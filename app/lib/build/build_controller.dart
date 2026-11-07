@@ -37,6 +37,7 @@ final class BuildController extends ChangeNotifier {
   Map<String, ({int done, int total})> get progress =>
       Map.unmodifiable(_progress);
   Map<String, Object?>? get result => _result;
+  Map<String, Object?>? get request => _request;
   Map<String, Object?>? get summary => _summary;
   String? get error => _error;
   int get stepIndex => _stepIndex;

@@ -1,4 +1,4 @@
-/// The app-facing view of the build service's map protocol.
+/// The app-facing view of the build and flash service's map protocol.
 ///
 /// The concrete implementation in `service/squadron_api.dart` forwards to the
 /// generated Squadron worker; widget tests use a scripted fake. Keeping the
@@ -29,6 +29,26 @@ abstract interface class FlasherApi {
 
   /// `build.json` of every finished job in the output store, newest first.
   Future<List<Map<String, Object?>>> history(Map<String, Object?> request);
+
+  /// Granted fastboot devices in the place the service runs.
+  ///
+  /// Returns `{devices: List<Map>}` plus an optional structured `error` map
+  /// (`LinkFailure.toMap()`), so a failed probe keeps its original evidence
+  /// instead of being stringified by Squadron. This never opens a browser
+  /// chooser; the page grants permission and the service lists what is
+  /// already granted.
+  Future<Map<String, Object?>> fastbootDevices();
+
+  /// Read-only flash preparation: inspects the job and device and returns a
+  /// token, the ordered plan and any prompts that still need an answer.
+  ///
+  /// Link failures come back as `{error: LinkFailure.toMap()}` and are not a
+  /// prepared plan. Validation failures still throw.
+  Future<Map<String, Object?>> prepareFlash(Map<String, Object?> request);
+
+  /// Executes a prepared flash. Step, progress, log and waiting events, then
+  /// one result carrying the receipt.
+  Stream<Map<String, Object?>> flash(Map<String, Object?> request);
 
   /// Releases the worker behind this API, if any.
   void dispose();

@@ -7,14 +7,17 @@ import 'build/build_controller.dart';
 import 'build/output_page.dart';
 import 'docs/docs_page.dart';
 import 'environment/environment_page.dart';
+import 'flash/flash_controller.dart';
+import 'flash/flash_page.dart';
+import 'flash/flash_target.dart';
 import 'history/history_page.dart';
 import 'preferences.dart';
 import 'runtime.dart';
 import 'setup/setup_page.dart';
 import 'setup/setup_state.dart';
 
-/// The five destinations of the desktop app, browser-only.
-enum AppPage { setup, output, history, environment, documentation }
+/// The destinations of the desktop app, browser-only.
+enum AppPage { setup, output, flash, history, environment, documentation }
 
 /// The sidebar, page header and the pages themselves.
 class AppShell extends StatefulWidget {
@@ -49,6 +52,9 @@ class _AppShellState extends State<AppShell> {
 
   AppPage _page = AppPage.setup;
   bool _hasOutput = false;
+  FlashController? _flash;
+  FlashTarget? _flashTarget;
+  AppPage _flashBack = AppPage.setup;
 
   static const _titles = {
     AppPage.setup: (
@@ -58,6 +64,10 @@ class _AppShellState extends State<AppShell> {
     AppPage.output: (
       'Build output',
       'Progress, results and logs for your latest task.',
+    ),
+    AppPage.flash: (
+      'Flash device',
+      'Answer the plan, confirm the exact phone, then write.',
     ),
     AppPage.history: (
       'Build history',
@@ -76,6 +86,7 @@ class _AppShellState extends State<AppShell> {
   static const _icons = {
     AppPage.setup: Icons.build_outlined,
     AppPage.output: Icons.terminal,
+    AppPage.flash: Icons.flash_on,
     AppPage.history: Icons.history,
     AppPage.environment: Icons.settings_outlined,
     AppPage.documentation: Icons.help_outline,
@@ -84,6 +95,7 @@ class _AppShellState extends State<AppShell> {
   List<AppPage> get _destinations => [
     AppPage.setup,
     if (_hasOutput) AppPage.output,
+    if (_flashTarget != null) AppPage.flash,
     AppPage.history,
     AppPage.environment,
     AppPage.documentation,
@@ -91,7 +103,93 @@ class _AppShellState extends State<AppShell> {
 
   void _navigate(AppPage page) {
     if (page == AppPage.output && !_hasOutput) return;
+    if (page == AppPage.flash && _flashTarget == null) return;
+    if (_flash?.running == true && page != AppPage.flash) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'The flash is still running. Stay here until it finishes or '
+            'cancel it; leaving does not stop the phone write.',
+          ),
+        ),
+      );
+      return;
+    }
     setState(() => _page = page);
+  }
+
+  void _openFlash(FlashTarget target, {required AppPage back}) {
+    final current = _flash;
+    if (current != null && current.running) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'A flash is already running. Cancel it or wait for the receipt '
+            'before starting another.',
+          ),
+        ),
+      );
+      return;
+    }
+    current?.dispose();
+    final controller = FlashController(
+      api: widget.runtime.service,
+      bridge: widget.runtime.bridge,
+      environment: widget.environment,
+      target: target,
+      upstreamBase: widget.runtime.upstreamBase,
+    );
+    setState(() {
+      _flash = controller;
+      _flashTarget = target;
+      _flashBack = back;
+      _page = AppPage.flash;
+    });
+    unawaited(controller.start());
+  }
+
+  void _flashBuiltPackage() {
+    final result = _build.result;
+    final request = _build.request;
+    final selection = request?['selection'];
+    final output = request?['output'];
+    final job = result?['job'];
+    if (result == null ||
+        job is! String ||
+        job.isEmpty ||
+        selection is! Map ||
+        output is! Map) {
+      return;
+    }
+    final summary = _build.summary;
+    final device = '${selection['device'] ?? ''}';
+    final kind = '${selection['kind'] ?? ''}';
+    _openFlash(
+      FlashTarget(
+        job: job,
+        store: Map<String, Object?>.from(output),
+        selection: Map<String, Object?>.from(selection),
+        label: summary == null
+            ? '$device / $kind'
+            : '${summary['device'] ?? device} / '
+                  '${summary['kind'] ?? kind}',
+      ),
+      back: AppPage.output,
+    );
+  }
+
+  String? get _flashUnavailable {
+    if (_build.result == null) return 'Build a package before flashing it.';
+    if (_build.request?['selection'] is! Map ||
+        _build.request?['output'] is! Map) {
+      return 'The build request has no store or selection to reopen.';
+    }
+    if (!widget.environment.has('usb.web')) {
+      return 'This browser context reports no WebUSB support (usb.web). '
+          'Open the app in a current Chromium browser over HTTPS or '
+          'localhost.';
+    }
+    return null;
   }
 
   void _startBuild() {
@@ -110,6 +208,7 @@ class _AppShellState extends State<AppShell> {
   void dispose() {
     _setup.dispose();
     _build.dispose();
+    _flash?.dispose();
     super.dispose();
   }
 
@@ -249,8 +348,18 @@ class _AppShellState extends State<AppShell> {
       AppPage.output => BuildOutputPage(
         controller: _build,
         onBack: () => _navigate(AppPage.setup),
+        onFlash: _flashUnavailable == null ? _flashBuiltPackage : null,
+        flashUnavailable: _flashUnavailable,
       ),
-      AppPage.history => HistoryPage(runtime: widget.runtime, setup: _setup),
+      AppPage.flash => FlashPage(
+        controller: _flash!,
+        onBack: () => _navigate(_flashBack),
+      ),
+      AppPage.history => HistoryPage(
+        runtime: widget.runtime,
+        setup: _setup,
+        onFlash: (target) => _openFlash(target, back: AppPage.history),
+      ),
       AppPage.environment => EnvironmentPage(
         runtime: widget.runtime,
         tables: widget.tables,
@@ -263,6 +372,7 @@ class _AppShellState extends State<AppShell> {
   String _shortLabel(AppPage page) => switch (page) {
     AppPage.setup => 'New package',
     AppPage.output => 'Build output',
+    AppPage.flash => 'Flash',
     AppPage.history => 'History',
     AppPage.environment => 'Environment',
     AppPage.documentation => 'Documentation',

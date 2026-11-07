@@ -5,15 +5,20 @@ choose a device, flasher type and region, provide a full OTA, and build the
 same flasher package the desktop app builds — in the tab, with no server-side
 build. Upstream stays the source of truth for the device tables, flasher
 templates, Platform-Tools and the bloat manifest; this app pins a commit of it.
+Finished jobs can then be flashed from the browser or CLI under the same
+read-only preparation, confirmation and receipt rules.
 
 ## Pieces
 
 | Piece | Where | Role |
 |---|---|---|
-| Rust library | `rust/` (frb, single-threaded wasm + native) | Pure, synchronous compute: ZIP reading, payload manifest and operation decoding (an otaripper port), ARB scan, SHA-256, gzip, sparse images, LP super metadata, vbmeta, streaming ZIP writing. No I/O. |
-| Core | `core/` (pure Dart) | Upstream tables and selection rules, storage interfaces, the build pipeline as a service stream, catalog client, bloat materializer. Drives I/O and calls Rust. |
-| CLI | `cli/` | `flasher_web build …` runs the same pipeline natively (dart:io + the native library). Parity tests compare it with upstream's Python pipeline. |
-| App | `app/` (Flutter web) | The UI. Runs the service in a Squadron Web Worker. |
+| App Rust library | `rust/` (frb) | Thin surface over the reusable crates: synchronous, pure compute calls, plus asynchronous fastboot transport calls. No USB state machine or Dart policy here. |
+| Reusable payload crate | `rust/crates/ota-payload/` | I/O-free parsing and operation decoding for Android update payloads, plus SHA-256. Port of otaripper and the upstream Python full-OTA check; builds for native and wasm. |
+| Reusable fastboot crate | `rust/crates/fastboot-link/` | Discovery, exclusive serial selection, the fastboot state machine and streaming downloads over native nusb or browser WebUSB. No frb or Dart dependency. |
+| Dart link package | `packages/device_link/` | Pure-Dart transport/session interfaces, device and failure records. No I/O, Flutter or frb dependency. |
+| Core | `core/` (pure Dart) | Upstream tables and selection rules, storage interfaces, the build pipeline, flash plans, read-only preparation and execution as services/streams, catalog client, bloat materializer. Drives I/O and calls Rust. |
+| CLI | `cli/` | `flasher_web build …`, `inspect`, `bloat`, `devices`, `flash`, `facts` and `serve`, running the same service natively (dart:io + the native library). |
+| App | `app/` (Flutter web) | The build and flash UI. The page owns permission choosers; the service runs in a Squadron Web Worker. |
 | Edge worker | `worker/` (Cloudflare Workers) | Serves `app/build/web` and the same-origin `/api/*` routes the browser cannot do itself (CORS). Local: `wrangler dev`. |
 | Upstream sync | `tool/sync_upstream.dart` | Fetches the pinned upstream commit and writes `app/web/upstream/` (gitignored). |
 
@@ -72,9 +77,39 @@ the bloat cache and the finished package, like the desktop app. Elsewhere —
 OPFS holds all of it and the finished ZIP is saved with a normal browser
 download from the OPFS file (`navigator.storage.persist()` requested first).
 
-## Rust API (frb, `rust/src/api/`)
+## Compute and transport (frb, `rust/src/api/`)
 
-All functions are `#[frb(sync)]` and pure. Byte buffers are `Vec<u8>` in and out.
+Compute functions are `#[frb(sync)]` and pure, so a call runs inside the
+Squadron worker that makes it. Byte buffers are `Vec<u8>` in and out. The
+fastboot functions in `api/fastboot.rs` are asynchronous because they await USB
+I/O; they only hold session handles and convert typed failures for Dart.
+
+The reusable crates own their concerns:
+
+- `ota-payload` parses `CrAU` headers/manifests, decodes operations and hashes
+  bytes. Callers pass the bytes they already read; it does no I/O and has no
+  frb dependency. Gzip stream decoding stays app-local.
+- `fastboot-link` owns discovery (`ff/42/03`), exact-serial open, the command
+  and download state machine, and the per-session mutex. Native uses nusb 0.2.9;
+  browser uses WebUSB. Published `fastboot-protocol` 0.4.0 supplies the response
+  parser and command type. No fork rebase was performed for this work. Each
+  download chunk is owned by the session; native nusb moves that buffer into its
+  transfer without another copy.
+- `device_link` defines the interfaces the core uses. Failure records keep the
+  original name, message, stack, causes, cleanup errors and ordered INFO/TEXT
+  records; classification is additional. Public `blame` is `host`, `user`,
+  `device` or `unknown`; the producing layer stays in the evidence, never in the
+  public blame. A session retires on transport/protocol failure independently
+  of that classification; a complete device FAIL does not retire it.
+
+A failed native library load is cached as `nativeLoadFailure` with the
+library's own name, message and stack.
+
+`surfaces` is not part of this stack. `squadron_process` carries service calls
+only; USB stays in `fastboot-link`, including in the CLI's `serve` process
+place and in the browser worker.
+
+Compute surface (`rust/src/api/`):
 
 - `zip.rs` (reading): `zip_entries(tail: Vec<u8>, file_len: u64) -> Result<ZipDirectory>` where
   `ZipDirectory { needs: Option<(u64,u64)>, entries: Vec<ZipEntry> }` — call with the last
@@ -119,7 +154,112 @@ All functions are `#[frb(sync)]` and pure. Byte buffers are `Vec<u8>` in and out
    extents, verify the image SHA-256 against the manifest. Partitions the flasher discards are not extracted.
 6. Super: `super_layout` + `SparseWriter` stream the staged images into `super.img`.
 7. Ace 6 conversion: vbmeta via `make_vbmeta`; X9U super-size and ABL choice as upstream.
-8. Package: ZIP (+ `.sha256`) or folder; `build.json` with upstream's fields plus `ota_access`, `arb`, `extracted_sha256`.
+8. Package: ZIP (+ `.sha256`) or folder; `build.json` with upstream's fields plus `ota_access`, `arb`,
+   `extracted_sha256` (decoded partition images at extraction) and `image_sha256` (final files in the package,
+   including the generated `super.img` and converted vbmeta). Flashing checks `image_sha256`, not the
+   extraction-time map.
 
 Progress is a `Stream<BuildEvent>` (step 1–5 like upstream's `STEP n/5`, log lines, byte progress, result).
 Cancelling the subscription stops the job and removes the job folder, as upstream does.
+
+## Flashing a finished job
+
+Flashing starts from a finished job in the output Store. `build.json` names the
+artifact (ZIP or folder), and the package is opened in place: a ZIP is read
+through its central directory and a streaming inflater, so preparation and
+execution never buffer a whole image.
+
+### Read-only preparation
+
+`prepareFlash` binds the job, the device and every answer before a single
+device write. It:
+
+1. Rejects a selection that does not match `build.json`'s device, kind and
+   region, or an artifact whose format disagrees with `output_format`.
+2. Requires the exact serial in the granted list, opens only that serial, then
+   reads product, mode and `max-download-size` with `getvar`. Preparation sends
+   no write command; non-logical target sizes come from `getvar` too.
+3. Resolves the template prompts. A prompt with a default is preselected; a
+   prompt without one stays unanswered, and until an explicit answer arrives
+   the result has `resolved: false` and an empty `token`.
+4. When the device table has no confirmed product mapping, returns
+   `productRequired` with the observed product instead of a token. The user
+   must verify the selected model and pass that product explicitly.
+5. Inspects every image a `Flash` step would send: size, sparse scan, full
+   SHA-256, and the build's final-image digest. A build without
+   `image_sha256` produces a warning: current bytes are still hashed and bound,
+   but not to build-time digests.
+
+A resolved preparation returns a random 32-byte token. It is kept in the
+service, never written to the job, is consumed by the first flash attempt, and
+binds the selection, job, serial, answers, `upstreamBase`, output-store
+identity and a canonical digest of the package's entries and metadata. The
+token is the only accepted confirmation input (`confirmationToken`); an
+unresolved plan has no usable token.
+
+### Execution
+
+Execution starts in the normal bootloader, rechecks product and
+`max-download-size`, then follows the plan's expanded steps. It stops at the
+first failure. After a reboot it waits only for the confirmed serial, opens
+that exact device, and requires both the expected product and fastboot mode
+before the next command; the wait is bounded (180 s, polled every second).
+
+Downloads are streamed in pieces of at most 1 MiB and split at the device's
+`max-download-size`:
+
+- a sparse image is split at chunk boundaries; every part repeats the original
+  block geometry and starts with a DONT_CARE chunk for blocks already sent, so
+  all parts write the same partition offsets;
+- an oversized raw image is converted into sparse parts only when its length is
+  a multiple of 4096 bytes;
+- in fastbootd, a reconstructed logical partition is resized to the expanded
+  image size before flashing.
+
+The plan never sends a wipe or root command. Formatting data and rooting stay
+manual on the phone; the plan only carries the instruction or the
+prepare-root/flash-signal choice.
+
+Staging a download changes RAM, not a partition. For an image write, only a
+`flash:` command that may have reached the device makes the write uncertain. A
+lost reboot acknowledgement is observed and never resent. Uncertain writes are
+not retried automatically; a retry requires a new preparation and
+confirmation. If the final reboot is reached, it closes the fastboot session
+and Android mode is reported as `android (unverified)`; an earlier failure
+leaves `modeEnd` at the last observed mode.
+
+### Cancellation and receipts
+
+Cancelling the `flash` subscription stops future commands and waits for the
+in-flight command or write to return before acknowledging. It is not a
+rollback: commands already sent stay applied, and an in-flight write may leave
+the phone partially written. If the cancellation acknowledgement fails, the app
+marks the run uncertain rather than assuming it stopped.
+
+The result carries a receipt with status, plan steps, writes (including part
+counts), start/end modes, failure evidence, uncertainty and cleanup errors.
+Verification is `unverified`: fastboot OKAY is not a readback hash. The service
+writes `<job>/flash-receipt.json` and records the same receipt under
+`flash` in `build.json`; failures to persist appear in
+`persistenceWarnings`.
+
+### Failure evidence and browser qualification
+
+Public `blame` is `host`, `user`, `device` or `unknown`; transport-layer
+provenance stays in `source`, and the original evidence is retained (`name`,
+`stage`, `causes`, browser stack, cleanup errors, ordered INFO/TEXT). Direct
+WebUSB failures keep the DOMException name/message/stack rather than
+re-describing it. `sessionRetired` is a lifecycle bit, independent of blame and
+never inferred from an error name.
+
+In the browser, the page opens the Chromium WebUSB chooser from a user gesture
+only in a secure context; it filters on the fastboot interface `ff/42/03` and
+passes only the chosen serial to the worker. The worker never opens a chooser:
+it lists granted devices, reopens that exact serial, and asks the page to
+regrant the same phone after a mode change. Native discovery matches the same
+interface from USB descriptors.
+
+Browser hardware qualification is still pending. The synthetic responder
+exercises NEO8 streaming, sparse splitting, reconnects and uncertain stops, but
+it is not real USB or partition-readback qualification. Physical writes were
+not authorized for this work.

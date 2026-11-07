@@ -2,7 +2,7 @@ import 'package:flasher_web_core/flasher_web_core.dart';
 
 import '../api/flasher_api.dart';
 
-/// Forwards the app's six methods to the generated Squadron worker.
+/// Forwards the app's build and flash methods to the generated Squadron worker.
 final class SquadronFlasherApi implements FlasherApi {
   SquadronFlasherApi(this._worker);
 
@@ -30,6 +30,17 @@ final class SquadronFlasherApi implements FlasherApi {
   @override
   Future<List<Map<String, Object?>>> history(Map<String, Object?> request) =>
       _worker.history(request);
+
+  @override
+  Future<Map<String, Object?>> fastbootDevices() => _worker.fastbootDevices();
+
+  @override
+  Future<Map<String, Object?>> prepareFlash(Map<String, Object?> request) =>
+      _worker.prepareFlash(request);
+
+  @override
+  Stream<Map<String, Object?>> flash(Map<String, Object?> request) =>
+      _worker.flash(request);
 
   @override
   void dispose() => _worker.terminate();

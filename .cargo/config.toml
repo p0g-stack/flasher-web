@@ -1,0 +1,8 @@
+# Committed project configuration. `rust/.cargo/config.toml` is rewritten by
+# tool/rust.sh (it patches flutter_rust_bridge), so settings that must survive
+# live here at the repository root and apply when cargo runs from rust/.
+#
+# web-sys gates WebUSB behind this cfg. It is set for wasm only, so native
+# builds and the app's non-USB code are unaffected.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "web_sys_unstable_apis"]

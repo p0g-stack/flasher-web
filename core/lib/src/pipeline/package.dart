@@ -31,6 +31,7 @@ final class PackageResult {
     required this.artifact,
     required this.format,
     required this.sha256,
+    required this.imageSha256,
   });
 
   /// Workspace path of the finished artifact: the ZIP or the folder.
@@ -41,6 +42,9 @@ final class PackageResult {
 
   /// Lowercase SHA-256 of the ZIP; null for a folder.
   final String? sha256;
+
+  /// SHA-256 of final packaged image bytes, after patches and super assembly.
+  final Map<String, String> imageSha256;
 }
 
 /// Builds a ZIP or a folder from the staged flasher tree.
@@ -151,6 +155,7 @@ Future<PackageResult> _packageZip(
   final zip = ZipWriter();
   final hasher = Sha256Hasher();
   final output = _Output(sink, hasher);
+  final imageHashes = <String, String>{};
   try {
     for (final name in entries) {
       check();
@@ -165,6 +170,7 @@ Future<PackageResult> _packageZip(
           check: check,
         );
         await output.add(zip.finishFile());
+        imageHashes[name] = zip.finishedImageSha256()!;
       } else if (plan != null && superSizeFile && name == _superSizePath) {
         final content = Uint8List.fromList(
           ascii.encode('${plan.deviceSize}\n'),
@@ -181,6 +187,7 @@ Future<PackageResult> _packageZip(
           name,
           zip,
           output,
+          imageHashes: imageHashes,
           emit: emit,
           check: check,
         );
@@ -202,7 +209,12 @@ Future<PackageResult> _packageZip(
   } finally {
     await checksum.close();
   }
-  return PackageResult(artifact: destination, format: 'zip', sha256: digest);
+  return PackageResult(
+    artifact: destination,
+    format: 'zip',
+    sha256: digest,
+    imageSha256: Map.unmodifiable(imageHashes),
+  );
 }
 
 /// Files to package, relative to [root], sorted like `backend.package`'s
@@ -240,6 +252,7 @@ Future<void> _zipFile(
   String name,
   ZipWriter zip,
   _Output output, {
+  required Map<String, String> imageHashes,
   required void Function(Map<String, Object?> event)? emit,
   required void Function() check,
 }) async {
@@ -263,6 +276,7 @@ Future<void> _zipFile(
       }
     }
     await output.add(zip.finishFile());
+    if (name.endsWith('.img')) imageHashes[name] = zip.finishedImageSha256()!;
     if (length >= _progressStep && reported < length) {
       _progress(emit, name, length, length);
     }
@@ -318,6 +332,7 @@ Future<PackageResult> _packageFolder(
     generatedSuper: plan != null,
     generatedSuperSize: superSizeFile,
   );
+  final imageHashes = <String, String>{};
   for (final name in entries) {
     check();
     if (plan != null && name == 'super.img') continue;
@@ -326,6 +341,25 @@ Future<PackageResult> _packageFolder(
       joinWorkspacePath(root, name),
       joinWorkspacePath(destination, name),
     );
+    if (name.endsWith('.img')) {
+      final source = await workspace.open(joinWorkspacePath(destination, name));
+      final hash = Sha256Hasher();
+      try {
+        var offset = 0;
+        while (offset < source.length) {
+          check();
+          final data = await source.read(
+            offset,
+            math.min(_ioChunk, source.length - offset),
+          );
+          hash.update(bytes: data);
+          offset += data.length;
+        }
+        imageHashes[name] = hash.finishHex();
+      } finally {
+        await closeByteSource(source);
+      }
+    }
   }
   if (plan != null) {
     if (superSizeFile) {
@@ -342,14 +376,21 @@ Future<PackageResult> _packageFolder(
     final sink = await workspace.create(
       joinWorkspacePath(destination, 'super.img'),
     );
-    final output = _Output(sink, null);
+    final imageHash = Sha256Hasher();
+    final output = _Output(sink, imageHash);
     try {
       await _writeSuper(plan, output.add, emit: emit, check: check);
     } finally {
       await sink.close();
     }
+    imageHashes['super.img'] = imageHash.finishHex();
   }
-  return PackageResult(artifact: destination, format: 'folder', sha256: null);
+  return PackageResult(
+    artifact: destination,
+    format: 'folder',
+    sha256: null,
+    imageSha256: Map.unmodifiable(imageHashes),
+  );
 }
 
 // ---------------------------------------------------------------------------

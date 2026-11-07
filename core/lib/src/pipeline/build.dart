@@ -417,6 +417,7 @@ final class _BuildRun {
         },
         'arb': ?arb,
         if (hashes.isNotEmpty) 'extracted_sha256': hashes,
+        'image_sha256': package.imageSha256,
         'odm_source': ?odm?.receipt,
         'abl_source': ?ablReceipt,
       };

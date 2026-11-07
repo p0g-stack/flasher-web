@@ -23,4 +23,4 @@ bash tool/rust.sh
 rm -f app/pubspec.lock # the workspace has one lockfile, at the root
 
 bash tool/build_workers.sh
-dart format core cli app/lib app/test
+dart format core cli app/lib app/test packages

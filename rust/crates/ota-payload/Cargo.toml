@@ -1,0 +1,19 @@
+[package]
+name = "ota-payload"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Android full-OTA update payload manifest and install-operation decoding"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+sha2 = "0.10"
+# Payload operation codecs, all pure Rust so the crate builds for wasm.
+bzip2 = "0.6"
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+ruzstd = "0.9"
+
+[dev-dependencies]
+# Tests build their own xz fixtures with this encoder.
+lzma-rust2 = { version = "0.25", default-features = false, features = ["encoder"] }

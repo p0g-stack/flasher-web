@@ -1,0 +1,8 @@
+name: device_link
+description: Host-neutral fastboot transport contract shared by the flash engine and its adapters.
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+

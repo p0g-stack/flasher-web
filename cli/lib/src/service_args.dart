@@ -132,6 +132,106 @@ Map<String, Object?> inspectRequest({
   required String apiBase,
 }) => {'ota': ota, 'apiBase': apiBase};
 
+/// The `prepareFlash` request map of the shared flash protocol.
+Map<String, Object?> flashPrepareRequest({
+  required Map<String, Object?> selection,
+  required String outputDir,
+  required String job,
+  required String serial,
+  required Map<String, String> answers,
+  required String upstream,
+}) => {
+  'selection': selection,
+  'output': pathStore(outputDir),
+  'job': job,
+  'serial': serial,
+  'answers': answers,
+  'upstreamBase': upstreamBase(upstream),
+};
+
+/// Prints the read-only plan and every prompt.
+void printFlashPreparation(Map<String, Object?> prepared) {
+  final serial = prepared['serial'] ?? '?';
+  final product = prepared['product'] ?? '?';
+  final expected = prepared['expectedProduct'] ?? '?';
+  final mode = prepared['mode'] ?? '?';
+  final job = prepared['job'] ?? '?';
+  final version = prepared['version'] ?? '?';
+  print('Job: $job ($version)');
+  print(
+    'Device: ${prepared['device'] ?? '?'} '
+    '(${prepared['dev'] ?? '?'}) / ${prepared['kind'] ?? '?'} / '
+    '${prepared['region'] ?? '?'}',
+  );
+  print('Serial: $serial');
+  print('Product: $product (expected $expected)');
+  print('Mode: $mode');
+  print('max-download-size: ${prepared['maxDownloadSize'] ?? '?'} bytes');
+  final warnings = prepared['warnings'];
+  if (warnings is List) {
+    for (final warning in warnings) {
+      print('WARNING: $warning');
+    }
+  }
+  final steps = prepared['steps'];
+  if (steps is List) {
+    print('Plan (${steps.length} steps):');
+    for (var index = 0; index < steps.length; index++) {
+      print('  ${index + 1}. ${steps[index]}');
+    }
+  }
+  final prompts = prepared['prompts'];
+  if (prompts is List) {
+    for (final prompt in prompts) {
+      if (prompt is! Map) continue;
+      final selected = prompt['selected'];
+      print(
+        'Prompt ${prompt['id']}: ${prompt['question']} '
+        '(choices: ${(prompt['choices'] as List?)?.join('/') ?? ''}; '
+        'selected: ${selected ?? 'unanswered'})',
+      );
+    }
+  }
+}
+
+/// Prints a flash result and its receipt.
+void printFlashResult(Map<String, Object?> result) {
+  final receipt = result['receipt'];
+  print('Flash: ${result['status'] ?? 'unknown'}');
+  if (receipt is Map) {
+    final writes = receipt['writes'];
+    if (writes is List) {
+      print('Writes: ${writes.length}');
+      for (final write in writes) {
+        if (write is! Map) continue;
+        print(
+          '  ${write['partition']} ${write['bytes']} bytes '
+          'part ${write['part'] ?? 1}/${write['parts'] ?? 1} '
+          '${write['status']}',
+        );
+      }
+    }
+    final verification = receipt['verification'];
+    if (verification is Map) {
+      print(
+        'Verification: ${verification['status']} '
+        '(${verification['detail'] ?? ''})',
+      );
+    }
+    final failure = receipt['failure'];
+    if (failure is Map) {
+      print(
+        'Failure: ${failure['name']}: ${failure['message']} '
+        '(uncertain: ${failure['uncertain']})',
+      );
+    }
+    final cleanup = receipt['cleanupErrors'];
+    if (cleanup is List && cleanup.isNotEmpty) {
+      print('Cleanup errors: ${cleanup.join('; ')}');
+    }
+  }
+}
+
 /// Print one service event the way upstream's backend prints its steps.
 void printEvent(Map<String, Object?> event) {
   final type = event['type'];
@@ -150,6 +250,9 @@ void printEvent(Map<String, Object?> event) {
         '${total is num ? total.toInt() : '?'} bytes',
       );
     }
+  } else if (type == 'waiting') {
+    final text = event['text'];
+    if (text is String && text.isNotEmpty) print(text);
   }
 }
 

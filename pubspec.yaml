@@ -8,6 +8,7 @@ workspace:
   - core
   - app
   - cli
+  - packages/device_link
 
 # tool/sync_upstream.dart (run from the workspace root).
 dev_dependencies:

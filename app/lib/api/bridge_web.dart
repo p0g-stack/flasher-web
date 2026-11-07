@@ -12,7 +12,8 @@ import 'platform_bridge.dart';
 PlatformBridge createBridge() => WebPlatformBridge();
 
 /// The browser implementation: File System Access, IndexedDB, `fetch`,
-/// downloads, the screen wake lock and page-level drag and drop.
+/// downloads, the screen wake lock, page-level drag and drop, and the WebUSB
+/// fastboot device chooser.
 final class WebPlatformBridge implements PlatformBridge {
   WebPlatformBridge() {
     _dragOver = ((web.Event event) {
@@ -54,6 +55,163 @@ final class WebPlatformBridge implements PlatformBridge {
 
   @override
   bool get canPickDirectory => _globalFunction('showDirectoryPicker') != null;
+
+  /// The page's WebUSB object, or null when this context has none.
+  JSObject? get _usb {
+    final navigator = globalContext['navigator'];
+    if (navigator == null || !navigator.isA<JSObject>()) return null;
+    final usb = (navigator as JSObject)['usb'];
+    if (usb == null || !usb.isA<JSObject>()) return null;
+    return usb as JSObject;
+  }
+
+  bool get _secureContext {
+    final value = globalContext['isSecureContext'];
+    return value != null &&
+        value.isA<JSBoolean>() &&
+        (value as JSBoolean).toDart;
+  }
+
+  @override
+  bool get canChooseFastbootDevice {
+    final usb = _usb;
+    return _secureContext &&
+        usb != null &&
+        usb.has('requestDevice') &&
+        usb.has('getDevices');
+  }
+
+  @override
+  Future<FastbootUsbDevice?> chooseFastbootDevice() {
+    final usb = _usb;
+    if (usb == null || !usb.has('requestDevice')) {
+      return Future.error(
+        const FastbootUsbException(
+          FastbootUsbFailure.unsupported,
+          'This browser does not expose WebUSB. Open the app in current '
+          'Chrome, Edge or Chromium.',
+        ),
+      );
+    }
+    if (!_secureContext) {
+      return Future.error(
+        const FastbootUsbException(
+          FastbootUsbFailure.insecureContext,
+          'WebUSB needs a secure page. Open the app on HTTPS or localhost.',
+        ),
+      );
+    }
+    // requestDevice must run in the same task as the click that led here, so
+    // nothing may be awaited before this call.
+    final options = <String, Object?>{
+      'filters': <Object?>[
+        <String, Object?>{
+          'classCode': 0xff,
+          'subclassCode': 0x42,
+          'protocolCode': 0x03,
+        },
+      ].jsify(),
+    }.jsify()!;
+    final JSPromise<JSAny?> promise;
+    try {
+      promise = usb.callMethod<JSPromise<JSAny?>>(
+        'requestDevice'.toJS,
+        options,
+      );
+    } on Object catch (error) {
+      return Future.error(_chooserError(error));
+    }
+    return _settleChooser(promise);
+  }
+
+  Future<FastbootUsbDevice?> _settleChooser(JSPromise<JSAny?> promise) async {
+    final JSAny? value;
+    try {
+      value = await promise.toDart;
+    } on Object catch (error) {
+      if (_jsString(_toJSAny(error), 'name') == 'NotFoundError') return null;
+      throw _chooserError(error);
+    }
+    return value == null ? null : _deviceFrom(value);
+  }
+
+  FastbootUsbDevice _deviceFrom(JSAny? value) {
+    if (value == null || !value.isA<JSObject>()) {
+      throw const FastbootUsbException(
+        FastbootUsbFailure.other,
+        'The browser returned a device this page cannot read.',
+      );
+    }
+    final device = value as JSObject;
+    final serial = _jsString(device, 'serialNumber')?.trim() ?? '';
+    if (serial.isEmpty) {
+      throw const FastbootUsbException(
+        FastbootUsbFailure.noSerial,
+        'The browser did not expose this device serial. Fastboot needs a '
+        'serial to reopen the same phone; reconnect it and choose it again.',
+      );
+    }
+    final product = _jsString(device, 'productName')?.trim();
+    final vendor = _jsNumber(device, 'vendorId');
+    final productId = _jsNumber(device, 'productId');
+    final ids = vendor == null || productId == null
+        ? ''
+        : 'USB ${_hex(vendor)}:${_hex(productId)}';
+    final label = [
+      product,
+      ids,
+    ].where((part) => part != null && part.isNotEmpty).join(' · ');
+    return FastbootUsbDevice(
+      serial: serial,
+      label: label.isEmpty ? 'Fastboot device' : label,
+    );
+  }
+
+  FastbootUsbException _chooserError(Object error) {
+    final jsError = _toJSAny(error);
+    final name = _jsString(jsError, 'name');
+    final message = _jsString(jsError, 'message');
+    final detail = message == null || message.isEmpty ? '$error' : message;
+    if (name == 'SecurityError') {
+      return FastbootUsbException(
+        FastbootUsbFailure.permission,
+        'The browser refused WebUSB permission. Allow USB access for this '
+        'site, then choose the device again.',
+        error,
+      );
+    }
+    return FastbootUsbException(
+      FastbootUsbFailure.other,
+      'The browser could not open the USB chooser: $detail',
+      error,
+    );
+  }
+
+  JSAny? _toJSAny(Object? value) {
+    if (value == null) return null;
+    try {
+      return value as JSAny;
+    } on Object {
+      return null;
+    }
+  }
+
+  String? _jsString(JSAny? value, String key) {
+    if (value == null || !value.isA<JSObject>()) return null;
+    final property = (value as JSObject).getProperty<JSAny?>(key.toJS);
+    if (property == null || !property.isA<JSString>()) return null;
+    return (property as JSString).toDart;
+  }
+
+  int? _jsNumber(JSAny? value, String key) {
+    if (value == null || !value.isA<JSObject>()) return null;
+    final property = (value as JSObject).getProperty<JSAny?>(key.toJS);
+    if (property == null || !property.isA<JSNumber>()) return null;
+    return (property as JSNumber).toDartInt;
+  }
+
+  String _hex(int value) =>
+      '0x${value.toRadixString(16).padLeft(4, '0').toUpperCase()}';
 
   JSFunction? _globalFunction(String name) {
     final value = globalContext[name];

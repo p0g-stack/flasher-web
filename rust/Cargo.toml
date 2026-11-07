@@ -1,3 +1,9 @@
+[workspace]
+# The reusable crates live beside the app crate. The root package remains a
+# member, so `cargo test --workspace` exercises all of it from rust/.
+members = ["crates/fastboot-link", "crates/ota-payload"]
+resolver = "2"
+
 [package]
 name = "flasher_web_native"
 version = "0.1.0"
@@ -21,13 +27,13 @@ sha2 = "0.10"
 # Pure-Rust deflate (miniz_oxide) and CRC-32: both compile to wasm.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 crc32fast = "1"
-# Payload operation codecs and the gzip stream decoder, all pure Rust.
+# Payload operation codecs live in the reusable crate; gzip stream decoding
+# stays app-local in api/payload.rs.
 anyhow = "1"
-bzip2 = "0.6"
-lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 miniz_oxide = "0.9"
-ruzstd = "0.9"
-
-[dev-dependencies]
-# Tests build their own bzip2/xz/zstd fixtures with these encoders.
-lzma-rust2 = { version = "0.25", default-features = false, features = ["encoder"] }
+ota-payload = { path = "crates/ota-payload" }
+# Native USB / browser WebUSB fastboot transport, shared with the CLI through
+# this crate's thin frb shim.
+fastboot-link = { path = "crates/fastboot-link" }
+# Session handles are serialized with an async mutex that works on wasm too.
+futures = "0.3"

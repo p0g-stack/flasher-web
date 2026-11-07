@@ -1,7 +1,12 @@
 /// Declarative flashing only: no transport, retries, or device writes.
 library;
 
-enum FlashMode { bootloader, fastbootd, android }
+/// A fastboot mode, identified by the device's own getvar answers.
+///
+/// `superFastboot` is CANOE-BDS's bootloader replacement. It answers
+/// `getvar:canoe-bds` and may also say `is-userspace:no`, so probing
+/// `is-userspace` first would mistake it for the normal bootloader.
+enum FlashMode { bootloader, fastbootd, superFastboot, android }
 
 enum FlashSlot { a, b }
 
@@ -10,6 +15,33 @@ final class FlashPlanException implements Exception {
   final String message;
   @override
   String toString() => 'FlashPlanException: $message';
+}
+
+/// A package, device or protocol error that is not a planning error.
+final class FlashException implements Exception {
+  const FlashException(this.message, {this.uncertain = false});
+  final String message;
+
+  /// True when a write may have reached the device.
+  final bool uncertain;
+
+  /// Structured failure data for services, receipts and the UI. Blame is the
+  /// user because the plan is the app's own domain check; the message stays
+  /// the original text, never an encoded packet.
+  Map<String, Object?> failure({String stage = 'execute', String stack = ''}) =>
+      {
+        'blame': 'user',
+        'name': 'FlashException',
+        'message': message,
+        'stage': stage,
+        'uncertain': uncertain,
+        'stack': stack,
+        'causes': const <String>[],
+        'cleanupErrors': const <String>[],
+      };
+
+  @override
+  String toString() => 'FlashException: $message';
 }
 
 sealed class FlashStep {

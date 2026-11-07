@@ -9,10 +9,18 @@ class BuildOutputPage extends StatefulWidget {
     super.key,
     required this.controller,
     required this.onBack,
+    this.onFlash,
+    this.flashUnavailable,
   });
 
   final BuildController controller;
   final VoidCallback onBack;
+
+  /// Opens the flash page for this build's job, or null when it cannot.
+  final VoidCallback? onFlash;
+
+  /// Why flashing is unavailable, shown beside a disabled action.
+  final String? flashUnavailable;
 
   @override
   State<BuildOutputPage> createState() => _BuildOutputPageState();
@@ -69,7 +77,12 @@ class _BuildOutputPageState extends State<BuildOutputPage> {
               children: [
                 _SummaryCard(controller: controller),
                 const SizedBox(height: 16),
-                if (controller.hasResult) _ResultCard(controller: controller),
+                if (controller.hasResult)
+                  _ResultCard(
+                    controller: controller,
+                    onFlash: widget.onFlash,
+                    flashUnavailable: widget.flashUnavailable,
+                  ),
               ],
             );
             return SingleChildScrollView(
@@ -361,9 +374,15 @@ class _SummaryCard extends StatelessWidget {
 }
 
 class _ResultCard extends StatelessWidget {
-  const _ResultCard({required this.controller});
+  const _ResultCard({
+    required this.controller,
+    this.onFlash,
+    this.flashUnavailable,
+  });
 
   final BuildController controller;
+  final VoidCallback? onFlash;
+  final String? flashUnavailable;
 
   @override
   Widget build(BuildContext context) {
@@ -415,10 +434,22 @@ class _ResultCard extends StatelessWidget {
               'This build kept a flasher folder in the chosen output store. '
               'Folder builds are not a single download.',
             ),
+          const SizedBox(height: 10),
+          FilledButton.tonalIcon(
+            key: const ValueKey('flashBuild'),
+            onPressed: onFlash,
+            icon: const Icon(Icons.flash_on, size: 18),
+            label: const Text('Flash this build'),
+          ),
+          if (flashUnavailable != null) ...[
+            const SizedBox(height: 6),
+            HintText(flashUnavailable!, error: true),
+          ],
           const SizedBox(height: 6),
           HintText(
             'The package and build.json are in $job in the selected store. '
-            'Folder builds can be browsed from the folder you picked.',
+            'Flashing reopens this job through the service, including ZIP '
+            'builds; no temporary stage path is needed.',
           ),
         ],
       ),

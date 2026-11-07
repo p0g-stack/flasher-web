@@ -21,6 +21,7 @@ class SectionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Card(
+      semanticContainer: false,
       elevation: 0,
       margin: EdgeInsets.zero,
       color: theme.colorScheme.surfaceContainerLow,

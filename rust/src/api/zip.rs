@@ -269,9 +269,172 @@ pub fn inflate_raw(data: Vec<u8>, expected_len: u64) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// One bounded decode operation; the caller retains unconsumed input.
+pub struct InflateChunk {
+    pub consumed: u32,
+    pub bytes: Vec<u8>,
+    pub finished: bool,
+}
+
+/// Incremental method-8 ZIP extraction without buffering an entire image.
+/// Both the central-directory size and CRC must match before use of the output.
+#[frb(opaque)]
+pub struct RawZipInflater {
+    state: Box<miniz_oxide::inflate::stream::InflateState>,
+    expected_size: u64,
+    expected_crc: u32,
+    produced: u64,
+    crc: crc32fast::Hasher,
+    ended: bool,
+    failed: bool,
+}
+
+impl RawZipInflater {
+    #[frb(sync)]
+    pub fn new(expected_size: u64, expected_crc: u32) -> Self {
+        Self {
+            state: miniz_oxide::inflate::stream::InflateState::new_boxed(
+                miniz_oxide::DataFormat::Raw,
+            ),
+            expected_size,
+            expected_crc,
+            produced: 0,
+            crc: crc32fast::Hasher::new(),
+            ended: false,
+            failed: false,
+        }
+    }
+
+    /// At most 1 MiB is produced, even for highly compressible input.
+    /// Keep calling with remaining input (or empty input to drain buffered
+    /// output) until `finished`; then call `finish` to verify size and CRC.
+    #[frb(sync)]
+    pub fn decode(&mut self, data: Vec<u8>, max_output: u32) -> Result<InflateChunk> {
+        ensure!(!self.failed, "ZIP inflater failed; discard its output");
+        ensure!(!self.ended, "ZIP deflate stream already ended");
+        ensure!((1..=1_048_576).contains(&max_output), "invalid ZIP decode buffer size");
+        ensure!(data.len() <= 1_048_576, "ZIP input chunk exceeds 1 MiB");
+        let mut bytes = vec![0; max_output as usize];
+        let result = miniz_oxide::inflate::stream::inflate(
+            &mut self.state,
+            &data,
+            &mut bytes,
+            miniz_oxide::MZFlush::None,
+        );
+        bytes.truncate(result.bytes_written);
+        self.produced += bytes.len() as u64;
+        if self.produced > self.expected_size {
+            self.failed = true;
+            bail!("ZIP deflate output exceeds its declared size");
+        }
+        match result.status {
+            Ok(miniz_oxide::MZStatus::StreamEnd) => {
+                self.ended = true;
+                if result.bytes_consumed != data.len() {
+                    self.failed = true;
+                    bail!("ZIP deflate stream contains trailing bytes");
+                }
+            }
+            Ok(miniz_oxide::MZStatus::Ok) | Err(miniz_oxide::MZError::Buf) => {}
+            status => {
+                self.failed = true;
+                bail!("invalid ZIP deflate stream: {status:?}");
+            }
+        }
+        self.crc.update(&bytes);
+        if self.ended {
+            self.finish()?;
+        }
+        Ok(InflateChunk {
+            consumed: result.bytes_consumed as u32,
+            bytes,
+            finished: self.ended,
+        })
+    }
+
+    #[frb(sync)]
+    pub fn finish(&mut self) -> Result<()> {
+        let valid = !self.failed
+            && self.ended
+            && self.produced == self.expected_size
+            && self.crc.clone().finalize() == self.expected_crc;
+        self.failed = !valid;
+        ensure!(valid, "ZIP deflate stream is truncated or its size/CRC does not match");
+        Ok(())
+    }
+}
+
+/// Incremental integrity check for stored ZIP entries.
+#[frb(opaque)]
+pub struct ZipCrc32(crc32fast::Hasher);
+
+impl ZipCrc32 {
+    #[frb(sync)]
+    pub fn new() -> Self {
+        Self(crc32fast::Hasher::new())
+    }
+
+    #[frb(sync)]
+    pub fn update(&mut self, bytes: Vec<u8>) {
+        self.0.update(&bytes);
+    }
+
+    #[frb(sync)]
+    pub fn finish(&self) -> u32 {
+        self.0.clone().finalize()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn deflate(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn bounded_zip_inflate_preserves_bytes_across_input_and_output_boundaries() {
+        let plain = (0..100_003).map(|n| (n * 17) as u8).collect::<Vec<_>>();
+        let compressed = deflate(&plain);
+        let mut decoder = RawZipInflater::new(plain.len() as u64, crc32fast::hash(&plain));
+        let mut output = Vec::new();
+        let mut offset = 0;
+        let mut ended = false;
+        while !ended {
+            let end = (offset + 7).min(compressed.len());
+            let chunk = decoder.decode(compressed[offset..end].to_vec(), 31).unwrap();
+            assert!(chunk.bytes.len() <= 31);
+            assert!(chunk.consumed > 0 || !chunk.bytes.is_empty() || chunk.finished);
+            offset += chunk.consumed as usize;
+            output.extend_from_slice(&chunk.bytes);
+            ended = chunk.finished;
+        }
+        decoder.finish().unwrap();
+        assert_eq!(offset, compressed.len());
+        assert_eq!(output, plain);
+    }
+
+    #[test]
+    fn bounded_zip_inflate_rejects_truncation_crc_size_and_trailing_data() {
+        let plain = b"image bytes";
+        let compressed = deflate(plain);
+        let crc = crc32fast::hash(plain);
+        let mut truncated = RawZipInflater::new(plain.len() as u64, crc);
+        truncated.decode(compressed[..compressed.len() - 1].to_vec(), 100).unwrap();
+        assert!(truncated.finish().is_err());
+        for (size, crc) in [(plain.len() as u64 - 1, crc), (plain.len() as u64 + 1, crc), (plain.len() as u64, crc ^ 1)] {
+            let mut decoder = RawZipInflater::new(size, crc);
+            assert!(decoder.decode(compressed.clone(), 100).is_err());
+        }
+        let mut extra = compressed;
+        extra.push(0);
+        let mut decoder = RawZipInflater::new(plain.len() as u64, crc);
+        assert!(decoder.decode(extra, 100).is_err());
+    }
 
     fn central_entry(name: &str) -> Vec<u8> {
         let mut cd = vec![0u8; 46];

@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:device_link/device_link.dart';
 import 'package:logging/logging.dart';
 import 'package:squadron/squadron.dart';
 
@@ -11,6 +13,14 @@ import '../bloat/manifest.dart';
 import '../catalog/catalog_client.dart';
 import '../catalog/http_transport.dart';
 import '../facts/facts.dart';
+import '../flash/executor.dart';
+import '../flash/identity.dart';
+import '../flash/model.dart' as flash_model;
+import '../flash/package_source.dart';
+import '../flash/prepare.dart' as flash_prepare;
+import '../flash/store_identity.dart';
+import '../flash/strategy.dart';
+import '../link/native_fastboot.dart';
 import '../log.dart';
 import '../native/native.dart';
 import '../pipeline/assets.dart';
@@ -44,6 +54,9 @@ base class FlasherService {
   FlasherService() {
     forwardLogs();
   }
+
+  final Map<String, _PreparedEntry> _prepared = {};
+  final Map<String, String> _jobLocks = {};
 
   /// Facts, the Rust library and storage space in this place.
   @squadronMethod
@@ -208,6 +221,342 @@ base class FlasherService {
       for (final (job, manifest) in jobs) {...manifest, 'job': job},
     ];
   }
+
+  /// Granted fastboot devices. Never opens a browser chooser.
+  @squadronMethod
+  Future<Map<String, Object?>> fastbootDevices() async {
+    try {
+      final devices = await nativeFastbootTransport().devices();
+      return {
+        'devices': [for (final device in devices) device.toMap()],
+      };
+    } on LinkFailure catch (error) {
+      return {'devices': <Map<String, Object?>>[], 'error': error.toMap()};
+    }
+  }
+
+  /// Read-only preparation. Returns the plan, prompts and a token that binds
+  /// the device, the exact request, and the inspected package.
+  @squadronMethod
+  Future<Map<String, Object?>> prepareFlash(Map<String, Object?> req) async {
+    try {
+      final tables = await _readTables(req);
+      final selectionMap = req['selection'];
+      final selection = tables.selection(
+        _stringArg(selectionMap, 'device', 'selection'),
+        _stringArg(selectionMap, 'kind', 'selection'),
+        _stringArg(selectionMap, 'region', 'selection'),
+      );
+      final output = req['output'];
+      if (output is! Map) throw const BuildException('Missing output store.');
+      final workspace = await _openStoreWorkspace(output);
+      final rawJob = req['job'];
+      if (rawJob is! String || rawJob.isEmpty) {
+        throw const BuildException('Missing job directory.');
+      }
+      final job = normalizeWorkspacePath(rawJob);
+      final storeKey = _storeKey(output);
+      final lockKey = '$storeKey|$job';
+      if (_jobLocks.containsKey(lockKey)) {
+        throw const flash_model.FlashException('This job is being flashed.');
+      }
+      final buildJson = await readJobManifest(workspace, job);
+      final package = await openFlashPackage(workspace, job, buildJson);
+      final serial = req['serial'];
+      if (serial is! String || serial.trim().isEmpty) {
+        throw const BuildException('Choose a fastboot device serial.');
+      }
+      final answers = _flashAnswers(req['answers']);
+      if (deviceIdentities[selection.dev]?.product == null &&
+          (answers['product'] ?? '').trim().isEmpty) {
+        final device = await nativeFastbootTransport().open(serial);
+        try {
+          if (device.serial != serial) {
+            throw const flash_model.FlashException(
+              'The connected serial changed.',
+            );
+          }
+          final product = await flash_prepare.readProduct(device);
+          return {
+            'productRequired': true,
+            'serial': serial,
+            'observedProduct': product,
+            'message':
+                'Connected product: $product. No confirmed product mapping '
+                'exists for ${selection.device}. Check the selected model, then '
+                'type the product explicitly to continue.',
+          };
+        } finally {
+          await device.close();
+        }
+      }
+      final token = _newToken();
+      final prepared = await flash_prepare.prepareFlash(
+        package: package,
+        selection: selection,
+        answers: answers,
+        serial: serial,
+        transport: nativeFastbootTransport(),
+        job: job,
+        upstreamBase: req['upstreamBase'] as String? ?? '',
+        storeKey: storeKey,
+        token: token,
+      );
+      if (prepared.resolved) {
+        _prepared.removeWhere((_, entry) => entry.lockKey == lockKey);
+        _prepared[token] = _PreparedEntry(
+          prepared,
+          lockKey,
+          Map<String, Object?>.unmodifiable(output),
+        );
+      }
+      return prepared.toMap();
+    } on LinkFailure catch (error) {
+      return {'error': error.toMap()};
+    } on flash_model.FlashException catch (error, stack) {
+      return {'error': error.failure(stage: 'prepare', stack: '$stack')};
+    }
+  }
+
+  /// Executes the prepared plan. The first event is a step; the last is a
+  /// result carrying the receipt. Cancelling the subscription stops future
+  /// commands and records an uncertain in-flight write.
+  @squadronMethod
+  Stream<Map<String, Object?>> flash(Map<String, Object?> req) {
+    final controller = StreamController<Map<String, Object?>>();
+    final run = _FlashRun(this, req, controller);
+    controller.onListen = () {
+      unawaited(run.start());
+    };
+    controller.onCancel = run.cancel;
+    return controller.stream;
+  }
+}
+
+final class _PreparedEntry {
+  const _PreparedEntry(this.prepared, this.lockKey, this.store);
+  final flash_prepare.PreparedFlash prepared;
+  final String lockKey;
+  final Map<String, Object?> store;
+}
+
+final class _FlashRun {
+  _FlashRun(this._service, this._req, this._controller);
+
+  final FlasherService _service;
+  final Map<String, Object?> _req;
+  final StreamController<Map<String, Object?>> _controller;
+  Completer<void>? _done;
+  FlashCancellation? _cancellation;
+  String? _lockKey;
+  bool _cancelled = false;
+
+  void _emit(Map<String, Object?> event) {
+    if (_cancelled || _controller.isClosed) return;
+    _controller.add(event);
+  }
+
+  Future<void> start() async {
+    final done = _done = Completer<void>();
+    final cancellation = _cancellation = FlashCancellation();
+    if (_cancelled) {
+      cancellation.cancel('cancelled before preparation completed');
+    }
+    try {
+      final token = _req['confirmationToken'];
+      if (token is! String || token.isEmpty) {
+        throw const flash_model.FlashException(
+          'A confirmation token from prepareFlash is required.',
+        );
+      }
+      final entry = _service._prepared.remove(token);
+      if (entry == null) {
+        throw const flash_model.FlashException(
+          'The confirmation token is unknown, expired or already used. '
+          'Prepare again.',
+        );
+      }
+      final storeKey = _storeKey(_req['output']);
+      final rawJob = _req['job'];
+      final job = rawJob is String ? normalizeWorkspacePath(rawJob) : '';
+      final bound = <String, Object?>{..._req, 'job': job};
+      if (!entry.prepared.binding.matches(bound, storeKey: storeKey)) {
+        throw const flash_model.FlashException(
+          'The flash request no longer matches the confirmed plan. '
+          'Prepare again.',
+        );
+      }
+      final output = _req['output'];
+      if (output is! Map) throw const BuildException('Missing output store.');
+      if (!await sameFlashStore(
+        entry.store,
+        Map<String, Object?>.from(output),
+      )) {
+        throw const flash_model.FlashException(
+          'The output folder changed. Prepare again.',
+        );
+      }
+      final workspace = await _openStoreWorkspace(output);
+      final manifest = await readJobManifest(workspace, job);
+      final currentPackage = await openFlashPackage(workspace, job, manifest);
+      final digest = await flash_prepare.packageDigest(currentPackage);
+      if (digest != entry.prepared.binding.packageDigest) {
+        throw const flash_model.FlashException(
+          'The job or its images changed after preparation. Prepare again.',
+        );
+      }
+      await flash_prepare.verifyPreparedImages(entry.prepared);
+      if (_service._jobLocks.containsKey(entry.lockKey)) {
+        throw const flash_model.FlashException(
+          'This job is already being flashed.',
+        );
+      }
+      _service._jobLocks[entry.lockKey] = token;
+      _lockKey = entry.lockKey;
+      if (_cancelled) {
+        cancellation.cancel('cancelled while checking the package');
+      }
+      final receipt = await applyConfirmedFlash(
+        entry.prepared,
+        nativeFastbootTransport(),
+        await PlaceInfo.current(),
+        emit: _emit,
+        cancellation: cancellation,
+      );
+      receipt['persistenceWarnings'] = await _persistReceipt(
+        workspace,
+        entry.prepared.job,
+        receipt,
+      );
+      _emit({
+        'type': 'result',
+        'status': receipt['status'],
+        'receipt': receipt,
+      });
+    } on LinkFailure catch (error) {
+      _emit({
+        'type': 'result',
+        'status': 'failed',
+        'receipt': {
+          'version': 1,
+          'status': 'failed',
+          'serial': _req['serial'],
+          'job': _req['job'],
+          'writes': <Map<String, Object?>>[],
+          'steps': <Map<String, Object?>>[],
+          'verification': {'status': 'not-run'},
+          'uncertain': false,
+          'failure': error.toMap(),
+        },
+      });
+    } on Object catch (error, stack) {
+      if (!_controller.isClosed) _controller.addError(error, stack);
+    } finally {
+      final lock = _lockKey;
+      if (lock != null) _service._jobLocks.remove(lock);
+      if (!done.isCompleted) done.complete();
+      if (!_controller.isClosed) {
+        try {
+          await _controller.close();
+        } on Object {
+          // A cancelled subscription needs no close acknowledgement.
+        }
+      }
+    }
+  }
+
+  Future<void> cancel() async {
+    _cancelled = true;
+    _cancellation?.cancel('the subscriber cancelled the flash');
+    final done = _done;
+    if (done != null && !done.isCompleted) {
+      try {
+        await done.future;
+      } on Object {
+        // The stream's error belongs to the subscriber.
+      }
+    }
+  }
+}
+
+Future<List<String>> _persistReceipt(
+  Workspace workspace,
+  String job,
+  Map<String, Object?> receipt,
+) async {
+  final warnings = <String>[];
+  try {
+    final path = '$job/flash-receipt.json';
+    final bytes = utf8.encode(
+      '${const JsonEncoder.withIndent('  ').convert(receipt)}\n',
+    );
+    final sink = await workspace.create('$path.part');
+    try {
+      await sink.write(bytes, 0);
+    } finally {
+      await sink.close();
+    }
+    await workspace.move('$path.part', path);
+  } on Object catch (error) {
+    _log.warning('could not persist $job/flash-receipt.json: $error');
+    warnings.add('Could not save flash-receipt.json: $error');
+  }
+  try {
+    final manifest = await readJobManifest(workspace, job);
+    manifest['flash'] = receipt;
+    final bytes = utf8.encode(
+      '${const JsonEncoder.withIndent('  ').convert(manifest)}\n',
+    );
+    final sink = await workspace.create('$job/build.json.part');
+    try {
+      await sink.write(bytes, 0);
+    } finally {
+      await sink.close();
+    }
+    await workspace.move('$job/build.json.part', '$job/build.json');
+  } on Object catch (error) {
+    _log.warning('could not record the flash receipt in build.json: $error');
+    warnings.add('Could not save the receipt in build.json: $error');
+  }
+  return warnings;
+}
+
+String _storeKey(Object? value) {
+  if (value is! Map) return 'missing';
+  final kind = '${value['kind']}';
+  final path = value['path'];
+  if (path is String) return '$kind|$path';
+  // A browser handle is cloned between service calls, so its identity is not
+  // stable. Keying every handle store together is deliberately conservative:
+  // it can serialize two picked folders, but never races one job.
+  if (value['handle'] != null) return '$kind|handle';
+  return kind;
+}
+
+Map<String, String> _flashAnswers(Object? value) {
+  if (value == null) return const {};
+  if (value is! Map) {
+    throw const flash_model.FlashException('answers must be a map of strings.');
+  }
+  final answers = <String, String>{};
+  for (final entry in value.entries) {
+    if (entry.key is! String || entry.value is! String) {
+      throw const flash_model.FlashException(
+        'answers must be a map of strings.',
+      );
+    }
+    answers[entry.key as String] = entry.value as String;
+  }
+  return answers;
+}
+
+String _newToken() {
+  final random = Random.secure();
+  final bytes = Uint8List(32);
+  for (var i = 0; i < bytes.length; i++) {
+    bytes[i] = random.nextInt(256);
+  }
+  return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
 }
 
 Future<UpstreamTables> _readTables(Map<String, Object?> req) async {

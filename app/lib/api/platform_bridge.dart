@@ -1,9 +1,9 @@
 /// The browser services the app needs but the pipeline does not.
 ///
-/// Pickers, remembered handles, downloads, the wake lock and the drag-and-drop
-/// listener are page-only APIs. They live behind this interface so widget
-/// tests run on the VM and the UI chooses a store from the service's facts,
-/// never from `kIsWeb`.
+/// Pickers, remembered handles, downloads, the wake lock, the drag-and-drop
+/// listener and the WebUSB fastboot chooser are page-only APIs. They live
+/// behind this interface so widget tests run on the VM and the UI chooses a
+/// store from the service's facts, never from `kIsWeb`.
 library;
 
 /// A file the user picked: the browser object, not its bytes.
@@ -35,6 +35,51 @@ final class DirectoryRef {
 
   @override
   String toString() => name;
+}
+
+/// A granted WebUSB fastboot device, reduced to what the service accepts.
+///
+/// The page never hands a `USBDevice` to the worker: permission lives in the
+/// browser, and the worker reopens the device by [serial].
+final class FastbootUsbDevice {
+  const FastbootUsbDevice({required this.serial, required this.label});
+
+  final String serial;
+  final String label;
+
+  @override
+  String toString() => label.isEmpty ? serial : '$label ($serial)';
+}
+
+/// Why the page could not offer a fastboot device.
+enum FastbootUsbFailure {
+  /// This browser has no WebUSB at all.
+  unsupported,
+
+  /// WebUSB exists but the page is not a secure context.
+  insecureContext,
+
+  /// The grant was refused or the browser reported a security error.
+  permission,
+
+  /// The granted device does not expose a fastboot serial.
+  noSerial,
+
+  /// Any other browser error, carried in [FastbootUsbException.cause].
+  other,
+}
+
+/// A chooser failure that keeps the browser's original error as [cause].
+final class FastbootUsbException implements Exception {
+  const FastbootUsbException(this.kind, this.message, [this.cause]);
+
+  final FastbootUsbFailure kind;
+  final String message;
+  final Object? cause;
+
+  @override
+  String toString() =>
+      cause == null ? message : '$message Browser error: $cause';
 }
 
 /// The page-side capabilities.
@@ -73,6 +118,20 @@ abstract interface class PlatformBridge {
 
   /// Picks a full OTA ZIP.
   Future<PickedFile?> pickOtaFile();
+
+  /// Whether the page can open a WebUSB fastboot chooser right now.
+  ///
+  /// This is a page capability probe; whether the place can write is the
+  /// service's facts, never this value alone.
+  bool get canChooseFastbootDevice;
+
+  /// Asks the browser for one fastboot device (interface ff/42/03).
+  ///
+  /// Call this synchronously from the click handler: the browser requires a
+  /// user gesture, so no `await` may run first. Returns null when the user
+  /// closes the chooser without choosing. Browser errors are wrapped in a
+  /// [FastbootUsbException] with the original error attached.
+  Future<FastbootUsbDevice?> chooseFastbootDevice();
 
   /// Files dropped onto the page. Only `.zip` files are emitted.
   Stream<PickedFile> get droppedFiles;
@@ -146,6 +205,12 @@ final class UnsupportedPlatformBridge implements PlatformBridge {
 
   @override
   Future<PickedFile?> pickOtaFile() async => _unsupported();
+
+  @override
+  bool get canChooseFastbootDevice => false;
+
+  @override
+  Future<FastbootUsbDevice?> chooseFastbootDevice() async => _unsupported();
 
   @override
   Stream<PickedFile> get droppedFiles => const Stream.empty();

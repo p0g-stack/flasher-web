@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flasher_web_core/src/native/native.dart';
 import 'package:flasher_web_core/src/pipeline/errors.dart';
 import 'package:flasher_web_core/src/pipeline/package.dart';
@@ -216,6 +217,18 @@ void main() {
       workspace,
       'out/Super Flasher 13 GLO/super.img',
     );
+    expect(
+      result.imageSha256['super.img'],
+      crypto.sha256.convert(superFile).toString(),
+    );
+    final boot = await readFile(
+      workspace,
+      'out/Super Flasher 13 GLO/OOS_FILES_HERE/boot.img',
+    );
+    expect(
+      result.imageSha256['OOS_FILES_HERE/boot.img'],
+      crypto.sha256.convert(boot).toString(),
+    );
     final header = sparseHeader(bytes28: superFile.sublist(0, 28))!;
     expect(header.blockSize, block);
     expect(header.totalBlocks * block, expandedSize);
@@ -321,6 +334,10 @@ void main() {
     final superFile = inflateRaw(
       data: compressed,
       expectedLen: superEntry.uncompressedSize,
+    );
+    expect(
+      result.imageSha256['super.img'],
+      crypto.sha256.convert(superFile).toString(),
     );
     final sparse = sparseHeader(bytes28: superFile.sublist(0, 28))!;
     expect(sparse.totalBlocks * block, expandedSize);

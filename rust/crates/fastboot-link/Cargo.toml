@@ -1,0 +1,58 @@
+[package]
+name = "fastboot-link"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "Reusable native USB / browser WebUSB fastboot transport with streaming downloads"
+
+[dependencies]
+# Released upstream 0.4.0 supplies the response parser and command type. The
+# fork's extra `fetch`/custom-command helpers are not needed: this crate owns
+# its streaming session and length checks, which upstream's parser does not
+# replace. See docs/fastboot-transport.md for provenance.
+fastboot-protocol = { version = "0.4", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+nusb = { version = "0.2", features = ["tokio"] }
+# rt/time back the transport's bounded awaits. The TCP test seam enables the
+# network/io/macro features below; a normal build compiles no network code.
+tokio = { version = "1", features = ["rt", "time"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+futures-lite = "2"
+futures-timer = { version = "3", features = ["wasm-bindgen"] }
+# WebUSB lives behind web_sys_unstable_apis in web-sys. The committed project
+# .cargo/config.toml sets that cfg for wasm32 only.
+web-sys = { version = "0.3", features = [
+    "Navigator",
+    "Usb",
+    "UsbAlternateInterface",
+    "UsbConfiguration",
+    "UsbDevice",
+    "UsbDirection",
+    "UsbEndpoint",
+    "UsbEndpointType",
+    "UsbInTransferResult",
+    "UsbInterface",
+    "UsbOutTransferResult",
+    "UsbTransferStatus",
+    "Window",
+    "WorkerGlobalScope",
+    "WorkerNavigator",
+] }
+
+[features]
+# A length-framed TCP bulk transport and responder for exercising the real
+# Session state machine without USB privileges. Never enabled by the app.
+tcp-smoke = ["tokio/net", "tokio/io-util", "tokio/macros"]
+
+[dev-dependencies]
+anyhow = "1"
+
+[[example]]
+name = "tcp_smoke"
+required-features = ["tcp-smoke"]

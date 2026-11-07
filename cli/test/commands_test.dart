@@ -276,6 +276,46 @@ void main() {
       );
     });
 
+    test('flash requires the job, device and serial arguments', () async {
+      expect(await run(['flash']), 64);
+      expect(
+        await run([
+          'flash',
+          '--output',
+          '/tmp/output',
+          '--job',
+          'job',
+          '--device',
+          'Oneplus 13',
+          '--kind',
+          'Super Flasher',
+          '--region',
+          'EU',
+        ]),
+        64,
+      );
+      expect(
+        await run([
+          'flash',
+          '--output',
+          '/tmp/output',
+          '--job',
+          'job',
+          '--device',
+          'Oneplus 13',
+          '--kind',
+          'Super Flasher',
+          '--region',
+          'EU',
+          '--serial',
+          'SERIAL',
+          '--answer',
+          'not-an-answer',
+        ]),
+        64,
+      );
+    });
+
     test('inspect takes exactly one ZIP or URL', () async {
       expect(await run(['inspect']), 64);
       expect(await run(['inspect', 'a.zip', 'b.zip']), 64);

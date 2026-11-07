@@ -1,11 +1,11 @@
 # flasher_web
 
-Build OnePlus flasher packages from full OTAs in the browser: a port of
+Build OnePlus flasher packages from full OTAs, then flash finished jobs from
+the browser or CLI: a port of
 [koaaN/Flasher_Builder](https://github.com/koaaN/Flasher_Builder). Choose a
-device, flasher type and region, provide a full OTA (a local ZIP, or a
-version from the OTA catalog), and the tab builds the same ZIP or folder the
-desktop app builds. Nothing is uploaded, and no full OTA is downloaded: the
-OTA is read in place, by HTTP ranges for catalog versions.
+device, flasher type and region, provide a full OTA (a local ZIP or catalog
+version), and build the same ZIP or folder the desktop app builds. Nothing is
+uploaded; catalog OTAs are read in place by HTTP ranges, not downloaded in full.
 
 Upstream stays the source of truth for device tables, flasher templates,
 Platform-Tools and the bloat manifest; `upstream.lock` pins its commit and
@@ -17,10 +17,13 @@ Design: [docs/design.md](docs/design.md); service contract:
 
 | Package | What | Runs on |
 |---|---|---|
-| `core/` (`flasher_web_core`) | the build pipeline (`FlasherService`), upstream tables, storage, catalog client, bloat store, facts and strategies | plain Dart; never imports `package:flutter` |
-| `app/` (`flasher_web`) | the Flutter web UI; the service runs in a Web Worker | Flutter web |
-| `cli/` (`flasher_web_cli`) | `build`, `inspect`, `bloat`, `facts`, `serve` — the same pipeline natively | `dart run` / `dart compile exe` |
-| `rust/` | OTA payload decoding (otaripper port), ARB scan, LP super metadata, sparse images, vbmeta, streaming ZIP64 writer | native and single-threaded wasm, through flutter_rust_bridge |
+| `core/` (`flasher_web_core`) | build and flash service, plans, storage, catalog, upstream tables, facts and strategies | plain Dart; never imports `package:flutter` |
+| `app/` (`flasher_web`) | build + flash UI; page owns permission choosers, Squadron worker owns execution | Flutter web |
+| `cli/` (`flasher_web_cli`) | `build`, `inspect`, `bloat`, `devices`, `flash`, `facts`, `serve` | `dart run` / `dart compile exe` |
+| `packages/device_link/` | reusable pure-Dart transport/session interfaces and failure evidence | Dart, no Flutter or frb dependency |
+| `rust/` | app frb library: synchronous compute and asynchronous fastboot transport adapters | native and single-threaded wasm |
+| `rust/crates/ota-payload/` | reusable full-OTA parsing, operation decoding and SHA-256 compute; otaripper/AOSP provenance | native and wasm, no frb or I/O |
+| `rust/crates/fastboot-link/` | reusable USB discovery, serial-bound sessions and streaming fastboot | native nusb / browser WebUSB, no frb |
 | `worker/` | Cloudflare Worker: static site plus `/api/catalog`, `/api/resolve`, `/api/ota`, `/api/bloat` | Cloudflare Workers (`wrangler dev` locally) |
 
 ## Start
@@ -32,7 +35,7 @@ Needs Flutter 3.47.5, flutter_p0g with its patched frb
 PLATFORMS=web bash tool/bootstrap.sh       # upstream snapshot, codegen, Rust + wasm, workers
 dart analyze --fatal-infos
 (cd core && dart test) && (cd cli && dart test) && (cd app && flutter test)
-(cd rust && cargo test) && (cd worker && npm install && npx vitest run)
+(cd rust && cargo test --workspace) && (cd worker && npm install && npx vitest run)
 (cd app && flutter_p0g build web --release)
 (cd worker && npx wrangler dev --port 8787)  # open http://127.0.0.1:8787
 ```
@@ -47,6 +50,22 @@ dart run cli/bin/flasher_web.dart build --device 'Oneplus 13' --kind 'SuperHybri
   --upstream app/web/upstream
 ```
 
+List native fastboot devices, then prepare a finished job without writing:
+
+```sh
+dart run cli/bin/flasher_web.dart devices
+dart run cli/bin/flasher_web.dart flash --output /path/to/builds --job JOB \
+  --device 'Oneplus 13' --kind 'SuperHybrid Flasher' --region GLO \
+  --serial SERIAL --upstream app/web/upstream
+```
+
+The read-only invocation prints the plan and exits with code 2. Supply each
+required choice using repeated `--answer id=value` flags, then rerun with
+`--confirm-serial SERIAL` matching the connected serial exactly to authorize
+writes. Unknown product mappings require `--answer product=VERIFIED_PRODUCT`;
+verify the selected model and the reported product yourself. Do not guess
+answers or confirm a different phone.
+
 ## In the browser
 
 - Chromium can keep bloat and packages in a folder you pick (File System
@@ -59,6 +78,26 @@ dart run cli/bin/flasher_web.dart build --device 'Oneplus 13' --kind 'SuperHybri
   the OTA CDNs; signed links are resolved again when they expire.
 - Keep the tab open during a build; the app holds a wake lock and warns before
   leaving.
+- Open Flash from a finished build or history entry. In the browser, flashing
+  requires current Chrome, Edge or Chromium on HTTPS or localhost, outside an
+  embedded webview. The page opens the WebUSB chooser from your click, filtered
+  to fastboot interface `ff/42/03`; only its serial crosses to the service,
+  which reopens the exact granted device in its own worker.
+- Read-only preparation checks product, mode, package and image hashes. Review
+  every prompt and acknowledge the exact serial before writing; the CLI
+  repeats it with `--confirm-serial`. Changes to the job, device, product or
+  answers invalidate confirmation.
+- Downloads respect `max-download-size` and split oversized images into sparse
+  parts preserving partition offsets. Reconnects pin the serial and recheck
+  product/mode; regrant the same phone when the app asks after a mode change.
+- Failure stops the plan; uncertain writes are never retried automatically.
+  Cancel stops future commands and waits for the worker to stop in-flight work,
+  not a rollback. Manual data formatting and actual rooting remain your tasks.
+- Receipts can be downloaded and are saved in the job when storage permits.
+  Fastboot OKAY is not readback verification; Android mode after the final
+  reboot is unverified. Browser hardware qualification is still pending.
+  Synthetic responder evidence covers streaming, sparse splitting, reconnects
+  and failure/uncertainty handling, not real USB or partition readback.
 
 Generated by the `p0g_app` brick (p0g-stack/bricks); the conventions below
 come from it.
@@ -97,11 +136,14 @@ come from it.
   folder; they insert themselves at the `// p0g:` markers.
 - **Rust.** `rust/` is a library used through frb, never a binary.
   Bootstrap runs `flutter_rust_bridge_codegen generate` (bindings in
-  `core/lib/src/rust/`) and `cargo build`. Bindings are sync
-  (`default_dart_async: false`): Squadron owns threads, so a call runs inside
-  whichever worker makes it. Each place loads the library itself
-  (`loadNative()`), and whether it did is the `native` fact. The build
-  pipeline needs it; `FlasherService` loads it before the first Rust call.
+  `core/lib/src/rust/`) and `cargo build`. Compute bindings are synchronous
+  (`default_dart_async: false`) inside the calling Squadron service worker;
+  fastboot bindings are asynchronous so USB awaits do not block that worker.
+  Each place loads the library itself (`loadNative()`); this is the `native`
+  fact. `FlasherService` loads it before Rust work. USB belongs to
+  `fastboot-link`, not `squadron_process`; the process package only carries
+  service calls. Published `nusb` 0.2.9 and `fastboot-protocol` 0.4.0 are used;
+  no fork rebase was performed for this work.
 - **Patched Squadron.** squadron_process needs Squadron with its
   channel-factory patch; bootstrap runs `squadron_process:squadron_patch`,
   which puts it under `.dart_tool/` and writes `pubspec_overrides.yaml`.
