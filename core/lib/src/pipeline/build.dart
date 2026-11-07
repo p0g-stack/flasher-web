@@ -182,7 +182,8 @@ final class _BuildRun {
       'Choose an upstream snapshot location.',
     );
     final apiBase = _req['apiBase'] is String ? _req['apiBase'] as String : '';
-    _output = await openStore(_map(_req['output'], 'output'));
+    final outputStore = _map(_req['output'], 'output');
+    _output = await openStore(outputStore);
     final bloatWorkspace = await openStore(_map(_req['bloat'], 'bloat'));
     _transport = HttpCatalogTransport();
     _client = CatalogClient(
@@ -226,11 +227,12 @@ final class _BuildRun {
     }
     await _logLine('Local bloat files verified: ${bloatStatus.total}');
 
-    final outputFree = await _freeBytes();
+    final outputFree = await availableStoreBytes(outputStore);
+    final outputLocation = outputStore['kind'] == 'opfs'
+        ? 'browser storage'
+        : 'the output folder';
     if (outputFree != null && outputFree < _gib) {
-      throw const BuildException(
-        'Less than 1 GiB available in the output folder.',
-      );
+      throw BuildException('Less than 1 GiB available in $outputLocation.');
     }
 
     final job = _job = _jobName();
@@ -274,12 +276,12 @@ final class _BuildRun {
             (zip ? 3 : 2);
       }
       neededBytes = max(2 * _gib, neededBytes);
-      final free = await _freeBytes();
+      final free = await availableStoreBytes(outputStore);
       if (free != null && free < neededBytes) {
         throw BuildException(
-          'Not enough disk space: ${_gibText(free)} GiB free; allow at least '
-          '${_gibText(neededBytes)} GiB for this payload. Choose another output '
-          'drive.',
+          'Not enough space in $outputLocation: ${_gibText(free)} GiB available; '
+          'allow at least ${_gibText(neededBytes)} GiB for this payload. '
+          'Choose another output folder.',
         );
       }
 
@@ -1027,19 +1029,6 @@ String _createdAt() {
 }
 
 String _gibText(int bytes) => (bytes / _gib).toStringAsFixed(1);
-
-Future<int?> _freeBytes() async {
-  try {
-    final stats = await storageStatistics();
-    final quota = (stats['quota'] as num?)?.toInt() ?? 0;
-    final usage = (stats['usage'] as num?)?.toInt() ?? 0;
-    if (quota <= 0) return null;
-    final free = quota - usage;
-    return free > 0 ? free : 0;
-  } on Object {
-    return null;
-  }
-}
 
 Future<void> _ensureDirectory(Workspace workspace, String path) async {
   final marker = '$path/.keep';

@@ -8,3 +8,8 @@ import 'storage_stats_io.dart'
 /// `{"persisted", "quota", "usage"}` in bytes.
 Future<Map<String, Object?>> storageStatistics() =>
     platform.storageStatistics();
+
+/// Available bytes for this store, or null when its capacity cannot be queried.
+/// Browser origin quota applies only to OPFS, never to a picked folder.
+Future<int?> availableStoreBytes(Map<String, Object?> store) =>
+    platform.availableStoreBytes(store);

@@ -905,6 +905,8 @@ class _PackageSummary extends StatelessWidget {
     final storage = setup.environment.storage;
     final free = storage.quota - storage.usage;
     final summary = setup.packageSummary;
+    final outputIsFolder = setup.outputStore.isFolder;
+    final usesBrowserStorage = !outputIsFolder || !setup.bloatStore.isFolder;
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -926,12 +928,24 @@ class _PackageSummary extends StatelessWidget {
           LabeledValue(label: 'Version', value: summary['version']! as String),
           const Divider(height: 24),
           HintText(
-            storage.quota > 0
-                ? '${formatBytes(free)} free in browser storage\n'
-                      '${free < 40 * 1024 * 1024 * 1024 ? 'Choose a larger store for full builds.' : 'Ready for your next build.'}'
-                : 'Storage space is reported by the browser.',
+            outputIsFolder
+                ? 'Output uses the selected folder. The browser cannot report '
+                      'its free disk space.'
+                : storage.quota > 0
+                ? '${formatBytes(free)} available in browser storage\n'
+                      '${free < 40 * 1024 * 1024 * 1024 ? 'Choose a folder for large full builds.' : 'Browser quota is not physical disk free space.'}'
+                : 'Browser storage quota is not reported.',
           ),
-          if (!storage.persisted) ...[
+          if (outputIsFolder && !setup.bloatStore.isFolder) ...[
+            const SizedBox(height: 6),
+            HintText(
+              storage.quota > 0
+                  ? 'Bloat cache still uses browser storage: '
+                        '${formatBytes(free)} available.'
+                  : 'Bloat cache still uses browser storage.',
+            ),
+          ],
+          if (usesBrowserStorage && !storage.persisted) ...[
             const SizedBox(height: 6),
             HintText(
               'Storage is not persistent yet; request it from Environment.',

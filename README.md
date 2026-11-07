@@ -71,9 +71,15 @@ answers or confirm a different phone.
 - Chromium can keep bloat and packages in a folder you pick (File System
   Access). Other browsers use origin-private storage (OPFS) and download the
   finished ZIP; ask for persistent storage on the Environment page.
-- A full build needs roughly the partition sizes twice over in free storage
-  (extracted images plus the ZIP; `super.img` is generated straight into the
-  ZIP and never stored). The Environment page shows the browser's quota.
+- Allow working space for extracted images and the finished package; capacity
+  preflight uses a conservative estimate from decoded partition sizes.
+  `super.img` is streamed into ZIP output rather than stored separately.
+  The Environment page shows the browser's quota, not a picked drive's space.
+- Browser quota applies only to OPFS. Picking an output folder does not use
+  that quota; browsers cannot report that folder's free disk space, so it is
+  shown as unknown and filesystem writes can still fail if its drive fills.
+  Choose a bloat folder too if its cache will not fit in browser storage.
+  Persistence or PWA installation is not a quota increase in Chromium.
 - Catalog versions are streamed through `/api/ota`, a range proxy limited to
   the OTA CDNs; signed links are resolved again when they expire.
 - Keep the tab open during a build; the app holds a wake lock and warns before

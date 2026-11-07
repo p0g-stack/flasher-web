@@ -25,6 +25,14 @@ Store    = {"kind": "directory", "handle": <FileSystemDirectoryHandle>}   // pic
 `bloat-manifest.json`, `templates/<dev>.zip` and `platform-tools.zip` are served
 (web: `<origin>/upstream/`; CLI: a directory path or URL).
 
+Build capacity checks follow the output Store: OPFS uses remaining origin
+quota, a picked directory has unknown capacity because browsers expose no
+free-disk-space API, and a native path queries its own volume (or its nearest
+existing parent for a new directory). Unknown capacity is not zero and must
+not inherit another store's quota. Filesystem write errors still stop the
+build. `environment().storage` remains origin/working-volume information,
+not the free space of a selected external folder.
+
 ## Methods
 
 | Method | Arguments | Result |
