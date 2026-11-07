@@ -175,7 +175,10 @@ Future<String> _extractOne(
     for (final op in ops) {
       final offset = op.dataOffset.toInt();
       final length = op.dataLength.toInt();
-      if (length <= 0) continue;
+      if (length <= 0) {
+        jobs.add(_ReadJob(0, 0)..ops.add(op));
+        continue;
+      }
       final last = jobs.isEmpty ? null : jobs.last;
       if (last != null &&
           offset == last.offset + last.length &&
@@ -208,7 +211,11 @@ Future<String> _extractOne(
     for (var index = 0; index < jobs.length; index++) {
       while (pending.length < window && nextJob < jobs.length) {
         final job = jobs[nextJob++];
-        pending.add(ota.readPayloadData(job.offset, job.length));
+        pending.add(
+          job.length == 0
+              ? Future.value(Uint8List(0))
+              : ota.readPayloadData(job.offset, job.length),
+        );
       }
       check();
       final data = await pending.removeAt(0);
@@ -238,7 +245,24 @@ Future<String> _extractOne(
           );
         }
         if (decoded.isEmpty) {
-          if (sequential) hasher.updateZeros(n: BigInt.from(total));
+          if (sequential) {
+            hasher.updateZeros(n: BigInt.from(total));
+          } else {
+            // Zero operations can overwrite earlier extents. A truncated
+            // file is already zeroed only where no previous operation wrote.
+            final zeros = Uint8List(total < 1 << 20 ? total : 1 << 20);
+            for (final extent in op.dst) {
+              var remaining = extent.length.toInt();
+              var offset = extent.offset.toInt();
+              while (remaining > 0) {
+                check();
+                final count = remaining < zeros.length ? remaining : zeros.length;
+                await sink.write(Uint8List.sublistView(zeros, 0, count), offset);
+                offset += count;
+                remaining -= count;
+              }
+            }
+          }
           done += total;
         } else {
           var decodedOffset = 0;
