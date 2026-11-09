@@ -5,7 +5,7 @@
 // flutter_bootstrap.js no longer asks the Flutter loader for a service worker.
 //
 // What it must never do:
-//   - touch /api/… (catalog, resolve, OTA and bloat ranges, hosted jobs): those
+//   - touch /api/… (catalog, resolve, OTA and bloat ranges): those
 //     streams rely on range semantics and must hit the network directly;
 //   - answer any request that carries a Range header;
 //   - keep OTA, bloat or package bytes: only the app shell and the engine
@@ -144,8 +144,8 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // /api/ and every range read stay network-only. OTA, bloat and hosted
-  // artifacts are streamed ranges and a cached 200 can never replace them.
+  // /api/ and every range read stay network-only. OTA and bloat bytes
+  // use streamed ranges and a cached 200 can never replace them.
   if (url.origin === self.location.origin && isApiPath(url.pathname)) return;
   if (request.headers.has('range')) return;
   if (request.cache === 'only-if-cached' && request.mode !== 'same-origin') {
@@ -162,7 +162,7 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(staleWhileRevalidate(event, request, cacheName));
 });
 
-/// `/api/catalog`, `/api/resolve`, `/api/ota`, `/api/bloat/…`, `/api/hosted/…`.
+/// `/api/catalog`, `/api/resolve`, `/api/ota`, `/api/bloat/…`.
 function isApiPath(pathname) {
   return pathname === '/api' || pathname.startsWith('/api/');
 }

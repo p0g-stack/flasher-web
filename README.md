@@ -9,8 +9,8 @@ needs, then pick one full OTA (a local ZIP or a catalog version).
 
 Both actions take the same inputs and produce the same images:
 
-- **Flash directly** — the OTA, the bloat images and the template are written
-  to the phone over fastboot. No OTA-derived file is stored.
+- **Flash directly** — images from the OTA and verified bloat are streamed to
+  the phone over fastboot in the template's order. No OTA-derived file is stored.
 - **Export ZIP** — the same package is streamed into one ZIP on the machine
   that runs the app. Nothing is staged in browser storage.
 
@@ -80,8 +80,9 @@ dart run cli/bin/flasher_web.dart flash --device 'Oneplus 13' --kind 'SuperHybri
   --serial SERIAL --upstream app/web/upstream
 ```
 
-Add `--catalog ID` instead of `--ota PATH` to read a catalog release through
-`/api/ota` (or give `--ota` an HTTP(S) URL). `--base PATH` supplies the Ace 6
+Add `--catalog ID` instead of `--ota PATH` to resolve a catalog release and
+read it through HTTP ranges (or give `--ota` an HTTP(S) URL).
+`--base PATH_OR_URL` supplies the Ace 6
 ColorOS BASE OTA for the Ace 6 OxygenOS conversion. X9U requires either
 `--vulnerable-abl` (pack bloat ABL 16.0.6) or `--no-vulnerable-abl`.
 
@@ -106,9 +107,12 @@ dart run cli/bin/flasher_web.dart export --device 'Oneplus 13' --kind 'SuperHybr
 ```
 
 It prints the ZIP's SHA-256, size and entry count and writes
-`<zip>.receipt.json` next to it. `facts` prints what the place has checked it
-can do; `serve` hosts the Squadron services for the process place (the
-launcher's root channel, not a user command).
+`<zip>.receipt.json` next to it. Both actions accept `--api-base ORIGIN` and
+`--upstream PATH_OR_URL`. `facts` prints what the place has checked it can do;
+`devices` lists fastboot serials. Global flags are `-v`/`--verbose` and `--json`.
+`serve` hosts the Squadron services for a process-place launcher, accepting
+`--session-file FILE`, `--port N`, `--launch-id ID`, `--grace-ms N` and
+`--first-link-grace-ms N`.
 
 ## In the browser
 
@@ -129,8 +133,8 @@ The setup page has four steps and one action card:
 
 The action card then offers **Flash directly** and **Export ZIP**. Flashing
 opens the flash page; exporting opens the save-file picker where the browser
-has one, and otherwise (Android Chrome) starts a streamed download. A
-cancelled or failed export aborts the download, so a partial ZIP is not saved.
+has one, and otherwise (Android Chrome) starts a streamed download. A failed
+streamed export aborts the download. Discard a partial ZIP left at a picked file.
 
 Keep the tab open while a flash, bloat download or export runs; the app holds a
 screen wake lock and a leave guard. The Environment page shows the engine, the
@@ -138,8 +142,8 @@ documented storage budget and the cached catalog OTAs, where one can be evicted.
 
 Flashing requires current Chrome or Edge on HTTPS or localhost, outside an
 embedded webview. The page opens the WebUSB chooser from the click, filtered to
-fastboot interface `ff/42/03`; only its serial crosses to the service worker,
-which reopens that exact granted device in its own worker. Regrant the same
+fastboot interface `ff/42/03`; only its serial crosses to the Squadron worker,
+which reopens that exact granted device. Regrant the same
 phone when the app asks after a mode change.
 
 ## One pass over the OTA
@@ -148,11 +152,11 @@ Every kind is produced in one pass over the OTA, with the images streamed from
 their payload operations to whichever sink consumes them:
 
 - Each image is verified against its payload-partition SHA-256 while it is
-  streamed; a mismatch stops the run before that image is written.
+  streamed; a mismatch stops the run. Earlier sparse parts may already be written.
 - `super.img` is emitted as a sparse image with RAW data blocks and DONT_CARE
   gaps only. LP extents come from the layout the flasher template writes, so
   every sparse piece's size is known without reading the images first; boot
-  partitions stay raw, and the bootloader writes the sparse image as it is.
+  partitions stay raw, and the bootloader expands sparse chunks into raw data.
 - The DONT_CARE form is slightly larger than FILL detection would be: measured
   on the owner's real CPH2645 16.0.3.500 OTA, 29.5 MiB on an 8.75 GiB super,
   about +0.33 %.
@@ -165,13 +169,14 @@ The app keeps its own data under a 10 GiB cap: verified bloat images (at most
 about 1.72 GiB raw), an optional cache of catalog OTA ZIPs and the service
 worker shell. A local OTA file costs nothing because it is read in place.
 
-- The bloat store is a picked folder on Chromium and OPFS elsewhere. Its
-  `ota-cache/` holds an OTA only when the user asks for an offline copy of one
-  catalog release; an interrupted download resumes at its recorded offset, and
-  least-recently-used eviction makes room for a new write.
-- A write that would pass the cap is refused before it starts, after eviction
-  has freed what it could. A picked folder's free space is not reported by the
-  browser, so only the cap applies there.
+- Bloat uses OPFS by default, or an optionally picked folder on desktop
+  Chromium. Its `ota-cache/` holds an OTA only when the user asks for an offline
+  copy of one catalog release; interrupted downloads resume at their recorded
+  offsets, and least-recently-used eviction makes room for a new write.
+- A write that would pass the cap is refused after eviction has freed what it
+  could. The browser's origin quota may be lower than the cap. A picked
+  folder's free disk space is not reported by the browser; only the app cap
+  applies to that store, not the origin quota.
 - Archives are never written to the store: the export streams straight into
   the chosen file or the download, so the output needs no OPFS space and no
   workspace.
@@ -187,6 +192,9 @@ resent automatically. The user chooses:
 - **Reboot to fastboot and retry** — reboots to the mode the failed step needs
   and then does the same.
 - **Stop** — ends the run; commands already sent stay applied.
+
+After the retried step succeeds, serial, product and mode are checked again
+before continuing with the remaining steps.
 
 A write whose completion is unknown is reported as uncertain, and a retry is
 an explicit choice, never a reaction to a lost acknowledgement.

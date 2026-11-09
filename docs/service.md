@@ -33,8 +33,8 @@ Destination = <web FileSystemFileHandle>                                  // one
 `Virtual` is the request's whole input: the OTA, the optional Ace 6 ColorOS
 BASE OTA (`base`, required by and only accepted for the Ace 6 OxygenOS
 conversion), the bloat store and the X9U `vulnerableAbl` choice (required for
-X9U, refused elsewhere). A request that names `output` or `hosted` is refused;
-an Ace 6T IN/GLO ODM donor is chosen from the catalog, never supplied by the
+X9U, refused elsewhere). A request that names an output store is refused; an
+Ace 6T IN/GLO ODM donor is chosen from the catalog, never supplied by the
 caller.
 
 ## Storage cap and cached OTAs
@@ -49,6 +49,10 @@ and `quota`. Usage and quota come from `navigator.storage.estimate()` in the
 browser and from the volume on the VM; a source that cannot measure anything
 leaves the cap as the only limit. Local OTA files are read in place and never
 counted.
+
+For a picked directory, an unknown estimate deliberately avoids applying the
+origin's quota to that folder. Only the app cap applies, and filesystem writes
+can still fail when the destination drive fills.
 
 ## Methods
 
@@ -132,10 +136,8 @@ Pass the verified `product` answer and prepare again. A product mismatch is
 refused before a token is returned. A link failure or a domain
 `FlashException` returns `{"error": FailureMap}`; domain failures use
 `blame: "user"`, `name: "FlashException"` and `stage: "prepare"`. Other errors
-are thrown: a missing or malformed `virtual` input, an unsupported flasher
-kind, an OTA that cannot be read in place, a missing BASE OTA for the Ace 6
-conversion, a missing ODM donor for Ace 6T IN/GLO, an X9U request without a
-`vulnerableAbl` choice, or a bloat image that fails its manifest check.
+are thrown. Invalid OTA inputs, unsupported kinds, missing conversion inputs,
+missing X9U choices and failed bloat checks are refused before any device write.
 
 A resolved result has these keys:
 
@@ -152,11 +154,11 @@ A resolved result has these keys:
  "confirmation": [String], "warnings": [String], "createdAt": String}
 ```
 
-`images` covers every image a `Flash` step would send. `digest` is the
-package's own SHA-256 (the payload partition digest, the bloat asset's raw
-digest, or the streaming digest of `super.img`); `parts` is how many downloads
-`max-download-size` forces. For a `super.img` the sparse geometry comes from the
-LP layout, so preparation reads no OTA or super bytes.
+`images` covers every image a `Flash` step would send. `digest` is the payload
+partition digest or bloat asset digest. For `super.img` it is initially empty:
+the encoded digest exists only after a complete stream. `parts` is the number
+of downloads forced by `max-download-size`. Sparse geometry comes from the LP
+layout, so preparation does not decode the super's OTA image data.
 
 If a prompt has no default and no answer, its `selected` is null, the result has
 `"resolved": false` and `"token": ""`, and `flash` cannot run. A prompt with a
@@ -228,8 +230,10 @@ steps; `rebootRetry` first reboots to the mode that step requires
 (`reboot-bootloader`, or `reboot-fastboot` for fastbootd) and waits for that
 mode. Both reopen the confirmed serial, recheck product and mode, keep the
 earlier `steps` and `writes` in the receipt, and stream the same events as
-`flash`. A retry whose own preflight fails emits `failure` with
-`stage: "retry-preflight"` and stays pausable.
+`flash`. A retry whose input or device checks fail emits `failure` and stays
+pausable; the receipt's failure has `stage: "retry-preflight"`.
+After the retried step succeeds, the executor checks serial, product and mode
+again before proceeding to the next step.
 
 `stopRun` accepts an active or paused run, stops future commands, and returns
 the receipt with `status: "stopped"`; an unknown or already finished run
@@ -248,14 +252,14 @@ Receipt:
  "writes": [{"image", "partition", "bytes", "part"?, "parts", "status"}],
  "verification": {"status": "unverified", "detail": String},
  "failure": FailureMap?, "uncertain": bool, "cleanupErrors": [String],
- "strategy", "virtual": {...snapshot}}
+ "strategy", "virtual": {...snapshot}, "persistenceWarnings": []}
 ```
 
 `verification.status` is always `unverified`: fastboot `OKAY` is not a readback
 hash. `modeEnd` is `android (unverified)` only when the final reboot command was
-reached; an earlier failure leaves it at the last observed mode. A failure that
-may not have reached the device leaves the write marked `uncertain` in
-`writes` and sets `uncertain: true`.
+reached; an earlier failure leaves it at the last observed mode. A flash command
+that may have reached the device without a definite completion leaves its write
+marked `uncertain` and sets `uncertain: true`.
 
 ### Failure evidence and browser qualification
 

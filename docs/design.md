@@ -113,6 +113,9 @@ anything yields an unknown estimate, so the cap is the only limit and the
 shortfall is reported rather than guessed. `BudgetException` names `needed`,
 `available`, `cap`, `usage` and `quota`.
 
+For a picked bloat folder the browser cannot measure free disk space, so the
+store uses an unknown estimate: only the app cap applies, not the origin quota.
+
 ### Catalog OTA cache (`storage/ota_cache.dart`)
 
 Optional and disposable: `ota-cache/<digest>.zip` plus a JSON sidecar (entry
@@ -210,7 +213,7 @@ digest of the complete encoded super is computed in the same pass.
 
 DONT_CARE costs a little more than the FILL form the desktop packer writes:
 measured on the owner's real CPH2645 16.0.3.500 OTA, 29.5 MiB on an 8.75 GiB
-super, about +0.33 %. The bootloader writes the sparse image as it is.
+super, about +0.33 %. The bootloader expands sparse chunks into raw partition data.
 
 ## Export ZIP
 
@@ -323,8 +326,9 @@ step and offers three explicit actions, all addressed by `runId`:
 
 A retry reopens the confirmed serial, rechecks product and mode (and the
 package size), and keeps the earlier steps and writes in the receipt. A retry
-that fails its own preflight stays pausable and reports the reason instead of
-closing the run. A write whose completion is unknown marks the receipt
+that fails its own checks stays pausable and reports the reason instead of
+closing the run. Serial, product and mode are checked again after a retried
+step succeeds, before continuing. A write whose completion is unknown marks the receipt
 `uncertain`; a complete device FAIL is a definite refusal. The session retires
 on transport or protocol failure, independently of the public blame.
 
@@ -415,7 +419,7 @@ The wasm build of `fastboot-link` needs `--cfg=web_sys_unstable_apis`; the root
 
 The page opens the WebUSB chooser from the user's click, filters on the
 fastboot interface `ff/42/03`, and passes only the chosen serial to the
-service worker. The worker never opens a chooser: it lists granted devices,
+Squadron worker. The worker never opens a chooser: it lists granted devices,
 reopens that exact serial, and asks the page to regrant the same phone after a
 mode change. Native discovery matches the same interface from USB descriptors.
 
