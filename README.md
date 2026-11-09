@@ -49,6 +49,7 @@ PLATFORMS=web bash tool/bootstrap.sh       # upstream snapshot, codegen, Rust + 
 dart analyze --fatal-infos
 (cd core && dart test) && (cd cli && dart test) && (cd app && flutter test)
 (cd rust && cargo test --workspace) && (cd worker && npm install && npx vitest run)
+dart run e2e/bin/run.dart  # headless Chrome + CLI against a fake fastboot device; rebuilds app/build/web with FLASHER_FAKE_USB
 (cd app && flutter_p0g build web --release)
 (cd worker && npx wrangler dev --port 8787)  # open http://127.0.0.1:8787
 ```
