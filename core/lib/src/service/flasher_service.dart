@@ -895,7 +895,7 @@ StorageBudget _budgetFor(
   Future<int> Function(int needed)? evict,
 }) {
   final kind = store is Map ? '${store['kind']}' : '';
-  if (kind == 'handle') {
+  if (kind == 'directory') {
     return StorageBudget(
       estimateSource: const UnknownStorageEstimate(),
       evictDefault: evict,
