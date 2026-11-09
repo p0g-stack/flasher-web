@@ -71,6 +71,8 @@ pub struct OpInfo {
     pub kind: u32,
     pub data_offset: u64,
     pub data_length: u64,
+    /// The manifest's SHA-256 of the operation data, raw bytes, when present.
+    pub data_sha256: Option<Vec<u8>>,
     pub dst: Vec<Extent>,
 }
 
@@ -81,6 +83,7 @@ impl From<ota_payload::OpInfo> for OpInfo {
             kind: info.kind,
             data_offset: info.data_offset,
             data_length: info.data_length,
+            data_sha256: info.data_sha256,
             dst: info.dst.into_iter().map(Extent::from).collect(),
         }
     }
@@ -152,6 +155,24 @@ impl Manifest {
     pub fn verify_virtual(&self, max_operation_bytes: u64) -> Result<()> {
         self.inner.verify_virtual(max_operation_bytes)
     }
+}
+
+/// Bytes one operation writes, decoded outside its manifest.
+///
+/// The same decode as [Manifest::decode_op] for a decode worker that holds
+/// only the operation: `kind`, the payload `data`, the manifest's data
+/// SHA-256 (checked first), the bytes its extents hold, the block size, and
+/// `what` to name it in errors.
+#[frb(sync)]
+pub fn decode_operation(
+    kind: u32,
+    data: Vec<u8>,
+    data_sha256: Option<Vec<u8>>,
+    total: u64,
+    block_size: u64,
+    what: String,
+) -> Result<Vec<u8>> {
+    ota_payload::decode_operation(kind, data, data_sha256.as_deref(), total, block_size, &what)
 }
 
 /// Streaming SHA-256 with an explicit zero run for holes in sparse images.

@@ -2,7 +2,7 @@
 //!
 //! Every entry is written with a data descriptor (bit 3) and a ZIP64 extra
 //! field, so sizes and offsets are never truncated: entries and the archive
-//! may exceed 4 GiB. Deflate is raw (method 8, level 3); `deflate=false`
+//! may exceed 4 GiB. Deflate is raw (method 8, level 1); `deflate=false`
 //! stores the bytes. Unix permissions go in the external attributes with
 //! `create_system = 3` (Unix).
 //!
@@ -147,7 +147,9 @@ impl ZipWriter {
             hasher: crc32fast::Hasher::new(),
             image_hasher,
             encoder: if deflate {
-                Some(DeflateEncoder::new(Vec::new(), Compression::new(3)))
+                // Level 1: on OTA images (mostly erofs) it deflates 4x faster
+                // than level 3 in wasm for about 1.5 % more output.
+                Some(DeflateEncoder::new(Vec::new(), Compression::new(1)))
             } else {
                 None
             },

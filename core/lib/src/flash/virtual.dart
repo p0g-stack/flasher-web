@@ -16,6 +16,7 @@ import '../storage/storage.dart';
 import '../upstream/bloat_selection.dart';
 import '../upstream/tables.dart';
 import 'model.dart';
+import 'op_decoder.dart';
 import 'ota_source.dart';
 import 'package_index.dart';
 import 'package.dart';
@@ -85,6 +86,7 @@ final class VirtualFlashPackage implements FlashPackage {
     Map<String, Object?>? donorIdentity,
     bool? vulnerableAbl,
     int? superSize,
+    OpDecoder decoder = const InlineOpDecoder(),
   }) async {
     const kinds = {'Regional Flasher', 'RegionalHybrid Flasher', 'Super Flasher', 'SuperHybrid Flasher'};
     if (!kinds.contains(selection.kind)) throw const FlashException('This flasher kind cannot be represented virtually.');
@@ -131,7 +133,7 @@ final class VirtualFlashPackage implements FlashPackage {
     };
     final stableIdentity = Map<String, Object?>.unmodifiable(Map<String, Object?>.from(jsonDecode(jsonEncode(identities)) as Map));
     final result = VirtualFlashPackage._(ota, selection, bloat, stableIdentity,
-      Map.unmodifiable(archives), Map.unmodifiable(selectedBloat), OtaOperationCache(), virtualJobId(ota, selection, stableIdentity));
+      Map.unmodifiable(archives), Map.unmodifiable(selectedBloat), OtaOperationCache(decoder: decoder), virtualJobId(ota, selection, stableIdentity));
     try {
       final main = bloatFolder(selection.dev, selection.kind, selection.region);
       for (final relative in paths) {

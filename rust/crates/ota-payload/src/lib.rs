@@ -63,6 +63,8 @@ pub struct OpInfo {
     pub kind: u32,
     pub data_offset: u64,
     pub data_length: u64,
+    /// The manifest's SHA-256 of the operation data, raw bytes, when present.
+    pub data_sha256: Option<Vec<u8>>,
     pub dst: Vec<Extent>,
 }
 
@@ -416,6 +418,7 @@ impl Manifest {
                 kind: op.kind,
                 data_offset: op.data_offset,
                 data_length: op.data_length,
+                data_sha256: op.data_hash.clone(),
                 dst: op
                     .dst
                     .iter()
@@ -449,40 +452,10 @@ impl Manifest {
             op.data_length,
             data.len()
         );
-        if let Some(expected) = &op.data_hash {
-            let actual = Sha256::digest(&data);
-            ensure!(
-                actual.as_slice() == expected.as_slice(),
-                "operation {index} of {name:?} fails its data SHA-256 check"
-            );
-        }
-
         validate_extents(self, partition)?;
         let total = extent_bytes(self, op)?;
-        let out = match op.kind {
-            OP_REPLACE => data,
-            OP_REPLACE_BZ => read_all(bzip2::read::BzDecoder::new(&data[..]), "bzip2", total)?,
-            OP_REPLACE_XZ => read_all(lzma_rust2::XzReader::new(&data[..], true), "xz", total)?,
-            OP_REPLACE_ZSTD => {
-                let decoder = ruzstd::decoding::StreamingDecoder::new(&data[..])
-                    .context("invalid zstd operation data")?;
-                read_all(decoder, "zstd", total)?
-            }
-            OP_ZERO | OP_DISCARD => return Ok(Vec::new()),
-            other => bail!(
-                "operation {index} of {name:?} has type {other}, which a full OTA cannot apply"
-            ),
-        };
-
-        // otaripper checks that the decoded data fills the extents up to a
-        // block boundary; the remainder of the last block stays zero.
-        let aligned = (out.len() as u64).div_ceil(self.block_size) * self.block_size;
-        ensure!(
-            aligned == total,
-            "operation {index} of {name:?} decodes {} bytes but its extents hold {total}",
-            out.len()
-        );
-        Ok(out)
+        let what = format!("operation {index} of {name:?}");
+        decode_operation(op.kind, data, op.data_hash.as_deref(), total, self.block_size, &what)
     }
 
     /// Validate the stronger contract required by in-place virtual reads.
@@ -590,6 +563,50 @@ impl Manifest {
         }
         Ok(self.partitions.len() as u32)
     }
+}
+
+/// Bytes one full-OTA operation writes, without its manifest.
+///
+/// This is [Manifest::decode_op] after the lookup, for a worker that was
+/// handed one operation: its `kind`, payload `data`, the data SHA-256 from the
+/// manifest (checked first when present), the bytes its destination extents
+/// hold and the payload block size. `what` names the operation in errors.
+/// ZERO and DISCARD return nothing; the caller leaves those extents zeroed.
+pub fn decode_operation(
+    kind: u32,
+    data: Vec<u8>,
+    data_sha256: Option<&[u8]>,
+    total: u64,
+    block_size: u64,
+    what: &str,
+) -> Result<Vec<u8>> {
+    ensure!(block_size > 0, "invalid payload block size");
+    if let Some(expected) = data_sha256 {
+        let actual = Sha256::digest(&data);
+        ensure!(actual.as_slice() == expected, "{what} fails its data SHA-256 check");
+    }
+    let out = match kind {
+        OP_REPLACE => data,
+        OP_REPLACE_BZ => read_all(bzip2::read::BzDecoder::new(&data[..]), "bzip2", total)?,
+        OP_REPLACE_XZ => read_all(lzma_rust2::XzReader::new(&data[..], true), "xz", total)?,
+        OP_REPLACE_ZSTD => {
+            let decoder = ruzstd::decoding::StreamingDecoder::new(&data[..])
+                .context("invalid zstd operation data")?;
+            read_all(decoder, "zstd", total)?
+        }
+        OP_ZERO | OP_DISCARD => return Ok(Vec::new()),
+        other => bail!("{what} has type {other}, which a full OTA cannot apply"),
+    };
+
+    // otaripper checks that the decoded data fills the extents up to a
+    // block boundary; the remainder of the last block stays zero.
+    let aligned = (out.len() as u64).div_ceil(block_size) * block_size;
+    ensure!(
+        aligned == total,
+        "{what} decodes {} bytes but its extents hold {total}",
+        out.len()
+    );
+    Ok(out)
 }
 
 /// Byte spans of one partition's operations, with bounds and overlap checks.

@@ -8,7 +8,7 @@
 /// written.
 ///
 /// The output is a streaming ZIP64, written once from offset 0 with increasing
-/// offsets, using the Rust `ZipWriter` (deflate level 3, data descriptors,
+/// offsets, using the Rust `ZipWriter` (deflate level 1, data descriptors,
 /// Unix modes). It contains no `build.json` and no checksum file: both are
 /// returned to the caller instead.
 library;

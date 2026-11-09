@@ -17,6 +17,7 @@ import '../facts/facts.dart';
 import '../flash/executor.dart';
 import '../flash/identity.dart';
 import '../flash/model.dart' as flash_model;
+import '../flash/op_decoder.dart';
 import '../flash/prepare.dart' as flash_prepare;
 import '../flash/store_identity.dart';
 import '../flash/strategy.dart';
@@ -888,6 +889,9 @@ Future<VirtualFlashPackage> _openVirtualPackage(
       donor: donor, donorIdentity: donorIdentity,
       vulnerableAbl: virtual['vulnerableAbl'] as bool?,
       superSize: selection.kind.contains('Super') ? tables.superSize(selection.dev, selection.region) : null,
+      // The package owns its decode workers: they start on its first decode
+      // and stop when it closes.
+      decoder: PoolOpDecoder(),
     );
   } on Object catch (error) {
     for (final archive in opened) { await archive.close(); }

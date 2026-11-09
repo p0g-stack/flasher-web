@@ -174,11 +174,33 @@ BASE, donor and bloat bytes.
 `OtaPartitionSource` maps a partition's destination extents — sorted, tiling
 the image, independent of operation order and of how many extents one
 operation owns — to the operations that fill them, and decodes an operation on
-demand through Rust `decode_op`, which checks its data SHA-256 before returning
-bytes. `OtaOperationCache` is one package-wide LRU of decoded operations capped
-at 64 MiB; an operation that needs more, or that has no hash, is refused while
-the source is built. `RandomFlashCursor` gives the executor the forward-only
-reads and skips the sparse split needs.
+demand through Rust `decode_operation`, which checks its data SHA-256 before
+returning bytes. `OtaOperationCache` is one package-wide LRU of decoded
+operations capped at 64 MiB, counting operations still decoding ahead of the
+reader; an operation that needs more, or that has no hash, is refused while the
+source is built. `RandomFlashCursor` gives the executor the forward-only reads
+and skips the sparse split needs.
+
+Reads in destination order keep a window of operations in flight: adjacent
+operations' payload data is fetched in one range of up to 8 MiB, and the
+package's `OpDecoder` decodes them. Each virtual package owns a
+`PoolOpDecoder`: `PayloadDecoder` workers (`service/decoder_service.dart`,
+isolates on the VM, Web Workers nested in the service worker on the web), one
+per core but one, at most 8, each with its own Rust library. They start on the
+package's first decode, so a preparation that reads only metadata starts none,
+and stop when the package closes. A place that cannot start them decodes
+inline. The window holds two operations per worker,
+so several range requests are in flight for a catalog OTA. Measured on the
+real CPH2745 16.0.9.400 `my_stock` (2972 MiB, 1323 XZ operations), streaming
+and hashing the image:
+
+| Place | Inline | Pool (8 workers) |
+|---|---|---|
+| Chrome, local file | 66.5 s (45 MiB/s) | 13.1 s (227 MiB/s) |
+| Dart VM, local file | 50.3 s (59 MiB/s) | 9.1 s (326 MiB/s) |
+
+Through the local `/api/ota` proxy, one 2 MiB range at a time read 12 MiB/s;
+four 8 MiB ranges at once read 118 MiB/s.
 
 An OTA input is one of:
 
@@ -219,7 +241,9 @@ super, about +0.33 %. The bootloader expands sparse chunks into raw partition da
 
 `core/lib/src/flash/virtual_export.dart` (`exportVirtualZip`) streams the tree
 the desktop packer would produce into a ZIP64 through the same Rust `ZipWriter`
-(deflate level 3, data descriptors, `create_system = 3`, Unix modes kept).
+(deflate level 1, data descriptors, `create_system = 3`, Unix modes kept).
+Level 1 rather than 3: on a real OnePlus `my_stock` image the wasm encoder runs
+at 170 MiB/s instead of 42 MiB/s, for 0.873 instead of 0.860 of the input size.
 `updater-script` and `*.sh` line endings are normalized, and Platform-Tools
 files override same-named template files. The archive's SHA-256 and each
 image's digest are computed while the bytes are written; the checksum and the
@@ -408,7 +432,7 @@ Compute surface (`rust/src/api/`):
   equal to `avbtool make_vbmeta_image --include_descriptors_from_image … --flags … --rollback_index …`.
 - `zip_write.rs`: opaque `ZipWriter::new()`, `start_file(name, unix_mode, deflate: bool) -> Vec<u8>`,
   `write(data) -> Vec<u8>`, `finish_file() -> Result<Vec<u8>>` (whose image digest is readable through
-  `finished_image_sha256()`), `finish() -> Result<Vec<u8>>`; ZIP64 throughout, deflate level 3, data
+  `finished_image_sha256()`), `finish() -> Result<Vec<u8>>`; ZIP64 throughout, deflate level 1, data
   descriptors, `create_system = 3`.
 
 The wasm build of `fastboot-link` needs `--cfg=web_sys_unstable_apis`; the root
