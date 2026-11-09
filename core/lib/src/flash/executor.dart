@@ -1,7 +1,7 @@
 /// Executes one prepared flash plan.
 ///
 /// Rules this file owns:
-/// - stop at the first failure and never resend an uncertain write;
+/// - stop at the first failure; resend only on explicit user retry;
 /// - reconnect only by the confirmed serial, with bounded waits;
 /// - split a download at the device's `max-download-size` while preserving
 ///   sparse block positions;
@@ -19,6 +19,7 @@ import 'package:logging/logging.dart';
 import 'model.dart';
 import 'prepare.dart';
 import 'sparse.dart';
+import 'virtual.dart';
 
 final _log = Logger('link.fastboot');
 
@@ -50,16 +51,34 @@ Future<Map<String, Object?>> executePreparedFlash(
   FlashCancellation? cancellation,
   Duration reconnectTimeout = const Duration(seconds: 180),
   Duration reconnectPoll = const Duration(seconds: 1),
+  Map<String, Object?>? previousReceipt,
+  bool rebootRetry = false,
 }) async {
   final cancel = cancellation ?? FlashCancellation();
-  final startedAt = DateTime.now().toUtc().toIso8601String();
+  final startedAt = previousReceipt?['startedAt'] as String? ?? DateTime.now().toUtc().toIso8601String();
+  final startStep = previousReceipt?['stepIndex'] as int? ?? 0;
+  final execution = prepared.plan.executionSteps;
+  if (startStep < 0 || startStep >= execution.length) throw const FlashException('Invalid failed step.');
+  var requiredMode = FlashMode.bootloader;
+  for (var i = 0; i <= startStep; i++) {
+    final step = execution[i];
+    if (step is RequireMode) requiredMode = step.mode;
+    if (i < startStep && step is RebootTo) requiredMode = step.mode;
+  }
   if (!prepared.resolved) {
     throw const FlashException(
       'The plan still has unanswered prompts; execution is refused.',
     );
   }
-  final steps = <Map<String, Object?>>[];
-  final writes = <Map<String, Object?>>[];
+  final steps = <Map<String, Object?>>[
+    if (previousReceipt != null)
+      for (final raw in previousReceipt['steps']! as List)
+        if ((raw as Map)['index'] as int <= startStep) Map<String, Object?>.from(raw),
+  ];
+  final writes = <Map<String, Object?>>[
+    if (previousReceipt != null)
+      for (final raw in previousReceipt['writes']! as List) Map<String, Object?>.from(raw as Map),
+  ];
   final cleanupErrors = <String>[];
   var status = 'succeeded';
   var uncertain = false;
@@ -67,6 +86,7 @@ Future<Map<String, Object?>> executePreparedFlash(
   var modeEnd = prepared.mode.name;
   var maxDownloadSize = prepared.maxDownloadSize;
   FastbootSession? session;
+  var stepIndex = startStep;
 
   void check() {
     if (cancel.isCancelled) throw const _Cancelled();
@@ -81,11 +101,8 @@ Future<Map<String, Object?>> executePreparedFlash(
     var mode = await probeFlashMode(first);
     _log.info('flash ${prepared.serial}: mode ${mode.name}');
     modeEnd = mode.name;
-    if (mode != FlashMode.bootloader) {
-      throw FlashException(
-        'The device is in ${mode.name}, but this plan starts in the normal '
-        'bootloader. Reboot there and prepare again.',
-      );
+    if (!rebootRetry && mode != requiredMode) {
+      throw FlashException('The device is in ${mode.name}; step $startStep requires ${requiredMode.name}.');
     }
     var product = await readProduct(first);
     if (product != prepared.expectedProduct) {
@@ -94,8 +111,16 @@ Future<Map<String, Object?>> executePreparedFlash(
         '"${prepared.expectedProduct}".',
       );
     }
+    if (rebootRetry) {
+      await first.command(requiredMode == FlashMode.fastbootd ? 'reboot-fastboot' : 'reboot-bootloader', write: true);
+      await first.close();
+      session = await _waitForSerial(transport, prepared, requiredMode, check, reconnectTimeout, reconnectPoll);
+      mode = await probeFlashMode(session);
+      product = await readProduct(session);
+      modeEnd = mode.name;
+    }
     maxDownloadSize = parseDownloadSize(
-      await first.command('getvar:max-download-size'),
+      await session.command('getvar:max-download-size'),
     );
     emit({
       'type': 'log',
@@ -105,8 +130,9 @@ Future<Map<String, Object?>> executePreparedFlash(
           'max-download-size $maxDownloadSize.',
     });
 
-    final execution = prepared.plan.executionSteps;
-    for (var index = 0; index < execution.length; index++) {
+    for (var index = startStep; index < execution.length; index++) {
+      stepIndex = index;
+      uncertain = false;
       check();
       final step = execution[index];
       emit({
@@ -153,6 +179,13 @@ Future<Map<String, Object?>> executePreparedFlash(
           (seen) => modeEnd = seen.name,
         );
         session = next;
+        if (previousReceipt != null && index == startStep && index + 1 < execution.length && next != null) {
+          final expectedMode = step is RebootTo ? step.mode : requiredMode;
+          if (next.serial != prepared.serial || await readProduct(next) != prepared.expectedProduct ||
+              await probeFlashMode(next) != expectedMode) {
+            throw const FlashException('Device identity or mode changed after the retried step.');
+          }
+        }
         steps.add({'index': index + 1, 'title': step.text, 'status': 'ok'});
       } catch (error) {
         final stepStatus = _statusFor(error, uncertain);
@@ -170,6 +203,7 @@ Future<Map<String, Object?>> executePreparedFlash(
     uncertain = uncertain || error.uncertain;
     status = uncertain ? 'uncertain' : 'failed';
     failure = error.toMap();
+    failure['stepIndex'] = stepIndex;
   } on FlashException catch (error) {
     uncertain = uncertain || error.uncertain;
     status = uncertain ? 'uncertain' : 'failed';
@@ -182,6 +216,7 @@ Future<Map<String, Object?>> executePreparedFlash(
       'stack': '',
       'causes': const <String>[],
       'cleanupErrors': const <String>[],
+      'stepIndex': stepIndex,
     };
   } on Object catch (error, stack) {
     status = uncertain ? 'uncertain' : 'failed';
@@ -194,6 +229,7 @@ Future<Map<String, Object?>> executePreparedFlash(
       'stack': '$stack',
       'causes': const <String>[],
       'cleanupErrors': const <String>[],
+      'stepIndex': stepIndex,
     };
   } finally {
     if (session != null) {
@@ -206,11 +242,27 @@ Future<Map<String, Object?>> executePreparedFlash(
   } else {
     _log.info('flash ${prepared.serial}: $status');
   }
+  final packageReceipt = prepared.package is VirtualFlashPackage
+    ? (prepared.package as VirtualFlashPackage).receipt() : prepared.package.buildJson;
+  final oldPackage = previousReceipt?['package'];
+  final imageHashes = <String, Object?>{
+    if (oldPackage is Map && oldPackage['image_sha256'] is Map)
+      ...Map<String, Object?>.from(oldPackage['image_sha256'] as Map),
+    if (packageReceipt['image_sha256'] is Map)
+      ...Map<String, Object?>.from(packageReceipt['image_sha256'] as Map),
+  };
   final receipt = <String, Object?>{
     'version': 1,
     'job': prepared.job,
     'status': status,
     'serial': prepared.serial,
+    'stepIndex': status == 'failed' || status == 'uncertain' ? stepIndex : null,
+    'reason': failure?['message'],
+    'package': {...packageReceipt, 'image_sha256': imageHashes},
+    'arb': packageReceipt['arb'],
+    'image_sha256': imageHashes,
+    if (packageReceipt['abl_source'] != null) 'abl_source': packageReceipt['abl_source'],
+    'otaVersion': prepared.version,
     'device': prepared.selection.device,
     'dev': prepared.selection.dev,
     'kind': prepared.selection.kind,
@@ -236,6 +288,10 @@ Future<Map<String, Object?>> executePreparedFlash(
     'uncertain': uncertain,
     'cleanupErrors': cleanupErrors,
   };
+  if (status == 'failed' || status == 'uncertain') {
+    emit({'type': 'failure', 'stepIndex': stepIndex, 'status': status,
+      'reason': failure?['message'] ?? 'Flash failed.'});
+  }
   return receipt;
 }
 
@@ -314,19 +370,10 @@ Future<FastbootSession?> _runStep(
         FlashMode.android => 'reboot',
         FlashMode.superFastboot => 'reboot-bootloader',
       };
-      LinkFailure? rebootFailure;
-      try {
-        await active.command(command, write: true);
-      } on LinkFailure catch (error) {
-        if (!error.uncertain) rethrow;
-        // A reboot may disconnect before OKAY. Observe its result; never resend.
-        rebootFailure = error;
-        _log.warning('Reboot acknowledgement lost: ${error.toMap()}');
-      }
+      await active.command(command, write: true);
       await active.close();
       if (mode == FlashMode.android) {
         finalReboot(true);
-        if (rebootFailure != null) throw rebootFailure;
         emit({
           'type': 'log',
           'text':
@@ -491,6 +538,7 @@ Future<void> _flashImage(
             await session.writeDownload(fillBytes(piece.fill));
           }
         }
+        if (index == parts.length - 1) await cursor.skipTo(source.length);
         check();
         await session.endDownload();
         guard.phase = 3;

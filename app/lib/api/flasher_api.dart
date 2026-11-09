@@ -44,6 +44,10 @@ abstract interface class FlasherApi {
   /// one result carrying the receipt.
   Stream<Map<String, Object?>> flash(Map<String, Object?> request);
 
+  Stream<Map<String, Object?>> retryStep(Map<String, Object?> request);
+  Stream<Map<String, Object?>> rebootRetry(Map<String, Object?> request);
+  Future<Map<String, Object?>> stopRun(Map<String, Object?> request);
+
   /// The 10 GiB app budget, the platform estimate and the cached OTAs.
   ///
   /// Request: `{store, apiBase}`. Result: `{cap, usage, quota, available,

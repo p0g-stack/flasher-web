@@ -17,6 +17,7 @@ enum FlashPhase {
   succeeded,
   failed,
   uncertain,
+  stopped,
   cancelled,
 }
 
@@ -64,6 +65,12 @@ final class FlashController extends ChangeNotifier {
   bool _sawStep = false;
   bool _awake = false;
   bool _disposed = false;
+  String? _runId;
+  int? _failureStep;
+  String? _failureStatus;
+  String? _failureReason;
+  bool _canRetry = false;
+  bool _stoppingRun = false;
 
   final _log = <String>[];
   final _progress = <String, ({int done, int total})>{};
@@ -93,11 +100,13 @@ final class FlashController extends ChangeNotifier {
   PreparedFlash? get prepared => _prepared;
   bool get writesSupported => environment.has('usb.web');
   bool get pageCanChoose => bridge.canChooseFastbootDevice;
-  bool get running => _phase == FlashPhase.running || _stopping;
+  bool get running =>
+      _phase == FlashPhase.running || _stopping || _stoppingRun;
   bool get terminal => switch (_phase) {
     FlashPhase.succeeded ||
     FlashPhase.failed ||
     FlashPhase.uncertain ||
+    FlashPhase.stopped ||
     FlashPhase.cancelled => true,
     _ => false,
   };
@@ -122,6 +131,47 @@ final class FlashController extends ChangeNotifier {
   bool get regranting => _regranting;
   String? get regrantMessage => _regrantMessage;
   String get logText => _log.join('\n');
+
+  /// The service's id for this run, read from its first `run` event. A retry
+  /// names exactly this run; nothing reopens a used confirmation token.
+  String? get runId => _runId;
+
+  /// The zero-based failed step and its status and reason, as the service's
+  /// `failure` event reported them. Null until a step fails.
+  int? get failedStepIndex => _failureStep;
+  String? get failureStatus => _failureStatus;
+  String? get failureReason => _failureReason;
+
+  /// The failed step as the receipt names it, one-based for display.
+  String get failedStepLabel {
+    final index = _failureStep;
+    if (index == null) return 'The failed step';
+    final title = _stepTitle.isNotEmpty
+        ? _stepTitle
+        : _receiptStepTitle(index + 1);
+    return title.isEmpty ? 'Step ${index + 1}' : 'Step ${index + 1}: $title';
+  }
+
+  /// Whether the service kept the failed run paused and accepts an explicit
+  /// retry. Nothing is ever resent automatically.
+  bool get canRetry => _canRetry && _runId != null && !running;
+
+  /// A stop request is in flight.
+  bool get stopping => _stoppingRun;
+
+  String _receiptStepTitle(int oneBased) {
+    final steps = _receipt?['steps'];
+    if (steps is List) {
+      for (final step in steps) {
+        if (step is Map &&
+            step['index'] is num &&
+            (step['index'] as num).toInt() == oneBased) {
+          return '${step['title'] ?? ''}';
+        }
+      }
+    }
+    return '';
+  }
 
   /// The job the service derives from the OTA identity. It appears after
   /// preparation.
@@ -369,6 +419,7 @@ final class FlashController extends ChangeNotifier {
       'ota': _otaSnapshot(virtual['ota']),
       if (virtual['base'] != null) 'base': _otaSnapshot(virtual['base']),
       'bloat': _storeSnapshot(virtual['bloat']),
+      if (target.vulnerableAbl != null) 'vulnerableAbl': target.vulnerableAbl,
     };
   }
 
@@ -521,6 +572,11 @@ final class FlashController extends ChangeNotifier {
     _regrantMessage = null;
     _stepIndex = 0;
     _stepTitle = '';
+    _runId = null;
+    _failureStep = null;
+    _failureStatus = null;
+    _failureReason = null;
+    _canRetry = false;
     _log
       ..clear()
       ..add('Flashing ${target.label} to serial ${_serial ?? ''}.')
@@ -606,6 +662,38 @@ final class FlashController extends ChangeNotifier {
   void _onEvent(Map<String, Object?> event) {
     if (_disposed) return;
     switch (event['type']) {
+      case 'run':
+        final runId = event['runId'];
+        if (runId is String && runId.isNotEmpty) _runId = runId;
+      case 'failure':
+        _waiting = null;
+        _regrantMessage = null;
+        final index = event['stepIndex'];
+        final status = event['status'];
+        final reason = event['reason'];
+        if (index is num) _failureStep = index.toInt();
+        _failureStatus = status is String && status == 'uncertain'
+            ? 'uncertain'
+            : 'failed';
+        _failureReason = reason is String && reason.isNotEmpty
+            ? reason
+            : null;
+        _phase = _failureStatus == 'uncertain'
+            ? FlashPhase.uncertain
+            : FlashPhase.failed;
+        final number = (_failureStep ?? 0) + 1;
+        _log.add(
+          '${_failureStatus == 'uncertain' ? 'UNCERTAIN' : 'FAILED'}: step '
+          '$number${_failureReason == null ? '' : ' — $_failureReason'}',
+        );
+        _guidance = _failureStatus == 'uncertain'
+            ? 'Step $number may have been written without a confirmed '
+                  'reply. Retry that step, reboot the phone to fastboot and '
+                  'retry, or stop. Nothing is resent automatically; do not '
+                  'retry blindly, check the phone first.'
+            : 'Step $number failed. Retry that step from byte zero, reboot the '
+                  'phone to fastboot and retry, or stop. Earlier steps stay '
+                  'applied and nothing is resent automatically.';
       case 'step':
         _waiting = null;
         _regrantMessage = null;
@@ -643,29 +731,59 @@ final class FlashController extends ChangeNotifier {
         _result = Map<String, Object?>.from(event);
         final receipt = event['receipt'];
         _receipt = receipt is Map ? Map<String, Object?>.from(receipt) : null;
+        final runId = event['runId'];
+        if (runId is String && runId.isNotEmpty) _runId = runId;
+        final canRetry = event['canRetry'];
+        _canRetry = canRetry == true;
         final status = '${event['status'] ?? _receipt?['status'] ?? ''}';
         _phase = switch (status) {
           'succeeded' => FlashPhase.succeeded,
           'cancelled' => FlashPhase.cancelled,
+          'stopped' => FlashPhase.stopped,
           'uncertain' => FlashPhase.uncertain,
           _ => FlashPhase.failed,
         };
+        // A receipt repeats the failed step for pages that never saw the
+        // failure event; the event's own values stay authoritative.
+        if (_failureStep == null && _receipt?['stepIndex'] is num) {
+          _failureStep = (_receipt!['stepIndex']! as num).toInt();
+        }
+        if (_failureReason == null && _receipt?['reason'] is String) {
+          _failureReason = _receipt!['reason']! as String;
+        }
+        if (_failureStatus == null && _phase == FlashPhase.uncertain) {
+          _failureStatus = 'uncertain';
+        } else if (_failureStatus == null && _phase == FlashPhase.failed) {
+          _failureStatus = 'failed';
+        }
         _log.add('Flash finished: $status.');
-        if (_phase == FlashPhase.failed) {
-          _guidance =
-              'The flash stopped at the first failure. Do not retry writes '
-              'automatically. Reconnect the phone, inspect the steps above, '
-              'then choose it and prepare a new flash.';
-        } else if (_phase == FlashPhase.uncertain) {
-          _guidance =
-              'A write may have reached the phone without confirmation. Do '
-              'not retry automatically. Reconnect it in fastboot and check '
-              'the affected partitions before preparing a new flash.';
-        } else if (_phase == FlashPhase.succeeded) {
-          _guidance =
-              'The OTA was flashed in place from its own bytes and no local '
-              'job exists, so download the receipt now. Wiping and rooting '
-              'stay manual on the phone.';
+        switch (_phase) {
+          case FlashPhase.failed:
+            _guidance ??=
+                'The flash stopped at the first failure. Retry that step, '
+                'reboot the phone to fastboot and retry, or stop. Nothing is '
+                'resent automatically.';
+          case FlashPhase.uncertain:
+            _guidance ??=
+                'A write may have reached the phone without confirmation. '
+                'Retry that step, reboot to fastboot and retry, or stop. Do '
+                'not retry blindly: check the affected partitions first.';
+          case FlashPhase.succeeded:
+            _guidance =
+                'The OTA was flashed in place from its own bytes and no local '
+                'job or history exists, so download the receipt now. Wiping '
+                'and rooting stay manual on the phone.';
+          case FlashPhase.stopped:
+            _guidance ??=
+                'Stopped on request. No rollback was performed; commands '
+                'already sent stay applied and a write in flight may have '
+                'left the phone partially written.';
+          case FlashPhase.cancelled:
+            _guidance ??=
+                'Cancelled. No rollback was performed; commands already sent '
+                'stay applied.';
+          default:
+            break;
         }
         _finish(cancelSubscription: false);
       default:
@@ -675,15 +793,20 @@ final class FlashController extends ChangeNotifier {
   }
 
   void _onError(Object error) {
-    if (_disposed || terminal) return;
+    if (_disposed || terminal || _stoppingRun) return;
     if (_phase != FlashPhase.running) {
       _errorText = '$error';
+      _canRetry = false;
       _phase = FlashPhase.failed;
       _finish();
       return;
     }
     _errorText = '$error';
     _phase = _sawStep ? FlashPhase.uncertain : FlashPhase.failed;
+    if (_stepIndex > 0) _failureStep = _stepIndex - 1;
+    _failureStatus = _phase == FlashPhase.uncertain ? 'uncertain' : 'failed';
+    _failureReason ??= '$error';
+    _canRetry = false;
     _guidance = _phase == FlashPhase.uncertain
         ? 'The stream broke after at least one command, so the phone may be '
               'partially written. Do not retry automatically. Reconnect it in '
@@ -695,10 +818,20 @@ final class FlashController extends ChangeNotifier {
   }
 
   void _onDone() {
-    if (_disposed || terminal) return;
+    if (_disposed || _stoppingRun) return;
+    if (terminal) {
+      // A result already ended the run; a failure event without a result
+      // still leaves this stream, so release the guard and the wake lock.
+      if (_subscription != null) _finish(cancelSubscription: false);
+      return;
+    }
     if (_phase == FlashPhase.running) {
       _phase = _sawStep ? FlashPhase.uncertain : FlashPhase.failed;
       _errorText = 'The flash stream ended without a result.';
+      if (_stepIndex > 0) _failureStep = _stepIndex - 1;
+      _failureStatus = _phase == FlashPhase.uncertain ? 'uncertain' : 'failed';
+      _failureReason ??= _errorText;
+      _canRetry = false;
       _guidance = _phase == FlashPhase.uncertain
           ? 'A command may have reached the phone. Do not retry '
                 'automatically; reconnect it and inspect the device.'
@@ -719,8 +852,8 @@ final class FlashController extends ChangeNotifier {
     } else if (!_stopping) {
       _releaseAwake();
     }
-    // A used token is never offered again: a retry needs a new read-only
-    // preparation and a new explicit confirmation.
+    // A used token is never offered again: a retry names the paused run by id,
+    // and a fresh flash needs a new read-only preparation and confirmation.
     if (terminal) {
       _prepared = null;
       _preparedRequest = null;
@@ -770,6 +903,141 @@ final class FlashController extends ChangeNotifier {
     _log.add('Cancelled by you; no rollback was performed.');
     _finish();
     await _stoppingFuture;
+  }
+
+  /// Retries the failed step from byte zero on the same run. Earlier steps
+  /// stay written and the service reopens and rechecks the exact serial.
+  Future<void> retryFailedStep() => _resume(reboot: false);
+
+  /// Reboots the phone to the failed step's required mode, then retries it.
+  Future<void> rebootAndRetry() => _resume(reboot: true);
+
+  Future<void> _resume({required bool reboot}) async {
+    final runId = _runId;
+    if (runId == null || !_canRetry || running || _disposed) return;
+    final stepNumber = (_failureStep ?? 0) + 1;
+    if (_totalSteps <= 0 && _receipt?['steps'] is List) {
+      _totalSteps = (_receipt!['steps']! as List).length;
+    }
+    _starting = true;
+    _notify();
+    // The leave guard and wake lock must hold before the first command.
+    try {
+      await bridge.beginKeepAwake();
+      _awake = true;
+    } on Object catch (error) {
+      _starting = false;
+      _errorText =
+          'Could not hold a wake lock or leave guard, so the retry was not '
+          'started: $error';
+      _notify();
+      return;
+    }
+    if (_disposed || _runId != runId || !_canRetry) {
+      _starting = false;
+      _releaseAwake();
+      _notify();
+      return;
+    }
+    _starting = false;
+    _canRetry = false;
+    _failureStep = null;
+    _failureStatus = null;
+    _failureReason = null;
+    _result = null;
+    _errorText = null;
+    _guidance = null;
+    _cancelNote = null;
+    _waiting = null;
+    _phase = FlashPhase.running;
+    _log.add(
+      reboot
+          ? 'Reboot to fastboot and retry requested for step $stepNumber.'
+          : 'Retry requested for step $stepNumber from byte zero.',
+    );
+    _notify();
+    final request = <String, Object?>{'runId': runId};
+    try {
+      _subscription =
+          (reboot ? api.rebootRetry(request) : api.retryStep(request)).listen(
+            _onEvent,
+            onError: _onError,
+            onDone: _onDone,
+            cancelOnError: false,
+          );
+    } on Object catch (error) {
+      _onError(error);
+    }
+  }
+
+  /// Stops a running or paused run and keeps the returned receipt. No rollback
+  /// happens: commands already sent stay applied.
+  Future<void> stop() async {
+    final runId = _runId;
+    if (runId == null || _stoppingRun || _disposed) return;
+    if (_phase != FlashPhase.running && !_canRetry) return;
+    _stoppingRun = true;
+    _notify();
+    Map<String, Object?>? receipt;
+    Object? failure;
+    try {
+      final response = await api.stopRun({'runId': runId});
+      final value = response['receipt'];
+      if (value is Map) receipt = Map<String, Object?>.from(value);
+    } on Object catch (error) {
+      failure = error;
+    }
+    if (_disposed) return;
+    _stoppingRun = false;
+    if (receipt == null) {
+      _errorText = 'The service did not confirm the stop: ${failure ?? ''}';
+      _log.add('ERROR: the stop was not confirmed: ${failure ?? ''}');
+      _notify();
+      return;
+    }
+    _receipt = receipt;
+    _phase = FlashPhase.stopped;
+    _canRetry = false;
+    _failureStep = null;
+    _failureStatus = null;
+    _failureReason = null;
+    _errorText = null;
+    _cancelNote = null;
+    _guidance =
+        'Stopped on request. No rollback was performed; commands already sent '
+        'stay applied and a write in flight may have left the phone partially '
+        'written.';
+    _log.add('Stopped on request; no further commands are sent.');
+    _stoppingFuture = _finishStopped();
+    _notify();
+    await _stoppingFuture;
+  }
+
+  Future<void> _finishStopped() async {
+    _regranting = false;
+    _waiting = null;
+    _prepared = null;
+    _preparedRequest = null;
+    _acknowledged = false;
+    final subscription = _subscription;
+    _subscription = null;
+    if (subscription == null) {
+      _releaseAwake();
+      return;
+    }
+    _stopping = true;
+    try {
+      await subscription.cancel();
+    } on Object catch (error) {
+      _log.add('The stop acknowledgement failed: $error');
+    } finally {
+      if (_awake) {
+        _awake = false;
+        await _endAwake();
+      }
+      _stopping = false;
+      _notify();
+    }
   }
 
   /// Grants the waiting serial again. A different device is refused before

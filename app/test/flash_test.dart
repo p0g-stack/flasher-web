@@ -72,6 +72,63 @@ Map<String, Object?> unresolvedPrepare() => {
   'warnings': <String>[],
 };
 
+const _sha = 'b1946ac92492d2347c6235b4d2611184'
+    'b1946ac92492d2347c6235b4d2611184';
+
+/// A receipt as the landed service returns it: one-based step indexes, the
+/// ARB index, per-image hashes and the failure of a failed step.
+Map<String, Object?> flashReceipt({
+  String status = 'succeeded',
+  int? stepIndex,
+  String? reason,
+  bool withAbl = false,
+  List<Map<String, Object?>> steps = const [
+    {'index': 1, 'title': 'Require bootloader', 'status': 'ok'},
+    {'index': 2, 'title': 'Flash boot from boot.img', 'status': 'ok'},
+  ],
+}) => {
+  'version': 1,
+  'runId': 'run-1',
+  'status': status,
+  'serial': _serial,
+  'device': 'Realme NEO8',
+  'otaVersion': 'CPH123_11.A.01',
+  'arb': {'major': 1, 'minor': 2, 'index': 3},
+  'image_sha256': {'boot.img': _sha, 'super.img': _sha},
+  if (withAbl)
+    'abl_source': {'version': '16.0.6', 'sha256': _sha, 'bytes': 4096},
+  'stepIndex': ?stepIndex,
+  'reason': ?reason,
+  if (status == 'failed' || status == 'uncertain')
+    'failure': {
+      'name': 'LinkFailure',
+      'message': reason ?? 'Flash failed.',
+      'stage': 'execute',
+      'uncertain': status == 'uncertain',
+      'stepIndex': stepIndex ?? 0,
+    },
+  'steps': steps,
+  'uncertain': status == 'uncertain',
+  'cleanupErrors': <String>[],
+};
+
+Map<String, Object?> failedFlashResult({
+  String reason = 'FAIL reply on flash',
+  bool canRetry = true,
+  bool withAbl = false,
+}) => {
+  'type': 'result',
+  'runId': 'run-1',
+  'status': 'failed',
+  'canRetry': canRetry,
+  'receipt': flashReceipt(
+    status: 'failed',
+    stepIndex: 1,
+    reason: reason,
+    withAbl: withAbl,
+  ),
+};
+
 Future<FlashController> pumpFlash(
   WidgetTester tester,
   Harness harness, {
@@ -569,5 +626,372 @@ void main() {
     expect(controller.devicesError, contains('blame: transport'));
     expect(controller.devicesError, contains('stage: devices'));
     expect(find.textContaining('Access denied by the browser'), findsOneWidget);
+  });
+
+  testWidgets('a failed step offers retry, reboot retry and stop', (
+    tester,
+  ) async {
+    final harness = Harness();
+    final events = StreamController<Map<String, Object?>>(
+      onCancel: () async {},
+    );
+    addTearDown(events.close);
+    harness.api.prepareFlashResult = (_) => resolvedPrepare();
+    harness.api.flashStream = (_) => events.stream;
+    final controller = await pumpFlash(tester, harness);
+    await selectDevice(tester, controller);
+    await confirmAndFlash(tester);
+
+    events.add({'type': 'run', 'runId': 'run-1'});
+    events.add({
+      'type': 'step',
+      'index': 1,
+      'total': 2,
+      'title': 'Require bootloader',
+    });
+    events.add({
+      'type': 'step',
+      'index': 2,
+      'total': 2,
+      'title': 'Flash boot from boot.img',
+    });
+    events.add({
+      'type': 'failure',
+      'stepIndex': 1,
+      'status': 'failed',
+      'reason': 'FAIL reply on flash',
+    });
+    events.add(failedFlashResult(withAbl: true));
+    await tester.pumpAndSettle();
+
+    expect(controller.runId, 'run-1');
+    expect(controller.phase, FlashPhase.failed);
+    expect(controller.failedStepIndex, 1);
+    expect(controller.failureReason, 'FAIL reply on flash');
+    expect(controller.canRetry, isTrue);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('flashFailure')),
+        matching: find.textContaining('Step 2'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('FAIL reply on flash'), findsWidgets);
+    expect(find.byKey(const ValueKey('retryFlashStep')), findsOneWidget);
+    expect(find.byKey(const ValueKey('rebootRetryFlashStep')), findsOneWidget);
+    expect(find.byKey(const ValueKey('stopFlashRun')), findsOneWidget);
+    expect(find.text('FAILED'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('downloadFlashReceipt')),
+      findsOneWidget,
+    );
+    // The receipt card names the device, serial, version, ARB, ABL source and
+    // every image hash the service reported.
+    expect(find.text(_serial), findsWidgets);
+    expect(find.text('Realme NEO8'), findsWidgets);
+    expect(find.text('CPH123_11.A.01'), findsOneWidget);
+    expect(find.textContaining('major 1'), findsOneWidget);
+    expect(find.textContaining('16.0.6'), findsOneWidget);
+    expect(find.textContaining('super.img'), findsWidgets);
+    expect(find.text(_sha), findsWidgets);
+    expect(harness.bridge.keepAwake, 0);
+    expect(harness.api.lastFlashRequest?['confirmationToken'], 'token-1');
+  });
+
+  testWidgets('retry continues from the failed step and keeps earlier steps', (
+    tester,
+  ) async {
+    final harness = Harness();
+    final events = StreamController<Map<String, Object?>>(
+      onCancel: () async {},
+    );
+    addTearDown(events.close);
+    final retried = StreamController<Map<String, Object?>>(
+      onCancel: () async {},
+    );
+    addTearDown(retried.close);
+    harness.api.prepareFlashResult = (_) => resolvedPrepare();
+    harness.api.flashStream = (_) => events.stream;
+    harness.api.retryStepStream = (_) => retried.stream;
+    final controller = await pumpFlash(tester, harness);
+    await selectDevice(tester, controller);
+    await confirmAndFlash(tester);
+
+    events.add({'type': 'run', 'runId': 'run-1'});
+    events.add({
+      'type': 'step',
+      'index': 1,
+      'total': 2,
+      'title': 'Require bootloader',
+    });
+    events.add({
+      'type': 'step',
+      'index': 2,
+      'total': 2,
+      'title': 'Flash boot from boot.img',
+    });
+    events.add({
+      'type': 'failure',
+      'stepIndex': 1,
+      'status': 'failed',
+      'reason': 'FAIL reply on flash',
+    });
+    events.add(failedFlashResult());
+    await tester.pumpAndSettle();
+
+    final earlier = controller.log
+        .where((line) => line.contains('Require bootloader'))
+        .length;
+    expect(earlier, greaterThan(0));
+
+    await tester.ensureVisible(find.byKey(const ValueKey('retryFlashStep')));
+    await tester.tap(find.byKey(const ValueKey('retryFlashStep')));
+    await tester.pump();
+
+    expect(harness.api.lastRetryStepRequest, {'runId': 'run-1'});
+    expect(controller.phase, FlashPhase.running);
+    expect(controller.canRetry, isFalse);
+    expect(find.byKey(const ValueKey('retryFlashStep')), findsNothing);
+    expect(harness.bridge.keepAwake, 1);
+
+    retried.add({'type': 'run', 'runId': 'run-1'});
+    retried.add({
+      'type': 'step',
+      'index': 2,
+      'total': 2,
+      'title': 'Flash boot from boot.img',
+    });
+    retried.add({
+      'type': 'result',
+      'runId': 'run-1',
+      'status': 'succeeded',
+      'canRetry': false,
+      'receipt': flashReceipt(
+        steps: const [
+          {'index': 1, 'title': 'Require bootloader', 'status': 'ok'},
+          {'index': 2, 'title': 'Flash boot from boot.img', 'status': 'ok'},
+        ],
+      ),
+    });
+    await tester.pumpAndSettle();
+
+    expect(controller.phase, FlashPhase.succeeded);
+    expect(controller.stepIndex, 2);
+    expect(
+      controller.log.where((line) => line.contains('Require bootloader')).length,
+      earlier,
+    );
+    expect(controller.receipt?['steps'], hasLength(2));
+    expect(find.byKey(const ValueKey('retryFlashStep')), findsNothing);
+    expect(find.byKey(const ValueKey('stopFlashRun')), findsNothing);
+    expect(harness.api.flashCalls, 1);
+    expect(harness.bridge.keepAwake, 0);
+  });
+
+  testWidgets('reboot retry names the run and reboots first', (tester) async {
+    final harness = Harness();
+    final events = StreamController<Map<String, Object?>>(
+      onCancel: () async {},
+    );
+    addTearDown(events.close);
+    final retried = StreamController<Map<String, Object?>>(
+      onCancel: () async {},
+    );
+    addTearDown(retried.close);
+    harness.api.prepareFlashResult = (_) => resolvedPrepare();
+    harness.api.flashStream = (_) => events.stream;
+    harness.api.rebootRetryStream = (_) => retried.stream;
+    final controller = await pumpFlash(tester, harness);
+    await selectDevice(tester, controller);
+    await confirmAndFlash(tester);
+
+    events.add({'type': 'run', 'runId': 'run-1'});
+    events.add({
+      'type': 'step',
+      'index': 1,
+      'total': 2,
+      'title': 'Require bootloader',
+    });
+    events.add({
+      'type': 'failure',
+      'stepIndex': 0,
+      'status': 'uncertain',
+      'reason': 'Write reply lost',
+    });
+    events.add({
+      'type': 'result',
+      'runId': 'run-1',
+      'status': 'uncertain',
+      'canRetry': true,
+      'receipt': flashReceipt(
+        status: 'uncertain',
+        stepIndex: 0,
+        reason: 'Write reply lost',
+        steps: const [
+          {'index': 1, 'title': 'Require bootloader', 'status': 'uncertain'},
+        ],
+      ),
+    });
+    await tester.pumpAndSettle();
+    expect(controller.phase, FlashPhase.uncertain);
+    expect(find.text('UNCERTAIN'), findsOneWidget);
+    expect(find.textContaining('Do not retry'), findsWidgets);
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('rebootRetryFlashStep')),
+    );
+    await tester.tap(find.byKey(const ValueKey('rebootRetryFlashStep')));
+    await tester.pump();
+
+    expect(harness.api.lastRebootRetryRequest, {'runId': 'run-1'});
+    expect(harness.api.lastRetryStepRequest, isNull);
+    expect(controller.phase, FlashPhase.running);
+
+    retried.add({'type': 'run', 'runId': 'run-1'});
+    retried.add({
+      'type': 'waiting',
+      'serial': _serial,
+      'mode': 'bootloader',
+      'text': 'Waiting for $_serial in bootloader.',
+    });
+    retried.add({
+      'type': 'step',
+      'index': 1,
+      'total': 2,
+      'title': 'Require bootloader',
+    });
+    retried.add({
+      'type': 'result',
+      'runId': 'run-1',
+      'status': 'succeeded',
+      'canRetry': false,
+      'receipt': flashReceipt(),
+    });
+    await tester.pumpAndSettle();
+    expect(controller.phase, FlashPhase.succeeded);
+  });
+
+  testWidgets('stop returns and shows the stopped receipt', (tester) async {
+    final harness = Harness();
+    final events = StreamController<Map<String, Object?>>(
+      onCancel: () async {},
+    );
+    addTearDown(events.close);
+    harness.api.prepareFlashResult = (_) => resolvedPrepare();
+    harness.api.flashStream = (_) => events.stream;
+    harness.api.stopResult = (request) async => {
+      'receipt': flashReceipt(status: 'stopped', stepIndex: 1),
+    };
+    final controller = await pumpFlash(tester, harness);
+    await selectDevice(tester, controller);
+    await confirmAndFlash(tester);
+
+    events.add({'type': 'run', 'runId': 'run-1'});
+    events.add({
+      'type': 'step',
+      'index': 1,
+      'total': 2,
+      'title': 'Require bootloader',
+    });
+    events.add({
+      'type': 'failure',
+      'stepIndex': 1,
+      'status': 'failed',
+      'reason': 'USB device disappeared',
+    });
+    events.add(failedFlashResult(reason: 'USB device disappeared'));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(const ValueKey('stopFlashRun')));
+    await tester.tap(find.byKey(const ValueKey('stopFlashRun')));
+    await tester.pumpAndSettle();
+
+    expect(harness.api.lastStopRequest, {'runId': 'run-1'});
+    expect(controller.phase, FlashPhase.stopped);
+    expect(controller.receipt?['status'], 'stopped');
+    expect(find.byKey(const ValueKey('flashReceipt')), findsOneWidget);
+    expect(find.text('STOPPED'), findsOneWidget);
+    expect(find.text('stopped'), findsWidgets);
+    expect(find.byKey(const ValueKey('flashGuidance')), findsOneWidget);
+    expect(find.byKey(const ValueKey('retryFlashStep')), findsNothing);
+    expect(find.byKey(const ValueKey('stopFlashRun')), findsNothing);
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('downloadFlashReceipt')),
+    );
+    await tester.tap(find.byKey(const ValueKey('downloadFlashReceipt')));
+    await tester.pumpAndSettle();
+    expect(
+      harness.bridge.downloads,
+      contains('flash-20260101-000000-abcdef-SERIAL123.json'),
+    );
+  });
+
+  testWidgets('retry buttons stay hidden when the service cannot retry', (
+    tester,
+  ) async {
+    final harness = Harness();
+    final events = StreamController<Map<String, Object?>>(
+      onCancel: () async {},
+    );
+    addTearDown(events.close);
+    harness.api.prepareFlashResult = (_) => resolvedPrepare();
+    harness.api.flashStream = (_) => events.stream;
+    final controller = await pumpFlash(tester, harness);
+    await selectDevice(tester, controller);
+    await confirmAndFlash(tester);
+
+    events.add({'type': 'run', 'runId': 'run-1'});
+    events.add({
+      'type': 'step',
+      'index': 1,
+      'total': 2,
+      'title': 'Require bootloader',
+    });
+    events.add({
+      'type': 'failure',
+      'stepIndex': 0,
+      'status': 'failed',
+      'reason': 'The package digest changed',
+    });
+    events.add(failedFlashResult(canRetry: false));
+    await tester.pumpAndSettle();
+
+    expect(controller.phase, FlashPhase.failed);
+    expect(controller.canRetry, isFalse);
+    expect(find.byKey(const ValueKey('flashFailure')), findsOneWidget);
+    expect(find.byKey(const ValueKey('failureStepTitle')), findsOneWidget);
+    expect(find.byKey(const ValueKey('retryFlashStep')), findsNothing);
+    expect(find.byKey(const ValueKey('rebootRetryFlashStep')), findsNothing);
+    expect(find.byKey(const ValueKey('stopFlashRun')), findsNothing);
+  });
+
+  testWidgets('a broken stream leaves no retry buttons', (tester) async {
+    final harness = Harness();
+    final events = StreamController<Map<String, Object?>>(
+      onCancel: () async {},
+    );
+    addTearDown(events.close);
+    harness.api.prepareFlashResult = (_) => resolvedPrepare();
+    harness.api.flashStream = (_) => events.stream;
+    final controller = await pumpFlash(tester, harness);
+    await selectDevice(tester, controller);
+    await confirmAndFlash(tester);
+
+    events.add({'type': 'run', 'runId': 'run-1'});
+    events.add({
+      'type': 'step',
+      'index': 1,
+      'total': 2,
+      'title': 'Require bootloader',
+    });
+    events.addError(StateError('stream broke'));
+    await tester.pumpAndSettle();
+
+    expect(controller.phase, FlashPhase.uncertain);
+    expect(controller.canRetry, isFalse);
+    expect(find.byKey(const ValueKey('retryFlashStep')), findsNothing);
+    expect(find.byKey(const ValueKey('stopFlashRun')), findsNothing);
+    expect(harness.bridge.keepAwake, 0);
   });
 }

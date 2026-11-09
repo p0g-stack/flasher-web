@@ -258,7 +258,7 @@ void main() {
       expect(otherState.commands, isEmpty);
     });
 
-    test('an uncertain write is reported and never resent', () async {
+    test('an uncertain write is reported and never resent automatically', () async {
       final package = _package();
       final state = _State();
       final transport = _Transport(state, 'SERIAL-A');
@@ -278,10 +278,229 @@ void main() {
       );
       expect(receipt['status'], 'uncertain');
       expect(receipt['uncertain'], isTrue);
+      expect(receipt['stepIndex'], isNotNull);
       expect(state.flashCommands, ['boot_a']);
       final writes = receipt['writes'] as List;
       expect(writes, hasLength(1));
       expect(writes.single['status'], 'uncertain');
+      expect(
+        (receipt['package'] as Map)['image_sha256'],
+        isNot(contains('super.img')),
+        reason: 'the run stopped before the super stream',
+      );
+
+      // An explicit retry rewrites the failed step from byte zero.
+      state.loseFlashReply = false;
+      final retried = await executePreparedFlash(
+        prepared,
+        transport,
+        emit: (_) {},
+        previousReceipt: receipt,
+      );
+      expect(retried['status'], 'succeeded', reason: '${retried['failure']}');
+      expect(
+        state.parts['boot_a']!.first,
+        package.files['OOS_FILES_HERE/boot.img'],
+        reason: 'the first attempt wrote the whole image',
+      );
+      expect(
+        state.parts['boot_a']!.last,
+        package.files['OOS_FILES_HERE/boot.img'],
+        reason: 'the retry rewrote it from byte zero',
+      );
+      expect(
+        state.flashCommands.where((name) => name == 'boot_a'),
+        hasLength(2),
+      );
+      final retriedWrites = (retried['writes'] as List).cast<Map>();
+      expect(retriedWrites.first['status'], 'uncertain');
+      expect(retriedWrites.first['partition'], 'boot_a');
+      expect(retriedWrites[1]['status'], 'ok');
+      expect(retriedWrites[1]['partition'], 'boot_a',
+          reason: 'the retried step rewrote boot_a');
+      expect(retried['stepIndex'], isNull);
+      expect(retried['job'], 'job');
+      expect(retried['serial'], 'SERIAL-A');
+      expect(
+        (retried['steps'] as List).cast<Map>().every(
+              (step) => step['status'] == 'ok',
+            ),
+        isTrue,
+        reason: 'every step of the finished run is recorded as ok',
+      );
+    });
+
+    test('a retry continues from the failed step without replaying earlier steps', () async {
+      final package = _package();
+      final state = _State(failFlash: 'boot_b');
+      final transport = _Transport(state, 'SERIAL-A');
+      final prepared = await prepareFlash(
+        package: package,
+        selection: _selection,
+        answers: _answers,
+        serial: 'SERIAL-A',
+        transport: transport,
+        job: 'job',
+      );
+      final receipt = await executePreparedFlash(
+        prepared,
+        transport,
+        emit: (_) {},
+      );
+      expect(receipt['status'], 'failed');
+      final failedStep = receipt['stepIndex'] as int;
+      expect(state.flashCommands, ['boot_a', 'boot_b']);
+
+      state.failFlash = null;
+      final retried = await executePreparedFlash(
+        prepared,
+        transport,
+        emit: (_) {},
+        previousReceipt: receipt,
+      );
+      expect(retried['status'], 'succeeded', reason: '${retried['failure']}');
+      expect(
+        state.flashCommands.take(3).toList(),
+        ['boot_a', 'boot_b', 'boot_b'],
+        reason: 'only the failed step is resent',
+      );
+      final steps = (retried['steps'] as List).cast<Map>();
+      expect(steps, hasLength(prepared.plan.executionSteps.length));
+      expect(
+        steps.firstWhere((step) => step['index'] == failedStep + 1)['status'],
+        'ok',
+        reason: 'the retried step is recorded once, from its successful run',
+      );
+      expect(
+        steps.where((step) => step['index'] == failedStep + 1),
+        hasLength(1),
+        reason: 'the retry does not duplicate the step',
+      );
+    });
+
+    test(
+      'a reboot retry reboots to the failed step mode and rechecks identity',
+      () async {
+        final state = _State()..loseRebootReply = 'reboot-fastboot';
+        final transport = _Transport(state, 'SERIAL-A');
+        final prepared = await prepareFlash(
+          package: _package(),
+          selection: _selection,
+          answers: _answers,
+          serial: 'SERIAL-A',
+          transport: transport,
+          job: 'job',
+        );
+        final receipt = await executePreparedFlash(
+          prepared,
+          transport,
+          emit: (_) {},
+        );
+        expect(receipt['status'], 'uncertain');
+        final failedStep = receipt['stepIndex'] as int;
+        final flashesSoFar = state.flashCommands.length;
+        final boots = state.flashCommands.where((name) => name == 'boot_a').length;
+
+        // The user plugs the phone back in: the retry reboots to the mode the
+        // failed step needs, then continues from that step.
+        state.loseRebootReply = null;
+        state.fastbootd = false;
+        final retried = await executePreparedFlash(
+          prepared,
+          transport,
+          emit: (_) {},
+          previousReceipt: receipt,
+          rebootRetry: true,
+        );
+        expect(retried['status'], 'succeeded', reason: '${retried['failure']}');
+        expect(
+          state.commands.where((command) => command == 'reboot-bootloader'),
+          hasLength(1),
+          reason: 'the device is put in the mode the failed step requires',
+        );
+        expect(
+          state.commands.where((command) => command == 'reboot-fastboot'),
+          hasLength(2),
+          reason: 'the failed reboot step itself is sent again',
+        );
+        expect(retried['steps'], isNot(isEmpty));
+        expect(
+          state.flashCommands.length,
+          flashesSoFar,
+          reason: 'no earlier flash is replayed',
+        );
+        expect(
+          state.flashCommands.where((name) => name == 'boot_a'),
+          hasLength(boots),
+        );
+        expect(state.commands, contains('set_active:a'));
+        expect(state.android, isTrue);
+        expect(failedStep, lessThan(prepared.plan.executionSteps.length));
+      },
+    );
+
+    test('a retry refuses a changed serial, product or mode', () async {
+      final package = _package();
+      final state = _State(failFlash: 'boot_b');
+      final transport = _Transport(state, 'SERIAL-A');
+      final prepared = await prepareFlash(
+        package: package,
+        selection: _selection,
+        answers: _answers,
+        serial: 'SERIAL-A',
+        transport: transport,
+        job: 'job',
+      );
+      final receipt = await executePreparedFlash(
+        prepared,
+        transport,
+        emit: (_) {},
+      );
+      expect(receipt['status'], 'failed');
+
+      // Another cable: only the confirmed serial is opened.
+      final otherState = _State(serial: 'SERIAL-B');
+      final other = _Transport(otherState, 'SERIAL-B');
+      final wrongSerial = await executePreparedFlash(
+        prepared,
+        other,
+        emit: (_) {},
+        previousReceipt: receipt,
+      );
+      expect(wrongSerial['status'], 'failed');
+      expect(otherState.flashCommands, isEmpty);
+      expect(otherState.commands, isEmpty);
+
+      // A product change while the device opened is refused before writes.
+      state.failFlash = null;
+      state.product = 'moon';
+      final wrongProduct = await executePreparedFlash(
+        prepared,
+        transport,
+        emit: (_) {},
+        previousReceipt: receipt,
+      );
+      expect(wrongProduct['status'], 'failed');
+      expect(
+        (wrongProduct['failure'] as Map)['message'],
+        contains('reports product "moon"'),
+      );
+      expect(state.flashCommands, ['boot_a', 'boot_b']);
+
+      // A product change during the retried step is caught afterwards.
+      state.product = 'sun';
+      state.productAfterFlash = 'moon';
+      final changed = await executePreparedFlash(
+        prepared,
+        transport,
+        emit: (_) {},
+        previousReceipt: receipt,
+      );
+      expect(changed['status'], 'failed');
+      expect(
+        (changed['failure'] as Map)['message'],
+        contains('identity or mode changed after the retried step'),
+      );
     });
 
     test('the first failed write stops every later command', () async {
@@ -309,34 +528,6 @@ void main() {
         isEmpty,
       );
     });
-
-    test(
-      'a reboot acknowledgement loss is reconciled by observed mode',
-      () async {
-        final state = _State()..loseRebootReply = 'reboot-fastboot';
-        final transport = _Transport(state, 'SERIAL-A');
-        final prepared = await prepareFlash(
-          package: _package(),
-          selection: _selection,
-          answers: _answers,
-          serial: 'SERIAL-A',
-          transport: transport,
-          job: 'job',
-        );
-        final receipt = await executePreparedFlash(
-          prepared,
-          transport,
-          emit: (_) {},
-        );
-        expect(receipt['status'], 'succeeded');
-        expect(
-          state.commands.where((command) => command == 'reboot-fastboot'),
-          hasLength(1),
-        );
-        expect(state.commands, contains('set_active:a'));
-        expect(state.android, isTrue);
-      },
-    );
 
     test(
       'a lost final Android reboot acknowledgement remains uncertain',
@@ -580,8 +771,32 @@ final class _State {
   String? loseRebootReply;
   int? partitionBytes;
   bool probeFailure = false;
+
+  /// Sets [product] after a successful `flash:` command, so a test can prove
+  /// the post-step identity check.
+  String? productAfterFlash;
   final commands = <String>[];
   final flashCommands = <String>[];
+
+  /// The bytes each `flash:` command received, in order. A split image keeps
+  /// one entry per part.
+  final parts = <String, List<Uint8List>>{};
+
+  BytesBuilder? _download;
+
+  void begin() {
+    _download = BytesBuilder(copy: false);
+  }
+
+  void add(List<int> bytes) {
+    _download?.add(bytes);
+  }
+
+  Uint8List? take() {
+    final builder = _download;
+    _download = null;
+    return builder?.takeBytes();
+  }
 }
 
 final class _Transport implements FastbootTransport {
@@ -650,9 +865,11 @@ final class _Session implements FastbootSession {
       return state.fastbootd ? 'yes' : 'no';
     }
     if (command == 'getvar:max-download-size') return '0x4000';
-    if (command == 'reboot-fastboot' || command == 'reboot') {
+    if (command == 'reboot-fastboot' || command == 'reboot' || command == 'reboot-bootloader') {
       if (command == 'reboot-fastboot') {
         state.fastbootd = true;
+      } else if (command == 'reboot-bootloader') {
+        state.fastbootd = false;
       } else {
         state.android = true;
       }
@@ -670,6 +887,10 @@ final class _Session implements FastbootSession {
     if (command.startsWith('flash:')) {
       final partition = command.substring('flash:'.length);
       state.flashCommands.add(partition);
+      final bytes = state.take();
+      if (bytes != null) {
+        (state.parts[partition] ??= <Uint8List>[]).add(bytes);
+      }
       if (state.loseFlashReply) {
         throw const LinkFailure(
           blame: 'host',
@@ -687,16 +908,23 @@ final class _Session implements FastbootSession {
           stage: 'flash',
         );
       }
+      if (state.productAfterFlash != null) {
+        state.product = state.productAfterFlash!;
+      }
       return '';
     }
     return '';
   }
 
   @override
-  Future<void> beginDownload(int length) async {}
+  Future<void> beginDownload(int length) async {
+    state.begin();
+  }
 
   @override
-  Future<void> writeDownload(Uint8List bytes) async {}
+  Future<void> writeDownload(Uint8List bytes) async {
+    state.add(bytes);
+  }
 
   @override
   Future<void> endDownload() async {}

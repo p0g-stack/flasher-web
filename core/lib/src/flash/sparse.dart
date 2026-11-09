@@ -49,25 +49,55 @@ final class SparseScan {
     required this.totalBlocks,
     required this.chunks,
     required this.digest,
-    this.splitter,
   });
 
   final int blockSize;
   final int totalBlocks;
   final List<SparseChunk> chunks;
-  /// Compact producers may keep chunk and split descriptors lazy.
-  final List<SparsePart> Function(int limit)? splitter;
 
-  /// Lowercase SHA-256 of the whole source image.
+  /// Lowercase SHA-256, or empty for layout-only producers until streamed.
   final String digest;
 
   int get expandedBytes => blockSize * totalBlocks;
 }
 
-/// A freshly reconstructed source can supply its already validated first pass.
-/// Implementations must return null after handing the scan out once.
-abstract interface class PreScannedFlashSource implements FlashSource {
-  SparseScan? takeSparseScan();
+
+/// Completes the generator's hash checks before returning the final bytes.
+final class StreamingFlashCursor implements FlashCursor {
+  StreamingFlashCursor(Stream<Uint8List> stream, this.length)
+    : _iterator = StreamIterator(stream);
+  final StreamIterator<Uint8List> _iterator;
+  final int length;
+  Uint8List _chunk = Uint8List(0);
+  int _within = 0;
+  int _position = 0;
+  Future<void> _consume(int count, Uint8List? output) async {
+    if (count < 0 || count > length - _position) throw RangeError('Invalid streaming cursor range.');
+    var done = 0;
+    while (done < count) {
+      if (_within == _chunk.length) {
+        if (!await _iterator.moveNext()) throw const FlashException('Image stream ended early.');
+        _chunk = _iterator.current;
+        _within = 0;
+      }
+      final n = math.min(count - done, _chunk.length - _within);
+      output?.setRange(done, done + n, _chunk, _within);
+      done += n;
+      _within += n;
+    }
+    _position += count;
+    if (_position == length && (_within != _chunk.length || await _iterator.moveNext())) {
+      throw const FlashException('Image stream has trailing bytes.');
+    }
+  }
+  @override Future<Uint8List> readExact(int length) async {
+    if (length < 0 || length > 8 << 20) throw RangeError('Cursor read exceeds 8 MiB.');
+    final bytes = Uint8List(length);
+    await _consume(length, bytes);
+    return bytes;
+  }
+  @override Future<void> skipTo(int offset) => _consume(offset - _position, null);
+  @override Future<void> close() => _iterator.cancel();
 }
 
 /// Whether [source] starts with the sparse magic.
@@ -82,10 +112,6 @@ Future<bool> isSparseSource(FlashSource source) async {
 /// bounded pieces; a truncated image, an unknown chunk, or trailing bytes is
 /// rejected before any device write.
 Future<SparseScan> scanSparse(FlashSource source) async {
-  if (source is PreScannedFlashSource) {
-    final prepared = source.takeSparseScan();
-    if (prepared != null) return prepared;
-  }
   if (source.length < sparseHeaderBytes) {
     throw const FlashException('Sparse image is shorter than its header.');
   }
@@ -281,8 +307,6 @@ final class SparsePart {
 
 /// Splits a validated sparse image into parts no larger than [limit].
 List<SparsePart> splitSparseScan(SparseScan scan, int limit) {
-  final compact = scan.splitter;
-  if (compact != null) return compact(limit);
   if (limit < sparseHeaderBytes + 2 * sparseChunkHeaderBytes + scan.blockSize) {
     throw FlashException(
       'max-download-size $limit is too small for a sparse image part.',

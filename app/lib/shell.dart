@@ -136,6 +136,7 @@ class _AppShellState extends State<AppShell> {
         ota: ota,
         base: base,
         bloat: _setup.directFlashBloat,
+        vulnerableAbl: _setup.vulnerableAbl,
         selection: Map<String, Object?>.from(selection),
         label: '${_setup.deviceDisplay} / ${_setup.kind}',
       ),

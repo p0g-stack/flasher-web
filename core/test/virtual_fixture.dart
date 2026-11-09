@@ -377,7 +377,7 @@ final class VirtualFixture {
     Map<String, Object?>? baseIdentity,
     Map<String, Object?>? donorIdentity,
     int? superSize,
-    VirtualFlashPackage? preparedPackage,
+    bool? vulnerableAbl,
   }) async {
     final source = await (ota ?? otaWorkspace).open('ota.zip');
     final archive = await OtaArchive.open(source);
@@ -393,7 +393,7 @@ final class VirtualFixture {
         donor: donor,
         donorIdentity: donorIdentity,
         superSize: superSize,
-        preparedPackage: preparedPackage,
+        vulnerableAbl: vulnerableAbl,
       );
     } on Object {
       await archive.close();
@@ -414,11 +414,15 @@ final class CountingWorkspace implements Workspace {
   int reads = 0;
   int bytesRead = 0;
 
+  /// Every path opened through this workspace since the last [reset].
+  final opened = <String>[];
+
   /// Forgets the counts so far.
   void reset() {
     opens = 0;
     reads = 0;
     bytesRead = 0;
+    opened.clear();
   }
 
   @override
@@ -430,6 +434,7 @@ final class CountingWorkspace implements Workspace {
   @override
   Future<ByteSource> open(String path) async {
     opens++;
+    opened.add(path);
     return _CountingSource(await inner.open(path), this);
   }
 

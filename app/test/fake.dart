@@ -48,6 +48,12 @@ final class FakeFlasherApi implements FlasherApi {
   bloatStream;
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   flashStream;
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)? retryStepStream;
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)? rebootRetryStream;
+  Future<Map<String, Object?>> Function(Map<String, Object?> request)? stopResult;
+  Map<String, Object?>? lastRetryStepRequest;
+  Map<String, Object?>? lastRebootRetryRequest;
+  Map<String, Object?>? lastStopRequest;
 
   Map<String, Object?> Function(Map<String, Object?> request)?
   prepareFlashResult;
@@ -122,6 +128,28 @@ final class FakeFlasherApi implements FlasherApi {
     flashCalls++;
     lastFlashRequest = request;
     return flashStream?.call(request) ?? const Stream.empty();
+  }
+
+  @override
+  Stream<Map<String, Object?>> retryStep(Map<String, Object?> request) {
+    lastRetryStepRequest = request;
+    final handler = retryStepStream;
+    if (handler == null) throw StateError('No retryStep stream scripted.');
+    return handler(request);
+  }
+  @override
+  Stream<Map<String, Object?>> rebootRetry(Map<String, Object?> request) {
+    lastRebootRetryRequest = request;
+    final handler = rebootRetryStream;
+    if (handler == null) throw StateError('No rebootRetry stream scripted.');
+    return handler(request);
+  }
+  @override
+  Future<Map<String, Object?>> stopRun(Map<String, Object?> request) async {
+    lastStopRequest = request;
+    final handler = stopResult;
+    if (handler == null) throw StateError('No stop result scripted.');
+    return handler(request);
   }
 
   @override

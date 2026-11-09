@@ -80,6 +80,7 @@ final class _ExportRun {
   final void Function()? _check;
   final StreamController<Map<String, Object?>> _controller;
   bool _cancelled = false;
+  final _templateImageHashes = <String, String>{};
 
   void _verify() {
     if (_cancelled) throw const CancelledException('Export cancelled.');
@@ -136,13 +137,20 @@ final class _ExportRun {
     _verify();
     await output.add(zip.finish());
     await _sink.truncate(output.length);
+    final digest = hasher.finishHex();
+    final receipt = _package.receipt();
+    receipt['output_format'] = 'zip';
+    receipt['image_sha256'] = {..._templateImageHashes,
+      ...Map<String, String>.from(receipt['image_sha256']! as Map)};
     _emit({
       'type': 'result',
       'job': _package.job,
       'format': 'zip',
-      'sha256': hasher.finishHex(),
+      'sha256': digest,
       'bytes': output.length,
       'entries': names.length,
+      'receipt': {...receipt, 'job': _package.job,
+        'zip': {'sha256': digest, 'bytes': output.length}},
     });
   }
 
@@ -208,6 +216,9 @@ final class _ExportRun {
   ) async {
     final bytes = file.bytes;
     if (bytes != null) {
+      if (name.endsWith('.img')) {
+        _templateImageHashes[name] = (Sha256Hasher()..update(bytes: bytes)).finishHex();
+      }
       await output.add(
         zip.startFile(
           name: name,

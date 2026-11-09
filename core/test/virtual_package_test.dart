@@ -218,7 +218,7 @@ void main() {
       builders: const [('Regional Flasher', 'X9U', 'EU', 'BUILD_REGIONAL.sh')],
     );
     addTearDown(fixture.dispose);
-    final package = await fixture.open(selection);
+    final package = await fixture.open(selection, vulnerableAbl: false);
     try {
       expect(package.index.has('OTA_FILES_HERE/boot.img'), isTrue);
       expect(
@@ -486,18 +486,34 @@ void main() {
       expect(package.job, startsWith('virtual-'));
       expect(package.index.has('super.img'), isTrue);
       expect(
-        package.buildJson['available_image_sha256'],
+        package.buildJson['image_sha256'],
         contains('OOS_FILES_HERE/boot.img'),
-        reason: 'the super digest is lazy and not advertised up front',
+        reason: 'every image digest is in the load-time manifest',
+      );
+      expect(
+        (package.buildJson['image_sha256']! as Map).keys,
+        contains('Super/system.img'),
+        reason: 'the decoded super inputs are advertised by digest',
       );
       expect(package.imageHash('super.img'), isNull);
       final length = await package.size('super.img');
       expect(length, greaterThan(0));
       expect(length, lessThan(superSize));
-      expect(package.imageHash('super.img'), matches(RegExp(r'^[0-9a-f]{64}$')));
       final head = await _bytesOf(package, 'super.img');
       expect(head.length, length);
       expect(head.sublist(0, 4), [0x3a, 0xff, 0x26, 0xed]);
+      expect(
+        package.imageHash('super.img'),
+        isNull,
+        reason: 'reads and size reporting never complete a stream',
+      );
+      final source = await package.open('super.img');
+      try {
+        await for (final _ in source.stream()) {}
+      } finally {
+        await source.close();
+      }
+      expect(package.imageHash('super.img'), matches(RegExp(r'^[0-9a-f]{64}$')));
       final expanded = await package.openExpandedSuper();
       try {
         expect(expanded.length, superSize);
@@ -524,6 +540,48 @@ void main() {
           (error) => error.message,
           'message',
           contains('no images for this selection'),
+        ),
+      ),
+    );
+  });
+
+  test('an OTA partition without a whole-image SHA-256 is refused', () async {
+    final fixture = await VirtualFixture.create(
+      partitions: [...fixtureBoot, ...fixtureLogicalFromOta],
+      bloatFiles: {
+        'bloat/13/GLO_BLOAT/my_company.img': pattern(fixtureBlock, seed: 111),
+        'bloat/13/GLO_BLOAT/my_preload.img': pattern(fixtureBlock, seed: 112),
+      },
+      templates: {'13': fixtureTemplate13()},
+    );
+    addTearDown(fixture.dispose);
+    // The fixture's own OTA is replaced by one whose `system` partition has
+    // no whole-image digest: a virtual flash must not register it unverified.
+    final ota = OtaFixture([
+      for (final (index, name) in [
+        ...fixtureBoot,
+        ...fixtureLogicalFromOta,
+      ].indexed)
+        FixturePartition(
+          name: name,
+          hash: name != 'system',
+          ops: [
+            FixtureOp.replace(
+              const [FixtureExtent(0, 1)],
+              pattern(fixtureBlock, seed: 200 + index),
+            ),
+          ],
+        ),
+    ]);
+    final sink = await fixture.otaWorkspace.create('ota.zip');
+    await sink.write(ota.build(), 0);
+    await sink.close();
+    await expectLater(
+      fixture.open(fixtureSelection),
+      throwsA(
+        predicate(
+          (Object error) => '$error'.contains('SHA-256'),
+          'an error naming the missing whole-image digest',
         ),
       ),
     );

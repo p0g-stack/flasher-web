@@ -9,6 +9,7 @@ final class FlashTarget {
     required Map<String, Object?> bloat,
     required this.selection,
     required this.label,
+    this.vulnerableAbl,
   }) : virtualOta = ota,
        virtualBase = base,
        virtualBloat = bloat;
@@ -18,6 +19,7 @@ final class FlashTarget {
 
   /// A human label for the package row.
   final String label;
+  final bool? vulnerableAbl;
 
   /// The OTA input `{kind: file|url|catalog, ...}`.
   final Map<String, Object?> virtualOta;

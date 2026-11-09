@@ -71,6 +71,8 @@ base class FlasherService {
 
   final Map<String, _PreparedEntry> _prepared = {};
   final Map<String, String> _jobLocks = {};
+  final Map<String, _PausedFlash> _paused = {};
+  final Map<String, _FlashRun> _active = {};
 
   /// Facts, the Rust library and storage space in this place.
   @squadronMethod
@@ -496,6 +498,37 @@ base class FlasherService {
     controller.onCancel = run.cancel;
     return controller.stream;
   }
+
+  /// Explicitly resends the failed step from byte zero, then continues.
+  @squadronMethod
+  Stream<Map<String, Object?>> retryStep(Map<String, Object?> req) =>
+    _resume(req, reboot: false);
+
+  /// Reboots to the failed step's required mode before resending it.
+  @squadronMethod
+  Stream<Map<String, Object?>> rebootRetry(Map<String, Object?> req) =>
+    _resume(req, reboot: true);
+
+  Stream<Map<String, Object?>> _resume(Map<String, Object?> req, {required bool reboot}) {
+    final controller = StreamController<Map<String, Object?>>();
+    final run = _FlashRun(this, req, controller, retry: true, reboot: reboot);
+    controller.onListen = () { unawaited(run.start()); };
+    controller.onCancel = run.cancel;
+    return controller.stream;
+  }
+
+  /// Ends an active or paused run; no further device commands are sent.
+  @squadronMethod
+  Future<Map<String, Object?>> stopRun(Map<String, Object?> req) async {
+    final id = req['runId'];
+    final active = _active[id];
+    if (active != null) return {'receipt': await active.stop()};
+    final paused = _paused.remove(id);
+    if (paused == null) throw const flash_model.FlashException('Unknown flash run.');
+    _jobLocks.remove(paused.entry.lockKey);
+    return {'receipt': {...paused.receipt, 'status': 'stopped',
+      'finishedAt': DateTime.now().toUtc().toIso8601String()}};
+  }
 }
 
 final class _PreparedEntry {
@@ -505,161 +538,141 @@ final class _PreparedEntry {
   final Map<String, Object?>? store;
 }
 
-final class _FlashRun {
-  _FlashRun(this._service, this._req, this._controller);
+final class _PausedFlash {
+  const _PausedFlash(this.entry, this.req, this.receipt);
+  final _PreparedEntry entry;
+  final Map<String, Object?> req;
+  final Map<String, Object?> receipt;
+}
 
+final class _FlashRun {
+  _FlashRun(this._service, this._req, this._controller, {this.retry = false, this.reboot = false});
   final FlasherService _service;
   final Map<String, Object?> _req;
   final StreamController<Map<String, Object?>> _controller;
-  Completer<void>? _done;
-  FlashCancellation? _cancellation;
-  String? _lockKey;
+  final bool retry;
+  final bool reboot;
+  final FlashCancellation _cancellation = FlashCancellation();
+  final Completer<void> _done = Completer<void>();
+  Map<String, Object?>? _receipt;
   bool _cancelled = false;
-
+  bool _stopped = false;
   void _emit(Map<String, Object?> event) {
-    if (_cancelled || _controller.isClosed) return;
-    _controller.add(event);
+    if (!_cancelled && !_controller.isClosed) _controller.add(event);
   }
 
   Future<void> start() async {
-    final done = _done = Completer<void>();
-    final cancellation = _cancellation = FlashCancellation();
-    if (_cancelled) {
-      cancellation.cancel('cancelled before preparation completed');
-    }
-    VirtualFlashPackage? virtualPackage;
+    VirtualFlashPackage? package;
+    _PreparedEntry? entry;
+    String? id;
+    Map<String, Object?>? retryRequest;
+    Map<String, Object?>? previous;
+    var paused = false;
     try {
-      final token = _req['confirmationToken'];
-      if (token is! String || token.isEmpty) {
-        throw const flash_model.FlashException(
-          'A confirmation token from prepareFlash is required.',
-        );
+      Map<String, Object?> request;
+      if (retry) {
+        final rawId = _req['runId'];
+        final saved = _service._paused.remove(rawId);
+        if (saved == null) throw const flash_model.FlashException('Unknown or non-paused flash run.');
+        id = rawId! as String;
+        entry = saved.entry;
+        request = saved.req;
+        previous = saved.receipt;
+        retryRequest = request;
+      } else {
+        final token = _req['confirmationToken'];
+        if (token is! String || token.isEmpty) throw const flash_model.FlashException('A confirmation token from prepareFlash is required.');
+        id = token;
+        entry = _service._prepared.remove(token);
+        if (entry == null) throw const flash_model.FlashException('Unknown, expired or used confirmation token.');
+        request = Map<String, Object?>.from(_req);
       }
-      final entry = _service._prepared.remove(token);
-      if (entry == null) {
-        throw const flash_model.FlashException(
-          'The confirmation token is unknown, expired or already used. '
-          'Prepare again.',
-        );
-      }
-      final virtual = _virtualArg(_req);
-      if (virtual == null) {
-        throw const flash_model.FlashException(
-          'The flash request names no virtual OTA source. Prepare again.',
-        );
-      }
+      _service._active[id] = this;
+      _receipt = {
+        'version': 1, 'runId': id, 'job': entry.prepared.job,
+        'serial': entry.prepared.serial, 'device': entry.prepared.selection.device,
+        'kind': entry.prepared.selection.kind, 'region': entry.prepared.selection.region,
+        'otaVersion': entry.prepared.version, 'status': 'preparing',
+        'package': (entry.prepared.package as VirtualFlashPackage).receipt(),
+        'writes': <Map<String, Object?>>[], 'steps': <Map<String, Object?>>[],
+        'verification': {'status': 'not-run'}, 'uncertain': false,
+      };
+      _emit({'type': 'run', 'runId': id});
+      final virtual = _virtualArg(request);
+      if (virtual == null) throw const flash_model.FlashException('The flash request has no virtual OTA source.');
       final storeKey = 'virtual|${_storeKey(virtual['bloat'])}';
-      final rawJob = _req['job'];
-      final job = rawJob is String ? normalizeWorkspacePath(rawJob) : '';
-      final bound = <String, Object?>{..._req, 'job': job};
-      if (!entry.prepared.binding.matches(bound, storeKey: storeKey)) {
-        throw const flash_model.FlashException(
-          'The flash request no longer matches the confirmed plan. '
-          'Prepare again.',
-        );
+      if (!entry.prepared.binding.matches(request, storeKey: storeKey)) {
+        throw const flash_model.FlashException('The request no longer matches the confirmed plan.');
       }
-      if (entry.store == null ||
-          !await sameFlashStore(
-            entry.store!,
-            Map<String, Object?>.from(virtual['bloat']! as Map),
-          )) {
-        throw const flash_model.FlashException(
-          'The virtual bloat store changed. Prepare again.',
-        );
+      if (entry.store == null || !await sameFlashStore(entry.store!,
+          Map<String, Object?>.from(virtual['bloat']! as Map))) {
+        throw const flash_model.FlashException('The confirmed bloat store changed.');
       }
-      virtualPackage = await _openVirtualPackage(
-        _req,
-        entry.prepared.selection,
-        preparedPackage: entry.prepared.package as VirtualFlashPackage,
-      );
-      final currentPackage = virtualPackage;
-      try {
-        final digest = await flash_prepare.packageDigest(currentPackage);
-        if (digest != entry.prepared.binding.packageDigest) {
-          throw const flash_model.FlashException(
-            'The OTA or bloat images changed after preparation. Prepare again.',
-          );
-        }
-        // Every byte the plan will write is hash-verified from the OTA and
-        // the bloat store before the first device command.
-        await flash_prepare.verifyPreparedImages(
-          entry.prepared,
-          package: currentPackage,
-        );
-        final runPrepared = entry.prepared.withPackage(currentPackage);
-        if (_service._jobLocks.containsKey(entry.lockKey)) {
-          throw const flash_model.FlashException(
-            'This job is already being flashed.',
-          );
-        }
-        _service._jobLocks[entry.lockKey] = token;
-        _lockKey = entry.lockKey;
-        if (_cancelled) {
-          cancellation.cancel('cancelled while checking the package');
-        }
-        final receipt = await applyConfirmedFlash(
-          runPrepared,
-          _service._fastbootTransport(),
-          await PlaceInfo.current(),
-          emit: _emit,
-          cancellation: cancellation,
-        );
-        // A virtual flash has no local job directory to persist into: the
-        // receipt is returned in full and the page downloads it.
-        receipt['virtual'] = await virtualPackage.snapshot();
-        receipt['persistenceWarnings'] = <String>[];
-        _emit({
-          'type': 'result',
-          'status': receipt['status'],
-          'receipt': receipt,
-        });
-      } finally {
-        await virtualPackage.close();
+      package = await _openVirtualPackage(request, entry.prepared.selection);
+      if (await flash_prepare.packageDigest(package) != entry.prepared.binding.packageDigest) {
+        throw const flash_model.FlashException('The confirmed OTA, layout or bloat changed.');
       }
-    } on LinkFailure catch (error) {
-      _emit({
-        'type': 'result',
-        'status': 'failed',
-        'receipt': {
-          'version': 1,
-          'status': 'failed',
-          'serial': _req['serial'],
-          'job': _req['job'],
-          'writes': <Map<String, Object?>>[],
-          'steps': <Map<String, Object?>>[],
-          'verification': {'status': 'not-run'},
-          'uncertain': false,
-          'failure': error.toMap(),
-        },
-      });
+      await flash_prepare.verifyPreparedImages(entry.prepared, package: package);
+      final owner = _service._jobLocks[entry.lockKey];
+      if (owner != null && owner != id) throw const flash_model.FlashException('This job is already being flashed.');
+      _service._jobLocks[entry.lockKey] = id;
+      final receipt = await applyConfirmedFlash(entry.prepared.withPackage(package),
+        _service._fastbootTransport(), await PlaceInfo.current(),
+        emit: _emit, cancellation: _cancellation, previousReceipt: previous, rebootRetry: reboot);
+      receipt['runId'] = id;
+      receipt['virtual'] = await package.snapshot();
+      receipt['persistenceWarnings'] = <String>[];
+      if (_stopped) receipt['status'] = 'stopped';
+      _receipt = receipt;
+      paused = !_cancelled && !_stopped && (receipt['status'] == 'failed' || receipt['status'] == 'uncertain');
+      if (paused) _service._paused[id] = _PausedFlash(entry, request, receipt);
+      _emit({'type': 'result', 'runId': id, 'status': receipt['status'],
+        'canRetry': paused, 'receipt': receipt});
     } on Object catch (error, stack) {
-      if (!_controller.isClosed) _controller.addError(error, stack);
+      if (retry && entry != null && id != null && previous != null && retryRequest != null && !_cancelled && !_stopped) {
+        final failure = error is LinkFailure ? error.toMap()
+          : error is flash_model.FlashException ? error.failure(stage: 'retry-preflight', stack: '$stack')
+          : <String, Object?>{'message': '$error', 'stage': 'retry-preflight', 'stack': '$stack'};
+        final receipt = <String, Object?>{...previous, 'reason': failure['message'],
+          'failure': failure, 'finishedAt': DateTime.now().toUtc().toIso8601String()};
+        _receipt = receipt;
+        paused = true;
+        _service._paused[id] = _PausedFlash(entry, retryRequest, receipt);
+        _emit({'type': 'failure', 'stepIndex': receipt['stepIndex'],
+          'status': receipt['status'], 'reason': receipt['reason']});
+        _emit({'type': 'result', 'runId': id, 'status': receipt['status'],
+          'canRetry': true, 'receipt': receipt});
+      } else if (!_cancelled && !_controller.isClosed) {
+        _controller.addError(error, stack);
+      }
     } finally {
-      final lock = _lockKey;
-      await virtualPackage?.close();
-      if (lock != null) _service._jobLocks.remove(lock);
-      if (!done.isCompleted) done.complete();
-      if (!_controller.isClosed) {
-        try {
-          await _controller.close();
-        } on Object {
-          // A cancelled subscription needs no close acknowledgement.
+      try { await package?.close(); } on Object catch (error) {
+        final cleanup = _receipt?['cleanupErrors'];
+        if (cleanup is List) cleanup.add('$error');
+      }
+      if (id != null) {
+        if (identical(_service._active[id], this)) _service._active.remove(id);
+        if (!paused && entry != null && _service._jobLocks[entry.lockKey] == id) {
+          _service._jobLocks.remove(entry.lockKey);
         }
       }
+      if (!_done.isCompleted) _done.complete();
+      if (!_controller.isClosed) await _controller.close();
     }
   }
 
+  Future<Map<String, Object?>> stop() async {
+    _stopped = true;
+    _cancellation.cancel('user stopped the flash');
+    await _done.future;
+    final receipt = _receipt;
+    if (receipt == null) throw const flash_model.FlashException('The flash stopped before an execution receipt existed.');
+    return {...receipt, 'status': 'stopped'};
+  }
   Future<void> cancel() async {
     _cancelled = true;
-    _cancellation?.cancel('the subscriber cancelled the flash');
-    final done = _done;
-    if (done != null && !done.isCompleted) {
-      try {
-        await done.future;
-      } on Object {
-        // The stream's error belongs to the subscriber.
-      }
-    }
+    _cancellation.cancel('subscriber cancelled the flash');
+    await _done.future;
   }
 }
 
@@ -714,7 +727,7 @@ Future<Map<String, Object?>?> _productRequired(
 }
 
 Future<VirtualFlashPackage> _openVirtualPackage(
-  Map<String, Object?> req, Selection selection, {VirtualFlashPackage? preparedPackage}
+  Map<String, Object?> req, Selection selection,
 ) async {
   final opened = <OtaArchive>[];
   try {
@@ -788,7 +801,7 @@ Future<VirtualFlashPackage> _openVirtualPackage(
       bloatManifest: manifest, sourceIdentity: target.identity,
       base: base?.archive, baseIdentity: base?.identity,
       donor: donor, donorIdentity: donorIdentity,
-      preparedPackage: preparedPackage,
+      vulnerableAbl: virtual['vulnerableAbl'] as bool?,
       superSize: selection.kind.contains('Super') ? tables.superSize(selection.dev, selection.region) : null,
     );
   } on Object catch (error) {

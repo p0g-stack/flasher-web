@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -5,6 +6,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:flasher_web_core/flasher_web_core.dart';
+import 'package:flasher_web_core/src/flash/virtual_super.dart'
+    show flasherSuperLayout;
 import 'package:flasher_web_core/src/rust/api/zip.dart'
     show inflateRaw, zipDataOffset;
 import 'package:test/test.dart';
@@ -310,6 +313,61 @@ final class FakeCatalogServer {
   return (blockSize: blockSize, blocks: blocks);
 }
 
+/// The super's expanded blocks, built from the LP layout and the fixture's
+/// input images instead of the package's sparse encoder.
+///
+/// [manifest] is the package's `image_sha256`: each `Super/<name>.img` entry
+/// names the decoded image digest, which identifies its bytes among the
+/// fixture's OTA, BASE, donor and bloat images.
+Map<int, Uint8List> expectedSuperBlocks(
+  VirtualFixture fixture,
+  Map<String, String> manifest,
+  int superSize,
+) {
+  final inputs = <String, Uint8List>{};
+  for (final entry in manifest.entries) {
+    if (!entry.key.startsWith('Super/')) continue;
+    final file = entry.key.substring('Super/'.length);
+    final name = file.substring(0, file.length - '.img'.length);
+    final candidates = <Uint8List>[
+      ?fixture.images[name],
+      ?fixture.baseImages[name],
+      ?fixture.donorImages[name],
+      for (final bloat in fixture.bloatFiles.entries)
+        if (bloat.key.endsWith('/$file')) bloat.value,
+    ];
+    final matching = candidates
+        .where((bytes) => sha256.convert(bytes).toString() == entry.value)
+        .toList();
+    expect(matching, isNotEmpty, reason: '${entry.key} names a fixture image');
+    inputs[name] = matching.first;
+  }
+  final layout = flasherSuperLayout({
+    for (final entry in inputs.entries) entry.key: entry.value.length,
+  }, superSize);
+  expect(layout.head.length % sparseBlockBytes, 0);
+  final blocks = <int, Uint8List>{};
+  for (var offset = 0; offset < layout.head.length; offset += sparseBlockBytes) {
+    blocks[offset ~/ sparseBlockBytes] = Uint8List.fromList(
+      layout.head.sublist(offset, offset + sparseBlockBytes),
+    );
+  }
+  for (final extent in layout.extents) {
+    final name = extent.name.endsWith('_a')
+        ? extent.name.substring(0, extent.name.length - 2)
+        : extent.name;
+    final image = inputs[name];
+    if (image == null) continue;
+    final start = extent.offset.toInt();
+    for (var offset = 0; offset < image.length; offset += sparseBlockBytes) {
+      final end = math.min(offset + sparseBlockBytes, image.length);
+      blocks[(start + offset) ~/ sparseBlockBytes] = Uint8List(sparseBlockBytes)
+        ..setRange(0, end - offset, image, offset);
+    }
+  }
+  return blocks;
+}
+
 /// The super image as `read`, `stream` and `cursor` produce it.
 Future<void> expectSuperReadModes(
   VirtualFlashPackage package,
@@ -357,6 +415,7 @@ Future<void> verifyParity(
   bool withBase = false,
   OtaArchive? donor,
   Map<String, Object?>? donorIdentity,
+  bool? vulnerableAbl,
 }) async {
   final label = '_${selection.region}';
   final baseArchive = withBase ? await fixture.openOta('base.zip') : null;
@@ -367,19 +426,37 @@ Future<void> verifyParity(
     baseIdentity: withBase ? fixture.identityOf('base.zip') : null,
     donor: donor,
     donorIdentity: donorIdentity,
+    vulnerableAbl: vulnerableAbl,
   );
   try {
-    // The virtual super digest is lazy: it exists only after the first pass,
-    // and the load-time manifest advertises the other images instead.
+    // The virtual super digest is lazy: it appears only after a complete
+    // stream, so the load-time manifest advertises the super inputs by their
+    // decoded-image digests and every other image by its path.
     expect(package.imageHash('super.img'), isNull);
-    expect(package.buildJson.containsKey('image_sha256'), isFalse);
-    final available = (package.buildJson['available_image_sha256']! as Map)
+    final manifest = (package.buildJson['image_sha256']! as Map)
         .cast<String, String>();
-    expect(available.keys.toSet(), {
+    final images = {
       for (final path in package.index.entries)
         if (path.endsWith('.img') && path != 'super.img') path,
-    });
-    for (final entry in available.entries) {
+    };
+    expect(images, isNotEmpty);
+    expect(
+      manifest.keys.where(images.contains).toSet(),
+      images,
+      reason: 'every package image has a load-time digest',
+    );
+    expect(
+      manifest.keys.where((path) => path.startsWith('Super/')),
+      isNotEmpty,
+      reason: 'the decoded super inputs are advertised',
+    );
+    expect(
+      package.index.entries.where((path) => path.startsWith('Super/')),
+      isEmpty,
+      reason: 'the super inputs live inside super.img',
+    );
+    for (final entry in manifest.entries) {
+      if (!images.contains(entry.key)) continue;
       expect(
         sha256.convert(await bytesOf(package, entry.key)).toString(),
         entry.value,
@@ -425,6 +502,18 @@ Future<void> verifyParity(
       lessThan(superSize),
       reason: 'a sparse super is far smaller than its device',
     );
+    // The expanded super is the LP layout plus the input images, built here
+    // from the fixture, not from the sparse encoder that produced the export.
+    expect(
+      expanded.blocks,
+      expectedSuperBlocks(fixture, manifest, superSize),
+      reason: 'the exported sparse super expands to the expected LP bytes',
+    );
+    // The streamed hash exists only after the complete first pass.
+    expect(
+      package.imageHash('super.img'),
+      sha256.convert(superBytes).toString(),
+    );
   } finally {
     await package.close();
     await baseArchive?.close();
@@ -467,6 +556,55 @@ void main() {
       ),
       superSize: fixture.superSize('13', 'GLO'),
     );
+  });
+
+  test('13 SuperHybrid GLO: measured encoded and expanded super', () async {
+    final fixture = await super13Fixture();
+    addTearDown(fixture.dispose);
+    final superSize = fixture.superSize('13', 'GLO');
+    final package = await fixture.open(selection13, superSize: superSize);
+    try {
+      final encoded = await package.size('super.img');
+      final scan = package.superScan!;
+      expect(scan.expandedBytes, superSize);
+      // The region after the last LP extent is one DONT_CARE chunk: it costs
+      // a 12-byte header and sends no data.
+      final tail = scan.chunks.last;
+      expect(tail.type, sparseDontCare);
+      expect(tail.blocks, greaterThan(0));
+      printOnFailure(
+        'encoded=$encoded expanded=$superSize '
+        'tail=${tail.blocks * sparseBlockBytes}',
+      );
+
+      final export = await exportEntries(fixture, package, label: '_measure');
+      final exported = export['super.img']!.bytes;
+      expect(exported.length, encoded);
+      final expanded = expandSparse(exported);
+      expect(expanded.blocks.length, greaterThan(0));
+      final expected = expectedSuperBlocks(
+        fixture,
+        ((package.buildJson['image_sha256']!) as Map).cast<String, String>(),
+        superSize,
+      );
+      expect(
+        expanded.blocks,
+        expected,
+        reason: 'the exported sparse super equals the independent LP bytes',
+      );
+      expect(
+        encoded,
+        lessThan(superSize),
+        reason: 'RAW plus DONT_CARE only: the export omits the tail',
+      );
+      // The tail of the expanded super is the DONT_CARE region after the last
+      // LP extent: nothing is sent for it and the last block stays absent.
+      expect(expanded.blocks.containsKey(superSize ~/ sparseBlockBytes - 1), isFalse);
+      expect(expanded.blocks.keys.reduce(math.max),
+          lessThan(superSize ~/ sparseBlockBytes - 1));
+    } finally {
+      await package.close();
+    }
   });
 
   test('Ace 5 GLO Super: the discarded ODM is in neither output', () async {
@@ -540,10 +678,12 @@ void main() {
       fixture,
       selection,
       superSize: fixture.superSize('X9U', 'EU'),
+      vulnerableAbl: false,
     );
     final package = await fixture.open(
       selection,
       superSize: fixture.superSize('X9U', 'EU'),
+      vulnerableAbl: false,
     );
     try {
       // The staged bloat image replaces the OTA copy inside the super.
@@ -552,6 +692,8 @@ void main() {
         isFalse,
         reason: 'no ABL when the stock ABL is kept',
       );
+      expect(package.buildJson['vulnerableAbl'], isFalse);
+      expect(package.buildJson.containsKey('abl_source'), isFalse);
       final export = await exportEntries(fixture, package, label: '_X9U');
       expect(
         utf8.decode(
@@ -562,6 +704,34 @@ void main() {
     } finally {
       await package.close();
     }
+
+    // The fixture has no verified 16.0.6 ABL asset, so asking for the
+    // vulnerable one must fail closed rather than flash an unverified image.
+    await expectLater(
+      fixture.open(
+        selection,
+        superSize: fixture.superSize('X9U', 'EU'),
+        vulnerableAbl: true,
+      ),
+      throwsA(
+        isA<FlashException>().having(
+          (error) => error.message,
+          'message',
+          contains('ABL 16.0.6'),
+        ),
+      ),
+    );
+    // X9U never inherits a default: the choice is part of the request.
+    await expectLater(
+      fixture.open(selection, superSize: fixture.superSize('X9U', 'EU')),
+      throwsA(
+        isA<FlashException>().having(
+          (error) => error.message,
+          'message',
+          contains('Choose vulnerableAbl'),
+        ),
+      ),
+    );
   });
 
   test('Ace 6 IN conversion: BASE and TARGET with regenerated vbmeta', () async {
@@ -825,7 +995,7 @@ void main() {
   );
 
   test(
-    'the super index is built once, memoized, and the snapshot never changes',
+    'the super geometry is layout-only and its digest appears after streaming',
     () async {
       final fixture = await super13Fixture();
       addTearDown(fixture.dispose);
@@ -844,29 +1014,53 @@ void main() {
         ota.reset();
         bloat.reset();
         final length = await package.size('super.img');
-        final digest = package.imageHash('super.img')!;
-        expect(digest, matches(RegExp(r'^[0-9a-f]{64}$')));
+        expect(length, greaterThan(sparseHeaderBytes));
         expect(
           ota.reads + bloat.reads,
-          greaterThan(0),
-          reason: 'the first pass reads every super input once',
+          0,
+          reason: 'the sparse geometry derives from the LP extents alone',
         );
-        // Every populated super input is one 4096-byte block here.
-        expect(ota.bytesRead + bloat.bytesRead, 4096 * (ota.reads + bloat.reads));
+        expect(ota.bytesRead + bloat.bytesRead, 0);
+        expect(
+          package.imageHash('super.img'),
+          isNull,
+          reason: 'no data has been streamed, so there is no digest yet',
+        );
+
+        final scan = package.superScan!;
+        expect(scan.expandedBytes, fixture.superSize('13', 'GLO'));
+        expect(
+          scan.digest,
+          isEmpty,
+          reason: 'a layout-only sparse image has no digest until streamed',
+        );
 
         ota.reset();
         bloat.reset();
-        expect(await package.size('super.img'), length);
+        final builder = BytesBuilder(copy: false);
         final source = await package.open('super.img');
         try {
-          final scan = await scanSparse(source);
-          expect(scan.digest, digest);
-          expect(scan.expandedBytes, fixture.superSize('13', 'GLO'));
+          await for (final chunk in source.stream(chunkSize: 4096)) {
+            builder.add(chunk);
+          }
         } finally {
           await source.close();
         }
-        expect(ota.reads + bloat.reads, 0, reason: 'the pass is memoized');
-        expect(ota.bytesRead + bloat.bytesRead, 0);
+        final streamed = builder.takeBytes();
+        expect(streamed, hasLength(length));
+        expect(
+          ota.reads + bloat.reads,
+          greaterThan(0),
+          reason: 'the one pass reads the super inputs',
+        );
+        final digest = package.imageHash('super.img');
+        expect(digest, matches(RegExp(r'^[0-9a-f]{64}$')));
+        expect(digest, sha256.convert(streamed).toString());
+        expect(
+          await bytesOf(package, 'super.img'),
+          streamed,
+          reason: 'read and stream agree',
+        );
         expect(package.imageHash('super.img'), digest);
         expect(await package.snapshot(), snapshot);
       } finally {
@@ -907,13 +1101,15 @@ void main() {
   );
 
   test(
-    'a bloat block that changes shape mid-stream fails in the download phase',
+    'a sparse bloat input that changes after preparation fails in the download',
     () async {
-      final fill = Uint8List(fixtureBlock)..fillRange(0, fixtureBlock, 0x22);
       final fixture = await super13Fixture(
         bloatFiles: {
           ...bloat13(),
-          'bloat/13/GLO_BLOAT/my_company.img': fill,
+          'bloat/13/GLO_BLOAT/my_company.img': sparseFillImage(
+            totalBlocks: 1,
+            value: 0x22222222,
+          ),
         },
       );
       addTearDown(fixture.dispose);
@@ -933,11 +1129,12 @@ void main() {
         );
         expect(prepared.resolved, isTrue);
 
-        // The prepared index says FILL; the file now holds a RAW block.
+        // The verified sparse file is rewritten with the same geometry but a
+        // different fill value after the package recorded its digest.
         final sink = await fixture.bloatWorkspace.create(
           '13/GLO_BLOAT/my_company.img',
         );
-        await sink.write(pattern(fixtureBlock, seed: 999), 0);
+        await sink.write(sparseFillImage(totalBlocks: 1, value: 0x33333333), 0);
         await sink.close();
         device.commands.clear();
 
@@ -950,12 +1147,73 @@ void main() {
         expect(receipt['uncertain'], isFalse);
         expect(
           (receipt['failure'] as Map)['message'],
-          contains('sparse encoding changed after preparation'),
+          contains('Sparse super input changed while streaming'),
         );
         expect(device.flashCommands, isNot(contains('super')));
         final writes = (receipt['writes'] as List).cast<Map>();
         expect(writes.last['partition'], 'super');
         expect(writes.last['status'], 'failed');
+      } finally {
+        await package.close();
+      }
+    },
+  );
+
+  test(
+    'a super input that no longer matches its manifest SHA-256 fails the download',
+    () async {
+      final fixture = await super13Fixture();
+      addTearDown(fixture.dispose);
+      final package = await fixture.open(
+        selection13,
+        superSize: fixture.superSize('13', 'GLO'),
+      );
+      final device = FixtureDevice(product: 'sun', maxDownloadSize: '0x10000000');
+      try {
+        final prepared = await prepareFlash(
+          package: package,
+          selection: selection13,
+          answers: const {'root': 'flash-signal', 'wipe': 'reboot'},
+          serial: 'SERIAL-A',
+          transport: FixtureTransport(device),
+          job: package.job,
+        );
+        expect(prepared.resolved, isTrue);
+        expect(
+          prepared.images['super.img']!.digest,
+          isEmpty,
+          reason: 'the super digest only exists after a complete stream',
+        );
+
+        // Same length, different content: the manifest digest must catch it
+        // while the super streams, before the super write is acknowledged.
+        final sink = await fixture.bloatWorkspace.create(
+          '13/GLO_BLOAT/my_company.img',
+        );
+        await sink.write(pattern(fixtureBlock, seed: 555), 0);
+        await sink.close();
+        device.commands.clear();
+
+        final receipt = await executePreparedFlash(
+          prepared,
+          FixtureTransport(device),
+          emit: (_) {},
+        );
+        expect(receipt['status'], 'failed', reason: '${receipt['failure']}');
+        expect(receipt['uncertain'], isFalse);
+        expect(
+          (receipt['failure'] as Map)['message'],
+          contains('my_company.img does not match its manifest SHA-256'),
+        );
+        expect(device.flashCommands, isNot(contains('super')));
+        final writes = (receipt['writes'] as List).cast<Map>();
+        expect(writes.last['partition'], 'super');
+        expect(writes.last['status'], 'failed');
+        expect(
+          (receipt['image_sha256'] as Map).containsKey('super.img'),
+          isFalse,
+          reason: 'a stream that failed has no completed digest',
+        );
       } finally {
         await package.close();
       }
@@ -985,6 +1243,28 @@ void main() {
         );
         expect(prepared.resolved, isTrue);
 
+        // Reopens the same selection and refuses the prepared ticket, which
+        // is what the service does before its first device write.
+        Future<void> changed(
+          Future<VirtualFlashPackage> Function() open,
+        ) async {
+          final reopened = await open();
+          try {
+            await expectLater(
+              verifyPreparedImages(prepared, package: reopened),
+              throwsA(
+                isA<FlashException>().having(
+                  (error) => error.message,
+                  'message',
+                  contains('virtual OTA or bloat identity changed'),
+                ),
+              ),
+            );
+          } finally {
+            await reopened.close();
+          }
+        }
+
         Future<void> refused(
           Future<VirtualFlashPackage> Function() open,
           String message,
@@ -1002,7 +1282,7 @@ void main() {
         }
 
         // A changed TARGET identity.
-        await refused(
+        await changed(
           () async => fixture.open(
             selectionAce6,
             superSize: fixture.superSize('Ace6', 'IN'),
@@ -1012,21 +1292,17 @@ void main() {
               ...fixture.identity,
               'lastModified': 1,
             },
-            preparedPackage: prepared.package as VirtualFlashPackage,
           ),
-          'confirmed OTA identity',
         );
 
         // A changed BASE identity.
-        await refused(
+        await changed(
           () async => fixture.open(
             selectionAce6,
             superSize: fixture.superSize('Ace6', 'IN'),
             base: await fixture.openOta('base.zip'),
             baseIdentity: {'kind': 'file', 'name': 'base.zip', 'size': 0},
-            preparedPackage: prepared.package as VirtualFlashPackage,
           ),
-          'confirmed OTA identity',
         );
 
         // A changed bloat file is refused by the manifest hash.
@@ -1041,7 +1317,6 @@ void main() {
             superSize: fixture.superSize('Ace6', 'IN'),
             base: await fixture.openOta('base.zip'),
             baseIdentity: fixture.identityOf('base.zip'),
-            preparedPackage: prepared.package as VirtualFlashPackage,
           ),
           'SHA-256 mismatch',
         );
@@ -1067,23 +1342,33 @@ void main() {
             job: donorPackage.job,
           );
           expect(donorPrepared.resolved, isTrue);
-          await refused(
-            () async => fixture.open(
-              selectionAce6T,
-              superSize: fixture.superSize('Ace6T', 'IN'),
-              donor: await fixture.openOta('donor.zip'),
-              donorIdentity: {
-                'kind': 'catalog',
-                'entry': {
-                  'id': 'other-donor',
-                  'device': 'OP ACE 6T',
-                  'region': 'CN',
-                },
+          final reopened = await fixture.open(
+            selectionAce6T,
+            superSize: fixture.superSize('Ace6T', 'IN'),
+            donor: await fixture.openOta('donor.zip'),
+            donorIdentity: {
+              'kind': 'catalog',
+              'entry': {
+                'id': 'other-donor',
+                'device': 'OP ACE 6T',
+                'region': 'CN',
               },
-              preparedPackage: donorPrepared.package as VirtualFlashPackage,
-            ),
-            'confirmed OTA identity',
+            },
           );
+          try {
+            await expectLater(
+              verifyPreparedImages(donorPrepared, package: reopened),
+              throwsA(
+                isA<FlashException>().having(
+                  (error) => error.message,
+                  'message',
+                  contains('virtual OTA or bloat identity changed'),
+                ),
+              ),
+            );
+          } finally {
+            await reopened.close();
+          }
         } finally {
           await donorPackage.close();
         }
@@ -1116,38 +1401,66 @@ void main() {
     );
   });
 
-  test('a super index above 32 MiB fails closed before it is built', () async {
-    const blocks = 8388608; // 32 GiB in one FILL chunk.
-    final fixture = await super13Fixture(
-      regionSizes: const {'13': (40 << 30, 40 << 30)},
-      bloatFiles: {
-        'bloat/13/GLO_BLOAT/my_company.img': sparseFillImage(
-          totalBlocks: blocks,
-          value: 0,
-        ),
-        'bloat/13/GLO_BLOAT/my_preload.img': pattern(fixtureBlock, seed: 72),
-      },
-    );
-    addTearDown(fixture.dispose);
-    final package = await fixture.open(
-      selection13,
-      superSize: fixture.superSize('13', 'GLO'),
-    );
-    try {
-      await expectLater(
-        package.size('super.img'),
-        throwsA(
-          isA<FlashException>().having(
-            (error) => error.message,
-            'message',
-            contains('index exceeds its 32 MiB memory limit'),
+  test(
+    'a 32 GiB super input is a layout-only sparse image with a bounded split',
+    () async {
+      const blocks = 8388608; // 32 GiB in one FILL chunk.
+      const superBytes = 40 << 30;
+      final fixture = await super13Fixture(
+        regionSizes: const {'13': (superBytes, superBytes)},
+        bloatFiles: {
+          'bloat/13/GLO_BLOAT/my_company.img': sparseFillImage(
+            totalBlocks: blocks,
+            value: 0,
           ),
-        ),
+          'bloat/13/GLO_BLOAT/my_preload.img': pattern(fixtureBlock, seed: 72),
+        },
       );
-    } finally {
-      await package.close();
-    }
-  });
+      addTearDown(fixture.dispose);
+      final package = await fixture.open(
+        selection13,
+        superSize: fixture.superSize('13', 'GLO'),
+      );
+      try {
+        final scan = package.superScan!;
+        expect(scan.expandedBytes, superBytes);
+        expect(
+          scan.chunks.length,
+          lessThan(64),
+          reason: 'the index is one entry per LP extent, not per data block',
+        );
+        final length = await package.size('super.img');
+        expect(length, greaterThan(32 << 30));
+        expect(
+          length,
+          lessThan(superBytes),
+          reason: 'only populated extents are RAW chunks',
+        );
+        final parts = splitSparseScan(scan, 1 << 30);
+        expect(parts.length, lessThanOrEqualTo(64));
+        expect(parts.every((part) => part.length <= 1 << 30), isTrue);
+        expect(
+          parts.every((part) => part.totalBlocks == scan.totalBlocks),
+          isTrue,
+          reason: 'every part repeats the full block geometry',
+        );
+        final rawBlocks = scan.chunks
+            .where((chunk) => chunk.type == sparseRaw)
+            .fold<int>(0, (sum, chunk) => sum + chunk.blocks);
+        final sentBlocks = parts.fold<int>(
+          0,
+          (sum, part) =>
+              sum +
+              part.pieces
+                  .where((piece) => piece.type == sparseRaw)
+                  .fold<int>(0, (inner, piece) => inner + piece.blocks),
+        );
+        expect(sentBlocks, rawBlocks, reason: 'each data block is sent once');
+      } finally {
+        await package.close();
+      }
+    },
+  );
 
   test('a super larger than the cache stays within the 64 MiB limit', () async {
     final fixture = await super13Fixture(
@@ -1161,10 +1474,30 @@ void main() {
     try {
       final length = await package.size('super.img');
       expect(length, greaterThan(64 << 20));
-      expect(package.cache.peakBytes, greaterThan(0));
+      expect(
+        package.cache.peakBytes,
+        isZero,
+        reason: 'the layout-only geometry decodes no OTA operation',
+      );
+      expect(package.imageHash('super.img'), isNull);
+
+      final source = await package.open('super.img');
+      try {
+        await for (final _ in source.stream()) {}
+      } finally {
+        await source.close();
+      }
+      expect(
+        package.cache.peakBytes,
+        greaterThan(0),
+        reason: 'the one streaming pass decodes the OTA operations',
+      );
       expect(package.cache.peakBytes, lessThanOrEqualTo(64 << 20));
       expect(package.cache.bytes, lessThanOrEqualTo(64 << 20));
-      expect(package.imageHash('super.img'), isNotNull);
+      expect(
+        package.imageHash('super.img'),
+        matches(RegExp(r'^[0-9a-f]{64}$')),
+      );
     } finally {
       await package.close();
     }
@@ -1253,7 +1586,7 @@ void main() {
         isA<FlashException>().having(
           (error) => error.message,
           'message',
-          contains('unknown, expired or already used'),
+          contains('expired or used'),
         ),
       ),
     );
@@ -1309,6 +1642,170 @@ void main() {
       ),
     );
     expect(device.commands, isEmpty);
+  });
+
+  test(
+    'the service retries only the failed step and returns its receipt',
+    () async {
+      final fixture = await super13Fixture();
+      addTearDown(fixture.dispose);
+      final device = FixtureDevice(product: 'sun');
+      final transport = FixtureTransport(device);
+      final service = FlasherService(transportFactory: () => transport);
+      Map<String, Object?> request() => {
+        'selection': {
+          'device': 'Oneplus 13',
+          'kind': 'SuperHybrid Flasher',
+          'region': 'GLO',
+        },
+        'serial': device.serial,
+        'answers': {'root': 'flash-signal', 'wipe': 'reboot'},
+        'upstreamBase': fixture.upstreamPath,
+        'virtual': {
+          'ota': {'kind': 'file', 'file': '${fixture.root.path}/ota/ota.zip'},
+          'bloat': {'kind': 'path', 'path': '${fixture.root.path}/bloat'},
+        },
+      };
+
+      final prepared = await service.prepareFlash(request());
+      expect(prepared['resolved'], isTrue, reason: '${prepared['error']}');
+      final total = (prepared['executionSteps'] as List).length;
+
+      // The direct-flash signal image fails after the super was streamed.
+      device.failFlash = 'my_region_a';
+      final events = <Map<String, Object?>>[];
+      await for (final event in service.flash({
+        ...request(),
+        'job': prepared['job'],
+        'confirmationToken': prepared['token'],
+      })) {
+        events.add(event);
+      }
+      expect(events.first['type'], 'run');
+      final runId = events.first['runId'] as String;
+      final failure = events.singleWhere(
+        (event) => event['type'] == 'failure',
+      );
+      expect(failure['status'], 'failed');
+      final result = events.last;
+      expect(result['type'], 'result');
+      expect(result['runId'], runId);
+      expect(result['status'], 'failed');
+      expect(result['canRetry'], isTrue);
+      final receipt = result['receipt'] as Map;
+      expect(receipt['status'], 'failed');
+      expect(receipt['stepIndex'], failure['stepIndex']);
+      expect(receipt['reason'], failure['reason']);
+      expect(
+        (receipt['image_sha256'] as Map)['super.img'],
+        matches(RegExp(r'^[0-9a-f]{64}$')),
+        reason: 'the super streamed before the failed step',
+      );
+      final firstAttempt = [...device.flashCommands];
+      expect(firstAttempt, contains('super'));
+
+      // Nothing is resent until the user asks; the retry starts at the
+      // failed step and keeps the earlier steps.
+      device.failFlash = null;
+      final retried = <Map<String, Object?>>[];
+      await for (final event in service.retryStep({'runId': runId})) {
+        retried.add(event);
+      }
+      expect(retried.first['type'], 'run');
+      expect(retried.first['runId'], runId);
+      expect(
+        retried.last['status'],
+        'succeeded',
+        reason: '${(retried.last['receipt'] as Map)['failure']}',
+      );
+      expect(retried.last['canRetry'], isFalse);
+      final again = device.flashCommands.sublist(firstAttempt.length);
+      expect(again.first, 'my_region_a', reason: 'the retried step is resent');
+      expect(again, isNot(contains('super')));
+      expect(
+        again.skip(1).toSet().intersection(firstAttempt.toSet()),
+        isEmpty,
+        reason: 'no earlier step is replayed',
+      );
+      final finalReceipt = retried.last['receipt'] as Map;
+      expect(finalReceipt['stepIndex'], isNull);
+      expect(finalReceipt['status'], 'succeeded');
+      expect(finalReceipt['steps'] as List, hasLength(total));
+      expect(
+        finalReceipt['runId'],
+        runId,
+        reason: 'the retried receipt keeps the run identity',
+      );
+      expect(
+        (finalReceipt['image_sha256'] as Map)['super.img'],
+        receipt['image_sha256']!['super.img'],
+        reason: 'the super digest survives the retry',
+      );
+    },
+  );
+
+  test('stop returns a stopped receipt and offers no retry', () async {
+    final fixture = await super13Fixture();
+    addTearDown(fixture.dispose);
+    final device = FixtureDevice(product: 'sun');
+    final transport = FixtureTransport(device);
+    final service = FlasherService(transportFactory: () => transport);
+    Map<String, Object?> request() => {
+      'selection': {
+        'device': 'Oneplus 13',
+        'kind': 'SuperHybrid Flasher',
+        'region': 'GLO',
+      },
+      'serial': device.serial,
+      'answers': {'root': 'flash-signal', 'wipe': 'reboot'},
+      'upstreamBase': fixture.upstreamPath,
+      'virtual': {
+        'ota': {'kind': 'file', 'file': '${fixture.root.path}/ota/ota.zip'},
+        'bloat': {'kind': 'path', 'path': '${fixture.root.path}/bloat'},
+      },
+    };
+
+    final prepared = await service.prepareFlash(request());
+    expect(prepared['resolved'], isTrue, reason: '${prepared['error']}');
+    final total = (prepared['executionSteps'] as List).length;
+    final events = <Map<String, Object?>>[];
+    final done = Completer<void>();
+    final subscription = service
+        .flash({
+          ...request(),
+          'job': prepared['job'],
+          'confirmationToken': prepared['token'],
+        })
+        .listen(
+          events.add,
+          onError: done.completeError,
+          onDone: done.complete,
+        );
+    final runId = prepared['token'] as String;
+    final stopped = await service.stopRun({'runId': runId});
+    await done.future;
+    await subscription.cancel();
+
+    final receipt = stopped['receipt']! as Map;
+    expect(receipt['status'], 'stopped');
+    expect(receipt['runId'], runId);
+    expect(events.first['type'], 'run');
+    expect(events.first['runId'], runId);
+    expect(events.last['type'], 'result');
+    expect(events.last['status'], 'stopped');
+    expect(events.last['canRetry'], isFalse, reason: 'stopping is not a pause');
+    expect(receipt['steps'] as List, hasLength(lessThan(total)));
+    expect(device.flashCommands, isEmpty, reason: 'stop precedes any write');
+    await expectLater(
+      service.stopRun({'runId': runId}),
+      throwsA(
+        isA<FlashException>().having(
+          (error) => error.message,
+          'message',
+          contains('Unknown flash run'),
+        ),
+      ),
+    );
   });
 }
 
@@ -1497,9 +1994,11 @@ int counterReads(CountingWorkspace ota, CountingWorkspace bloat) =>
 int counterBytes(CountingWorkspace ota, CountingWorkspace bloat) =>
     ota.bytesRead + bloat.bytesRead;
 
-/// Prepares, reopens and executes a virtual super on a fake transport, then
-/// proves the delivered parts expand to the folder build's super and that the
-/// flash decoded no super input a second time.
+/// Prepares, reopens and executes a virtual super on a fake transport.
+///
+/// Proves preparation reads no super data, the single execution pass streams
+/// every split position once, the delivered parts expand to the exported
+/// super, and the receipt carries the super digest only after that pass.
 Future<void> expectSuperFlash(
   VirtualFixture fixture,
   Selection selection, {
@@ -1524,7 +2023,8 @@ Future<void> expectSuperFlash(
     baseIdentity: withBase ? fixture.identityOf('base.zip') : null,
   );
   try {
-    // Preparation decodes the super exactly once.
+    // Preparation derives the super geometry from the LP extents alone: it
+    // decodes no OTA operation and reads no bloat image.
     ota.reset();
     bloat.reset();
     final prepared = await prepareFlash(
@@ -1536,11 +2036,41 @@ Future<void> expectSuperFlash(
       job: package.job,
     );
     expect(prepared.resolved, isTrue);
-    final prepareReads = counterReads(ota, bloat);
-    final prepareBytes = counterBytes(ota, bloat);
+    final manifest =
+        (package.buildJson['image_sha256']! as Map).cast<String, String>();
+    final superDigests = {
+      for (final entry in manifest.entries)
+        if (entry.key.startsWith('Super/')) entry.value,
+    };
+    expect(superDigests, isNotEmpty);
+    expect(
+      [
+        for (final path in bloat.opened)
+          if (superDigests.contains(
+            sha256.convert(fixture.bloatFiles['bloat/$path']!).toString(),
+          ))
+            path,
+      ],
+      isEmpty,
+      reason: 'preparation decodes no super input',
+    );
+    expect(
+      ota.opened,
+      isEmpty,
+      reason: 'preparation opens no OTA byte source',
+    );
+    expect(package.imageHash('super.img'), isNull);
+    final superInfo = prepared.images['super.img']!;
+    expect(superInfo.sparse, isTrue);
+    expect(superInfo.parts, greaterThan(1));
+    expect(
+      superInfo.digest,
+      isEmpty,
+      reason: 'a layout-only super has no digest before its first stream',
+    );
 
-    // Reopening for the confirmed flash reuses the completed index, so a
-    // second preparation reads every other image again but never the super.
+    // The confirmed attempt reopens the same identity and passes the same
+    // pre-write check the service runs before its first device command.
     final reopened = await fixture.open(
       selection,
       ota: ota,
@@ -1548,55 +2078,34 @@ Future<void> expectSuperFlash(
       superSize: superSize,
       base: withBase ? await fixture.openOta('base.zip', workspace: ota) : null,
       baseIdentity: withBase ? fixture.identityOf('base.zip') : null,
-      preparedPackage: prepared.package as VirtualFlashPackage,
     );
     try {
-      expect(reopened.imageHash('super.img'), prepared.images['super.img']!.digest);
       ota.reset();
       bloat.reset();
-      final second = await prepareFlash(
-        package: reopened,
-        selection: selection,
-        answers: answers,
-        serial: 'SERIAL-A',
-        transport: FixtureTransport(FixtureDevice(product: product)),
-        job: reopened.job,
-      );
-      expect(second.resolved, isTrue);
+      await verifyPreparedImages(prepared, package: reopened);
       expect(
-        second.images['super.img']!.digest,
-        prepared.images['super.img']!.digest,
+        counterReads(ota, bloat),
+        0,
+        reason: 'the pre-write check compares sizes, not bytes',
       );
-      final secondReads = counterReads(ota, bloat);
-      final secondBytes = counterBytes(ota, bloat);
 
-      expect(
-        prepareReads - secondReads,
-        greaterThan(0),
-        reason: 'the first preparation decoded the super, the second reused it',
-      );
-      expect(prepareBytes, greaterThan(secondBytes));
-
-      // The pre-write ticket check rechecks sizes only.
-      ota.reset();
-      bloat.reset();
-      await verifyPreparedImages(second, package: reopened);
-      expect(counterReads(ota, bloat), 0);
-      expect(counterBytes(ota, bloat), 0);
-
-      // Execution reads only the blocks it sends.
+      // One execution pass streams the super once and reads exactly the
+      // data it sends.
       ota.reset();
       bloat.reset();
       final device = FixtureDevice(product: product);
       final receipt = await executePreparedFlash(
-        second,
+        prepared.withPackage(reopened),
         FixtureTransport(device),
         emit: (_) {},
       );
       expect(receipt['status'], 'succeeded', reason: '${receipt['failure']}');
       expect(receipt['job'], reopened.job);
-      // Execution streams the prepared index; the counters prove it read the
-      // inputs it sent (the prepared scan is reused, not rebuilt).
+      expect(receipt['stepIndex'], isNull);
+      expect(
+        (receipt['steps'] as List).cast<Map>(),
+        hasLength(prepared.plan.executionSteps.length),
+      );
       expect(counterReads(ota, bloat), greaterThan(0));
       expect(counterBytes(ota, bloat), greaterThan(0));
 
@@ -1607,18 +2116,33 @@ Future<void> expectSuperFlash(
       }
       expectSameBlocks(
         expandParts(parts),
-        expandSparse(await bytesOf(package, 'super.img')).blocks,
+        expandSparse(await bytesOf(reopened, 'super.img')).blocks,
       );
       final writes = (receipt['writes'] as List)
           .cast<Map<String, Object?>>()
           .where((write) => write['partition'] == 'super')
           .toList();
       expect(writes, hasLength(parts.length));
+      expect(
+        [for (final write in writes) write['part']],
+        [for (var index = 0; index < parts.length; index++) index + 1],
+        reason: 'the split positions are sent once, in order',
+      );
       for (final write in writes) {
         expect(write['status'], 'ok');
         expect(write['parts'], parts.length);
       }
-      expect(device.flashCommands.where((name) => name == 'super'), hasLength(parts.length));
+      expect(
+        device.flashCommands.where((name) => name == 'super'),
+        hasLength(parts.length),
+      );
+      // The super digest exists only after the complete stream succeeded.
+      final hashes = (receipt['image_sha256']! as Map).cast<String, Object?>();
+      expect(
+        hashes['super.img'],
+        sha256.convert(await bytesOf(reopened, 'super.img')).toString(),
+      );
+      expect(reopened.imageHash('super.img'), hashes['super.img']);
     } finally {
       await reopened.close();
     }

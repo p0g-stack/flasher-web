@@ -109,6 +109,12 @@ class _FlashPageState extends State<FlashPage> {
                 const SizedBox(height: 16),
                 _ExecutionCard(controller: controller, logScroll: _logScroll),
               ],
+              if (controller.failedStepIndex != null ||
+                  controller.canRetry ||
+                  controller.stopping) ...[
+                const SizedBox(height: 16),
+                _FailureCard(controller: controller),
+              ],
               if (controller.terminal) ...[
                 const SizedBox(height: 16),
                 _ResultCard(controller: controller),
@@ -146,6 +152,7 @@ class _StatusCard extends StatelessWidget {
     FlashPhase.succeeded => 'Flash complete',
     FlashPhase.failed => 'Flash failed · stopped at the first error',
     FlashPhase.uncertain => 'Flash uncertain · inspect the phone',
+    FlashPhase.stopped => 'Flash stopped · not rolled back',
     FlashPhase.cancelled => 'Flash cancelled · not rolled back',
   };
 
@@ -178,6 +185,7 @@ class _StatusCard extends StatelessWidget {
               FlashPhase.succeeded ||
               FlashPhase.failed ||
               FlashPhase.uncertain ||
+              FlashPhase.stopped ||
               FlashPhase.cancelled => 1,
               FlashPhase.running => controller.totalSteps == 0 ? null : value,
               _ => 0,
@@ -220,6 +228,7 @@ class _PhaseBadge extends StatelessWidget {
       FlashPhase.succeeded => ('DONE', theme.colorScheme.primary),
       FlashPhase.failed => ('FAILED', theme.colorScheme.error),
       FlashPhase.uncertain => ('UNCERTAIN', theme.colorScheme.error),
+      FlashPhase.stopped => ('STOPPED', theme.colorScheme.outline),
       FlashPhase.cancelled => ('CANCELLED', theme.colorScheme.outline),
       FlashPhase.running => ('WRITING', theme.colorScheme.tertiary),
       FlashPhase.preparing => ('READ-ONLY', theme.colorScheme.secondary),
@@ -823,6 +832,91 @@ class _ExecutionCard extends StatelessWidget {
   }
 }
 
+class _FailureCard extends StatelessWidget {
+  const _FailureCard({required this.controller});
+
+  final FlashController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final uncertain =
+        controller.failureStatus == 'uncertain' ||
+        controller.phase == FlashPhase.uncertain;
+    final canRetry = controller.canRetry;
+    return SectionCard(
+      key: const ValueKey('flashFailure'),
+      title: uncertain ? 'Failed step · uncertain' : 'Failed step',
+      trailing: Text(
+        uncertain ? 'STEP UNCERTAIN' : 'STEP FAILED',
+        key: const ValueKey('failureStepStatus'),
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.error,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.7,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            controller.failedStepLabel,
+            key: const ValueKey('failureStepTitle'),
+            style: theme.textTheme.titleSmall,
+          ),
+          const SizedBox(height: 4),
+          if (controller.failureReason != null)
+            HintText(
+              controller.failureReason!,
+              key: const ValueKey('failureReason'),
+              error: true,
+            ),
+          const SizedBox(height: 8),
+          const HintText(
+            'Earlier steps stay written. A retry reopens the same serial, '
+            'rechecks it and writes the failed step again from byte zero. '
+            'Nothing is resent automatically.',
+          ),
+          if (canRetry) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  key: const ValueKey('retryFlashStep'),
+                  onPressed: controller.stopping
+                      ? null
+                      : controller.retryFailedStep,
+                  icon: const Icon(Icons.replay, size: 18),
+                  label: const Text('Retry step'),
+                ),
+                OutlinedButton.icon(
+                  key: const ValueKey('rebootRetryFlashStep'),
+                  onPressed: controller.stopping
+                      ? null
+                      : controller.rebootAndRetry,
+                  icon: const Icon(Icons.restart_alt, size: 18),
+                  label: const Text('Reboot to fastboot and retry'),
+                ),
+                TextButton.icon(
+                  key: const ValueKey('stopFlashRun'),
+                  onPressed: controller.stopping ? null : controller.stop,
+                  icon: const Icon(Icons.stop_circle_outlined, size: 18),
+                  label: const Text('Stop'),
+                ),
+              ],
+            ),
+          ] else if (controller.stopping) ...[
+            const SizedBox(height: 8),
+            const LinearProgressIndicator(minHeight: 3),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class _ResultCard extends StatelessWidget {
   const _ResultCard({required this.controller});
 
@@ -836,34 +930,30 @@ class _ResultCard extends StatelessWidget {
     final failure = receipt?['failure'] is Map
         ? Map<String, Object?>.from(receipt!['failure']! as Map)
         : null;
-    final verification = receipt?['verification'] is Map
-        ? Map<String, Object?>.from(receipt!['verification']! as Map)
-        : null;
     final steps = receipt?['steps'] is List
         ? [
             for (final step in receipt!['steps']! as List)
               if (step is Map) Map<String, Object?>.from(step),
           ]
         : const <Map<String, Object?>>[];
-    final warnings = receipt?['warnings'] is List
-        ? [
-            for (final warning in receipt!['warnings']! as List)
-              if (warning is String) warning,
-          ]
-        : const <String>[];
-    final cleanup = receipt?['cleanupErrors'] is List
-        ? [
-            for (final error in receipt!['cleanupErrors']! as List)
-              if (error is String) error,
-          ]
-        : const <String>[];
+    final hashes = receipt?['image_sha256'] is Map
+        ? {
+            for (final entry in (receipt!['image_sha256']! as Map).entries)
+              '${entry.key}': '${entry.value}',
+          }
+        : const <String, String>{};
+    final abl = receipt?['abl_source'] is Map
+        ? Map<String, Object?>.from(receipt!['abl_source']! as Map)
+        : null;
     return SectionCard(
       key: const ValueKey('flashReceipt'),
       title: 'Receipt',
       trailing: Icon(
         switch (status) {
           FlashPhase.succeeded => Icons.check_circle,
-          FlashPhase.failed || FlashPhase.uncertain => Icons.error_outline,
+          FlashPhase.failed ||
+          FlashPhase.uncertain ||
+          FlashPhase.stopped => Icons.error_outline,
           _ => Icons.info_outline,
         },
         color: switch (status) {
@@ -903,60 +993,80 @@ class _ResultCard extends StatelessWidget {
           ],
           if (receipt == null)
             const HintText(
-              'No receipt reached the page. The service may still have saved '
-              'one at the job path shown below; refresh history to see it.',
+              'No receipt reached the page. The service returns the receipt '
+              'with its last result; without one, inspect the phone before '
+              'flashing again.',
             )
           else ...[
             LabeledValue(label: 'Status', value: '${receipt['status'] ?? ''}'),
-            LabeledValue(label: 'Serial', value: '${receipt['serial'] ?? ''}'),
             LabeledValue(label: 'Device', value: '${receipt['device'] ?? ''}'),
             LabeledValue(
-              label: 'Product',
-              value: '${receipt['product'] ?? ''}',
+              label: 'Serial',
+              value: '${receipt['serial'] ?? ''}',
               monospace: true,
-            ),
-            LabeledValue(
-              label: 'Expected product',
-              value: '${receipt['expectedProduct'] ?? ''}',
-              monospace: true,
-            ),
-            LabeledValue(
-              label: 'Mode start → end',
-              value:
-                  '${receipt['modeStart'] ?? ''} → '
-                  '${receipt['modeEnd'] ?? ''}',
             ),
             LabeledValue(
               label: 'Version',
-              value: '${receipt['version'] ?? ''}',
-            ),
-            LabeledValue(label: 'Job', value: '${receipt['job'] ?? ''}'),
-            LabeledValue(
-              label: 'Started',
-              value: '${receipt['startedAt'] ?? ''}',
+              value: '${receipt['otaVersion'] ?? receipt['version'] ?? ''}',
             ),
             LabeledValue(
-              label: 'Finished',
-              value: '${receipt['finishedAt'] ?? ''}',
+              label: 'ARB',
+              value: _arbText(receipt['arb']),
+              monospace: true,
             ),
-            LabeledValue(
-              label: 'Verification',
-              value: '${verification?['status'] ?? 'unknown'}',
-            ),
-            if (verification?['detail'] != null)
-              HintText('${verification!['detail']}'),
-            if (failure != null) ...[
+            if (abl != null)
+              LabeledValue(
+                label: 'ABL source',
+                value:
+                    '${abl['version'] ?? ''} · ${abl['sha256'] ?? ''} · '
+                    '${abl['bytes'] ?? ''} bytes',
+                monospace: true,
+              ),
+            if (failure != null && failure['message'] != null) ...[
               const Divider(height: 20),
               LabeledValue(
                 label: 'Failure',
                 value: '${failure['name'] ?? ''}: ${failure['message'] ?? ''}',
               ),
-              LabeledValue(label: 'Stage', value: '${failure['stage'] ?? ''}'),
+              if (failure['stepIndex'] is num)
+                LabeledValue(
+                  label: 'Failed step',
+                  value: '${(failure['stepIndex']! as num).toInt() + 1}',
+                ),
               if (failure['uncertain'] == true)
                 const HintText(
                   'The failure is marked uncertain: a write may have reached '
-                  'the phone. Do not retry automatically.',
+                  'the phone.',
                   error: true,
+                ),
+            ],
+            if (hashes.isNotEmpty) ...[
+              const Divider(height: 20),
+              const FieldLabel('IMAGE SHA-256'),
+              const SizedBox(height: 6),
+              for (final entry in hashes.entries)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 150,
+                        child: Text(
+                          entry.key,
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ),
+                      Expanded(
+                        child: SelectableText(
+                          entry.value,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
             ],
             if (steps.isNotEmpty) ...[
@@ -990,11 +1100,6 @@ class _ResultCard extends StatelessWidget {
                   ),
                 ),
             ],
-            for (final warning in warnings)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: HintText('Warning: $warning', error: true),
-              ),
             if (receipt['uncertain'] == true)
               const Padding(
                 padding: EdgeInsets.only(top: 4),
@@ -1005,7 +1110,7 @@ class _ResultCard extends StatelessWidget {
                   error: true,
                 ),
               ),
-            for (final error in cleanup)
+            for (final error in _stringList(receipt['cleanupErrors']))
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: HintText('Cleanup: $error', error: true),
@@ -1030,10 +1135,10 @@ class _ResultCard extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 8),
-          HintText(
-            'The OTA is read in place and no local job exists, so the service '
-            'returns the receipt to this page. Download it after flashing; it '
-            'is not written into a local folder.',
+          const HintText(
+            'The OTA is read in place, so no local job folder or history '
+            'exists: the receipt is the only record. Download it after '
+            'flashing.',
           ),
         ],
       ),
@@ -1047,3 +1152,26 @@ class _ResultCard extends StatelessWidget {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 }
+
+/// The ARB index the receipt carries, or `not reported`.
+String _arbText(Object? arb) {
+  if (arb is Map) {
+    final major = arb['major'];
+    final minor = arb['minor'];
+    final index = arb['index'];
+    if (major != null || minor != null || index != null) {
+      return 'major $major · minor $minor · index $index';
+    }
+    return arb.entries.map((entry) => '${entry.key}: ${entry.value}').join(
+      ' · ',
+    );
+  }
+  return arb == null ? 'not reported' : '$arb';
+}
+
+List<String> _stringList(Object? value) => value is List
+    ? [
+        for (final item in value)
+          if (item is String) item,
+      ]
+    : const <String>[];

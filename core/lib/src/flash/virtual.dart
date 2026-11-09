@@ -1,6 +1,7 @@
 /// A flash package backed by full OTAs and verified local bloat, not output files.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -18,6 +19,7 @@ import 'model.dart';
 import 'ota_source.dart';
 import 'package_index.dart';
 import 'package.dart';
+import 'sparse.dart';
 import 'virtual_super.dart';
 
 /// Partitions the Ace 6 conversion extracts from the target OTA.
@@ -81,11 +83,17 @@ final class VirtualFlashPackage implements FlashPackage {
     Map<String, Object?>? baseIdentity,
     OtaArchive? donor,
     Map<String, Object?>? donorIdentity,
-    VirtualFlashPackage? preparedPackage,
+    bool? vulnerableAbl,
     int? superSize,
   }) async {
     const kinds = {'Regional Flasher', 'RegionalHybrid Flasher', 'Super Flasher', 'SuperHybrid Flasher'};
     if (!kinds.contains(selection.kind)) throw const FlashException('This flasher kind cannot be represented virtually.');
+    if (selection.dev == 'X9U' && vulnerableAbl == null) {
+      throw const FlashException('Choose vulnerableAbl true or false for X9U.');
+    }
+    if (selection.dev != 'X9U' && vulnerableAbl == true) {
+      throw const FlashException('Vulnerable ABL is available only for X9U.');
+    }
     final isSuper = selection.kind.contains('Super');
     final conversion = selection.builder == 'BUILD_ACE6_OOS.sh';
     final needsDonor = isSuper && selection.dev == 'Ace6T' && (selection.region == 'IN' || selection.region == 'GLO');
@@ -125,10 +133,6 @@ final class VirtualFlashPackage implements FlashPackage {
     final result = VirtualFlashPackage._(ota, selection, bloat, stableIdentity,
       Map.unmodifiable(archives), Map.unmodifiable(selectedBloat), OtaOperationCache(), virtualJobId(ota, selection, stableIdentity));
     try {
-      if (preparedPackage != null &&
-          (result.job != preparedPackage.job || (isSuper && preparedPackage._super == null))) {
-        throw const FlashException('The confirmed OTA identity or super representation changed. Prepare again.');
-      }
       final main = bloatFolder(selection.dev, selection.kind, selection.region);
       for (final relative in paths) {
         final path = relative.split('/');
@@ -140,10 +144,24 @@ final class VirtualFlashPackage implements FlashPackage {
           : folder == 'GLO_BLOAT' && selection.region == 'CN' ? 'OOS_FILES_HERE' : 'COS_FILES_HERE';
         result._bloatImages['$destination/$file'] = _BloatImage(relative.substring('bloat/'.length), selectedBloat[relative]!);
       }
+      if (vulnerableAbl == true) {
+        const digest = '4ad7f1db0c92f0a358e28bf18170a20533011299827d8d9a25cffd2218f1415d';
+        final source = 'X9U/${bloatFolder('X9U', 'Super Flasher', selection.region)}/abl-16.0.6.img';
+        final asset = bloatManifest.assets[bloatManifest.files['bloat/$source']];
+        if (asset == null || asset.rawSha256 != digest) {
+          throw const FlashException('The verified X9U ABL 16.0.6 bloat image is missing.');
+        }
+        await _verifyBloat(bloat, source, asset);
+        result._bloatImages['${selection.imageFolder}/abl.img'] = _BloatImage(source, asset);
+        result._ablSource = {'version': '16.0.6', 'sha256': digest, 'bytes': asset.rawBytes};
+      }
       void add(OtaArchive archive, PartitionInfo part, String folder, {bool keepBloat = false}) {
         if (!RegExp(r'^[A-Za-z0-9_]+$').hasMatch(part.name)) throw FlashException('Invalid OTA partition name: ${part.name}');
         final path = '$folder/${part.name}.img';
         if (keepBloat && result._bloatImages.containsKey(path)) return;
+        if (part.sha256 == null || !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(part.sha256!)) {
+          throw FlashException('${part.name}.img has no whole-image manifest SHA-256.');
+        }
         result._bloatImages.remove(path);
         result._parts[path] = _OtaImage(archive, part);
       }
@@ -199,11 +217,11 @@ final class VirtualFlashPackage implements FlashPackage {
         try {
           for (final name in superParts) {
             final path = 'Super/$name.img';
-            if (result._parts.containsKey(path) || result._bloatImages.containsKey(path)) sources[name] = await result.open(path);
+            if (result._parts.containsKey(path) || result._bloatImages.containsKey(path)) sources[name] = await result._open(path);
           }
           transferred = true;
           result._super = await VirtualSuperImage.create(sources, superSize!,
-            prepared: preparedPackage?._super, expectedHashes: {
+            expectedHashes: {
               for (final name in sources.keys)
                 if (result.imageHash('Super/$name.img')?.isNotEmpty ?? false)
                   name: result.imageHash('Super/$name.img')!,
@@ -214,20 +232,26 @@ final class VirtualFlashPackage implements FlashPackage {
           }
           rethrow;
         }
+        result._superInputHashes.addAll({
+          for (final name in sources.keys) 'Super/$name.img': result.imageHash('Super/$name.img')!,
+        });
         result._parts.removeWhere((path, _) => path.startsWith('Super/'));
         result._bloatImages.removeWhere((path, _) => path.startsWith('Super/'));
         if (selection.dev == 'X9U') result._bytes['META-INF/com/google/android/super-size'] = Uint8List.fromList(ascii.encode('$superSize\n'));
       }
+      Map<String, int>? arb;
+      try { arb = await (base ?? ota).arb(); } on Object { arb = null; }
       final hashes = <String, String>{
         for (final e in result._bloatImages.entries) e.key: e.value.asset.rawSha256,
         for (final e in result._parts.entries) if (e.value.part.sha256?.isNotEmpty ?? false) e.key: e.value.part.sha256!,
         for (final e in result._bytes.entries) if (e.key.endsWith('.img')) e.key: sha256.convert(e.value).toString(),
       };
-      final imageCount = result._parts.length + result._bloatImages.length + result._bytes.keys.where((p) => p.endsWith('.img')).length + (isSuper ? 1 : 0);
       result.buildJson = Map.unmodifiable({
         'device': selection.device, 'dev': selection.dev, 'flasher_type': selection.kind,
         'region': selection.region, 'version': ota.version, 'output_format': 'virtual',
-        hashes.length == imageCount ? 'image_sha256' : 'available_image_sha256': Map<String, String>.unmodifiable(hashes),
+        'arb': arb, 'vulnerableAbl': vulnerableAbl ?? false,
+        if (result._ablSource != null) 'abl_source': result._ablSource,
+        'image_sha256': Map<String, String>.unmodifiable({...result._superInputHashes, ...hashes}),
       });
       return result;
     } on Object {
@@ -248,6 +272,18 @@ final class VirtualFlashPackage implements FlashPackage {
   final Map<String, Uint8List> _bytes = {};
   final OtaOperationCache cache;
   VirtualSuperImage? _super;
+  final Map<String, String> _superInputHashes = {};
+  final Map<String, String> _streamHashes = {};
+  Map<String, Object?>? _ablSource;
+  Map<String, Object?> receipt() => {
+    ...buildJson, 'kind': selection.kind,
+    'image_sha256': {
+      ...Map<String, String>.from(buildJson['image_sha256']! as Map),
+      ..._streamHashes,
+      if (_super?.streamSha256 != null) 'super.img': _super!.streamSha256!,
+    },
+  };
+  SparseScan? get superScan => _super?.scan;
   final String job;
   @override late final Map<String, Object?> buildJson;
   @override String get format => 'virtual';
@@ -255,17 +291,20 @@ final class VirtualFlashPackage implements FlashPackage {
     ..._parts.keys, ..._bloatImages.keys, ..._bytes.keys, if (_super != null) 'super.img',
   ], buildJson: buildJson);
   bool isOtaImage(String path) => _parts.containsKey(path);
-  String? imageHash(String path) => path == 'super.img' ? _super?.preparedDigest : _parts[path]?.part.sha256 ??
+  String? imageHash(String path) => path == 'super.img' ? _super?.streamSha256 : _parts[path]?.part.sha256 ??
     _bloatImages[path]?.asset.rawSha256 ?? (_bytes.containsKey(path) ? sha256.convert(_bytes[path]!).toString() : null);
   @override Future<int> size(String path) async {
     if (path == 'super.img' && _super != null) {
-      await _super!.prepare();
       return _super!.length;
     }
     return _parts[path]?.part.size.toInt() ?? _bloatImages[path]?.asset.rawBytes ??
       _bytes[path]?.length ?? (throw FlashException('The virtual package is missing $path.'));
   }
   @override Future<FlashSource> open(String path) async {
+    final source = await _open(path);
+    return path == 'super.img' ? source : _verified(path, source);
+  }
+  Future<FlashSource> _open(String path) async {
     if (path == 'super.img' && _super != null) return _super!.open();
     final part = _parts[path];
     if (part != null) return OtaPartitionSource(ota: part.archive, partition: part.part, cache: cache);
@@ -274,6 +313,8 @@ final class VirtualFlashPackage implements FlashPackage {
     if (image == null) throw FlashException('The virtual package is missing $path.');
     return _LocalImage(await bloat.open(image.sourcePath));
   }
+  FlashSource _verified(String path, FlashSource source) =>
+    _VerifiedImage(source, imageHash(path), (digest) => _streamHashes[path] = digest, path);
   Future<FlashSource> openExpandedSuper() async => _super?.open(sparse: false) ?? (throw const FlashException('This package has no super image.'));
   @override Future<Map<String, Object?>> snapshot() async => {
     'format': format, 'job': job, 'source': sourceIdentity,
@@ -293,6 +334,31 @@ final class VirtualFlashPackage implements FlashPackage {
     await cache.close();
     for (final archive in _archives.values) { await archive.close(); }
   }
+}
+
+final class _VerifiedImage implements FlashSource {
+  _VerifiedImage(this.source, this.expected, this.record, this.path);
+  final FlashSource source;
+  final String? expected;
+  final void Function(String) record;
+  final String path;
+  @override int get length => source.length;
+  @override Future<Uint8List> read(int offset, int length) => source.read(offset, length);
+  @override Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
+    final hash = Sha256Hasher();
+    var count = 0;
+    await for (final bytes in source.stream(chunkSize: chunkSize)) {
+      hash.update(bytes: bytes);
+      count += bytes.length;
+      yield bytes;
+    }
+    if (count != length) throw FlashException('$path ended early.');
+    final digest = hash.finishHex();
+    if (expected != null && digest != expected!.toLowerCase()) throw FlashException('$path does not match its manifest SHA-256.');
+    record(digest);
+  }
+  @override Future<FlashCursor> cursor() async => StreamingFlashCursor(stream(), length);
+  @override Future<void> close() => source.close();
 }
 
 Future<void> _verifyBloat(Workspace workspace, String path, BloatAsset asset) async {

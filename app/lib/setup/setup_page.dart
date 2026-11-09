@@ -854,7 +854,7 @@ class _ActionsCard extends StatelessWidget {
             Tooltip(
               key: const ValueKey('exportZipHint'),
               message: exportError.isEmpty
-                  ? 'Save the same package as a ZIP file.'
+                  ? 'Save or download the same package as a ZIP file.'
                   : exportError,
               child: FilledButton.tonalIcon(
                 key: const ValueKey('exportZipButton'),

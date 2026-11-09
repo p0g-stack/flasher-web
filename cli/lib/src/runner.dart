@@ -6,7 +6,9 @@ import 'package:flasher_web_core/flasher_web_core.dart';
 
 import 'commands/bloat_command.dart';
 import 'commands/devices_command.dart';
+import 'commands/export_command.dart';
 import 'commands/facts_command.dart';
+import 'commands/flash_command.dart';
 import 'commands/serve_command.dart';
 
 // p0g:imports (bricks insert imports above this line)
@@ -23,7 +25,9 @@ class AppRunner extends CommandRunner<int> {
       ..addFlag('json', help: 'Log records as JSON lines.');
     addCommand(BloatCommand());
     addCommand(DevicesCommand());
+    addCommand(ExportCommand());
     addCommand(FactsCommand());
+    addCommand(FlashCommand());
     addCommand(ServeCommand());
     // p0g:commands (bricks insert commands above this line)
   }

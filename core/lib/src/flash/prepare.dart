@@ -572,6 +572,16 @@ Future<FlashImageInfo> _inspectImage(
   int maxDownloadSize,
   Map<String, Object?> buildJson,
 ) async {
+  if (package is VirtualFlashPackage && (path == 'super.img' || package.isOtaImage(path))) {
+    final bytes = await package.size(path);
+    final scan = path == 'super.img' ? package.superScan : null;
+    final parts = bytes > maxDownloadSize
+      ? (scan == null ? splitRawImage(bytes, maxDownloadSize) : splitSparseScan(scan, maxDownloadSize)).length
+      : 1;
+    return FlashImageInfo(path: path, bytes: bytes, sparse: scan != null,
+      digest: package.imageHash(path) ?? '', manifestSha256: package.imageHash(path),
+      scan: scan, parts: parts);
+  }
   final source = await package.open(path);
   try {
     if (source.length <= 0) {

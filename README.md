@@ -1,32 +1,43 @@
 # flasher_web
 
-Build OnePlus flasher packages from full OTAs, then flash finished jobs from
-the browser or CLI: a port of
-[koaaN/Flasher_Builder](https://github.com/koaaN/Flasher_Builder). Choose a
-device, flasher type and region, provide a full OTA (a local ZIP or catalog
-version), and build the same ZIP or folder the desktop app builds. Local builds
-read catalog OTAs by HTTP ranges. Optional hosted builds cache approved catalog
-OTAs and finished ZIPs on the operator's server; local files are never uploaded.
+Flash a OnePlus full OTA straight to a phone over fastboot, or save the same
+package as one ZIP: a port of
+[koaaN/Flasher_Builder](https://github.com/koaaN/Flasher_Builder) that reads
+the OTA where it is instead of building an intermediate package. Choose a
+device, flasher type and region, verify the bloat images the flasher template
+needs, then pick one full OTA (a local ZIP or a catalog version).
+
+Both actions take the same inputs and produce the same images:
+
+- **Flash directly** — the OTA, the bloat images and the template are written
+  to the phone over fastboot. No OTA-derived file is stored.
+- **Export ZIP** — the same package is streamed into one ZIP on the machine
+  that runs the app. Nothing is staged in browser storage.
 
 Upstream stays the source of truth for device tables, flasher templates,
-Platform-Tools and the bloat manifest; `upstream.lock` pins its commit and
-`tool/sync_upstream.dart` writes the snapshot into `app/web/upstream/`.
-Design: [docs/design.md](docs/design.md); service contract:
+Platform-Tools and the bloat manifest. `upstream.lock` pins its commit
+(`bdea12a`) and `tool/sync_upstream.dart` writes the snapshot into
+`app/web/upstream/`.
+
+Clients: desktop Chrome and Edge, Android Chrome, and the Dart CLI (both
+actions, native USB and a file destination). Firefox, Safari and browsers with
+Brave's default shields are not targeted.
+
+Design: [docs/design.md](docs/design.md). Service contract:
 [docs/service.md](docs/service.md).
 
 ## Layout
 
 | Package | What | Runs on |
 |---|---|---|
-| `core/` (`flasher_web_core`) | build and flash service, plans, storage, catalog, upstream tables, facts and strategies | plain Dart; never imports `package:flutter` |
-| `app/` (`flasher_web`) | build + flash UI; page owns permission choosers, Squadron worker owns execution | Flutter web |
-| `cli/` (`flasher_web_cli`) | `build`, `inspect`, `bloat`, `devices`, `flash`, `facts`, `serve` | `dart run` / `dart compile exe` |
+| `core/` (`flasher_web_core`) | the virtual package, flash plans, preparation and execution, bloat and OTA cache stores, catalog client, upstream tables, facts and strategies | plain Dart; never imports `package:flutter` |
+| `app/` (`flasher_web`) | the setup, flash, environment and documentation pages; the page owns permission choosers, a Squadron worker owns execution | Flutter web |
+| `cli/` (`flasher_web_cli`) | `flash`, `export`, `bloat`, `devices`, `facts`, `serve` | `dart run` / `dart compile exe` |
 | `packages/device_link/` | reusable pure-Dart transport/session interfaces and failure evidence | Dart, no Flutter or frb dependency |
 | `rust/` | app frb library: synchronous compute and asynchronous fastboot transport adapters | native and single-threaded wasm |
 | `rust/crates/ota-payload/` | reusable full-OTA parsing, operation decoding and SHA-256 compute; otaripper/AOSP provenance | native and wasm, no frb or I/O |
 | `rust/crates/fastboot-link/` | reusable USB discovery, serial-bound sessions and streaming fastboot | native nusb / browser WebUSB, no frb |
-| `hosted/` | catalog-only native build service and persistent OTA, verified-bloat and ZIP caches | Linux server with delegated cgroup v2 CPU controller |
-| `worker/` | Cloudflare Worker: static site plus `/api/catalog`, `/api/resolve`, `/api/ota`, `/api/bloat` | Cloudflare Workers (`wrangler dev` locally) |
+| `worker/` | Cloudflare Worker: the static site plus `/api/catalog`, `/api/resolve`, `/api/ota`, `/api/bloat` | Cloudflare Workers (`wrangler dev` locally) |
 
 ## Start
 
@@ -36,109 +47,162 @@ Needs Flutter 3.47.5, flutter_p0g with its patched frb
 ```sh
 PLATFORMS=web bash tool/bootstrap.sh       # upstream snapshot, codegen, Rust + wasm, workers
 dart analyze --fatal-infos
-(cd core && dart test) && (cd cli && dart test) && (cd app && flutter test) && (cd hosted && dart test)
+(cd core && dart test) && (cd cli && dart test) && (cd app && flutter test)
 (cd rust && cargo test --workspace) && (cd worker && npm install && npx vitest run)
 (cd app && flutter_p0g build web --release)
 (cd worker && npx wrangler dev --port 8787)  # open http://127.0.0.1:8787
 ```
 
-The CLI builds natively with the same pipeline:
+Bootstrap also builds the native library, which the CLI and the Dart tests
+load (`rust/target/release/libflasher_web_native.so` on Linux). The web build
+needs `app/build/web`, which the `build web` step writes; the Worker serves it.
+
+## CLI
+
+`cli/` runs the same service classes natively, so the CLI and the page share
+one contract.
+
+Download and verify the bloat images of a selection:
 
 ```sh
 dart run cli/bin/flasher_web.dart bloat --device 'Oneplus 13' --kind 'SuperHybrid Flasher' \
-  --region GLO --bloat-dir /path/to/bloat --api-base http://127.0.0.1:8787 --upstream app/web/upstream
-dart run cli/bin/flasher_web.dart build --device 'Oneplus 13' --kind 'SuperHybrid Flasher' \
-  --region GLO --ota /path/to/FULL-OTA.zip --bloat-dir /path/to/bloat --output /path/to/builds \
+  --region GLO --bloat-dir /path/to/bloat --api-base http://127.0.0.1:8787 \
   --upstream app/web/upstream
 ```
 
-List native fastboot devices, then prepare a finished job without writing:
+Flash a full OTA directly. Without `--confirm-serial` the command only prints
+the read-only plan and exits with code 2:
 
 ```sh
 dart run cli/bin/flasher_web.dart devices
-dart run cli/bin/flasher_web.dart flash --output /path/to/builds --job JOB \
-  --device 'Oneplus 13' --kind 'SuperHybrid Flasher' --region GLO \
+dart run cli/bin/flasher_web.dart flash --device 'Oneplus 13' --kind 'SuperHybrid Flasher' \
+  --region GLO --ota /path/to/FULL-OTA.zip --bloat-dir /path/to/bloat \
   --serial SERIAL --upstream app/web/upstream
 ```
 
-The read-only invocation prints the plan and exits with code 2. Supply each
-required choice using repeated `--answer id=value` flags, then rerun with
-`--confirm-serial SERIAL` matching the connected serial exactly to authorize
-writes. Unknown product mappings require `--answer product=VERIFIED_PRODUCT`;
-verify the selected model and the reported product yourself. Do not guess
-answers or confirm a different phone.
+Add `--catalog ID` instead of `--ota PATH` to read a catalog release through
+`/api/ota` (or give `--ota` an HTTP(S) URL). `--base PATH` supplies the Ace 6
+ColorOS BASE OTA for the Ace 6 OxygenOS conversion. X9U requires either
+`--vulnerable-abl` (pack bloat ABL 16.0.6) or `--no-vulnerable-abl`.
 
-## Hosted builds
+Repeat the connected serial exactly to authorize writes; a mismatch exits 1
+before any preparation. Answer template prompts with repeated
+`--answer id=value`; an unknown product mapping requires
+`--answer product=VERIFIED_PRODUCT`, so verify the selected model and the
+reported product yourself. Do not guess answers or confirm a different phone.
 
-The hosted service is optional and is **not configured by `wrangler dev`**.
-The browser submits catalog IDs only; it cannot upload a local ZIP or supply an
-arbitrary OTA URL. Completed ZIPs are served with byte ranges, and WebUSB
-flashing still runs on the user's machine after serial-bound confirmation.
-Hosted receipts are downloaded, not saved to a local job folder.
+On a failure the command asks `[r]etry step / re[b]oot to fastboot and retry /
+[s]top`, and stops when stdin is not a terminal. The receipt is written to
+`--receipt PATH` or `./receipt-<runId>.json`. Exit codes: 0 succeeded, 2 policy
+stop (plan only, unanswered prompt, product required, stopped run), 1 failed,
+uncertain or an error, 64 for a usage error.
 
-The operator needs a persistent Linux host, the native library, `prlimit`, the
-pinned upstream snapshot, a private service endpoint, and a delegated cgroup v2
-CPU subtree. Configure `hosted/deploy.env.example`, including a unique secret
-and `HOSTED_BUILDER_REVISION` identifying the exact deployed builder, then start
-`dart run hosted/bin/server.dart` from the workspace. Change the builder
-revision whenever the builder, core or Rust implementation changes.
-Set the Cloudflare Worker's `HOSTED_ORIGIN` to the HTTPS origin of a TLS proxy to that
-private service, and its `HOSTED_TOKEN` secret to the same value. The service
-does not bind publicly. The proxy must protect the origin and preserve range,
-ETag and content-length headers.
+Export the same package without a device:
 
-OTA and ZIP retention defaults to 150 days since last use, subject to the
-configured disk budget. Concurrent builds, queue size, CPU utilization and
-CPU time are bounded. Workspace usage is monitored and each file is limited,
-but the monitor can overshoot between checks: use a dedicated filesystem with
-a hard quota and sufficient free space before exposing the service publicly.
-Rate-limit public job requests at the edge; the shared backend token protects
-the backend, not against abuse by visitors to the website.
+```sh
+dart run cli/bin/flasher_web.dart export --device 'Oneplus 13' --kind 'SuperHybrid Flasher' \
+  --region GLO --ota /path/to/FULL-OTA.zip --bloat-dir /path/to/bloat \
+  --out /path/to/flasher.zip --upstream app/web/upstream
+```
 
-This repository does not provision a server or publish the site. A real-host
-OTA build and physical-device flashing remain unqualified.
+It prints the ZIP's SHA-256, size and entry count and writes
+`<zip>.receipt.json` next to it. `facts` prints what the place has checked it
+can do; `serve` hosts the Squadron services for the process place (the
+launcher's root channel, not a user command).
 
 ## In the browser
 
-- Chromium can keep bloat and packages in a folder you pick (File System
-  Access). Other browsers use origin-private storage (OPFS) and download the
-  finished ZIP; ask for persistent storage on the Environment page.
-- Allow working space for extracted images and the finished package; capacity
-  preflight uses a conservative estimate from decoded partition sizes.
-  `super.img` is streamed into ZIP output rather than stored separately.
-  The Environment page shows the browser's quota, not a picked drive's space.
-- Browser quota applies only to OPFS. Picking an output folder does not use
-  that quota; browsers cannot report that folder's free disk space, so it is
-  shown as unknown and filesystem writes can still fail if its drive fills.
-  Choose a bloat folder too if its cache will not fit in browser storage.
-  Persistence or PWA installation is not a quota increase in Chromium.
-- Catalog versions are streamed through `/api/ota`, a range proxy limited to
-  the OTA CDNs; signed links are resolved again when they expire.
-- Keep the tab open during a build; the app holds a wake lock and warns before
-  leaving.
-- Open Flash from a finished build or history entry. In the browser, flashing
-  requires current Chrome, Edge or Chromium on HTTPS or localhost, outside an
-  embedded webview. The page opens the WebUSB chooser from your click, filtered
-  to fastboot interface `ff/42/03`; only its serial crosses to the service,
-  which reopens the exact granted device in its own worker.
-- Read-only preparation checks product, mode, package and image hashes. Review
-  every prompt and acknowledge the exact serial before writing; the CLI
-  repeats it with `--confirm-serial`. Changes to the job, device, product or
-  answers invalidate confirmation.
-- Downloads respect `max-download-size` and split oversized images into sparse
-  parts preserving partition offsets. Reconnects pin the serial and recheck
-  product/mode; regrant the same phone when the app asks after a mode change.
-- Failure stops the plan; uncertain writes are never retried automatically.
-  Cancel stops future commands and waits for the worker to stop in-flight work,
-  not a rollback. Manual data formatting and actual rooting remain your tasks.
-- Receipts can be downloaded and are saved in the job when storage permits.
-  Fastboot OKAY is not readback verification; Android mode after the final
-  reboot is unverified. Browser hardware qualification is still pending.
-  Synthetic responder evidence covers streaming, sparse splitting, reconnects
-  and failure/uncertainty handling, not real USB or partition readback.
+The setup page has four steps and one action card:
 
-Generated by the `p0g_app` brick (p0g-stack/bricks); the conventions below
-come from it.
+1. **Package configuration** — device, flasher type and region from the
+   upstream tables, plus the local engine state.
+2. **Bloat files** — the images the template needs, verified by size and
+   SHA-256. They are downloaded through `/api/bloat/` once and then read from
+   the store. A picked folder (File System Access) keeps them outside the
+   browser's quota; otherwise they stay in origin-private storage (OPFS).
+3. **OTA source** — a local ZIP (read in place, dropped or chosen, a stored
+   handle can reconnect after a reload) or a catalog version (read through
+   `/api/ota`, a range proxy limited to the OTA CDNs; an expired signed link is
+   resolved again). Full OTA packages only; incremental updates are rejected.
+4. **Vulnerable ABL** — the X9U choice between the bloat ABL 16.0.6 and the
+   OTA's ABL.
+
+The action card then offers **Flash directly** and **Export ZIP**. Flashing
+opens the flash page; exporting opens the save-file picker where the browser
+has one, and otherwise (Android Chrome) starts a streamed download. A
+cancelled or failed export aborts the download, so a partial ZIP is not saved.
+
+Keep the tab open while a flash, bloat download or export runs; the app holds a
+screen wake lock and a leave guard. The Environment page shows the engine, the
+documented storage budget and the cached catalog OTAs, where one can be evicted.
+
+Flashing requires current Chrome or Edge on HTTPS or localhost, outside an
+embedded webview. The page opens the WebUSB chooser from the click, filtered to
+fastboot interface `ff/42/03`; only its serial crosses to the service worker,
+which reopens that exact granted device in its own worker. Regrant the same
+phone when the app asks after a mode change.
+
+## One pass over the OTA
+
+Every kind is produced in one pass over the OTA, with the images streamed from
+their payload operations to whichever sink consumes them:
+
+- Each image is verified against its payload-partition SHA-256 while it is
+  streamed; a mismatch stops the run before that image is written.
+- `super.img` is emitted as a sparse image with RAW data blocks and DONT_CARE
+  gaps only. LP extents come from the layout the flasher template writes, so
+  every sparse piece's size is known without reading the images first; boot
+  partitions stay raw, and the bootloader writes the sparse image as it is.
+- The DONT_CARE form is slightly larger than FILL detection would be: measured
+  on the owner's real CPH2645 16.0.3.500 OTA, 29.5 MiB on an 8.75 GiB super,
+  about +0.33 %.
+- The receipt carries the SHA-256 of every image the package contains,
+  including the `super.img` digest computed while it streamed.
+
+## Storage
+
+The app keeps its own data under a 10 GiB cap: verified bloat images (at most
+about 1.72 GiB raw), an optional cache of catalog OTA ZIPs and the service
+worker shell. A local OTA file costs nothing because it is read in place.
+
+- The bloat store is a picked folder on Chromium and OPFS elsewhere. Its
+  `ota-cache/` holds an OTA only when the user asks for an offline copy of one
+  catalog release; an interrupted download resumes at its recorded offset, and
+  least-recently-used eviction makes room for a new write.
+- A write that would pass the cap is refused before it starts, after eviction
+  has freed what it could. A picked folder's free space is not reported by the
+  browser, so only the cap applies there.
+- Archives are never written to the store: the export streams straight into
+  the chosen file or the download, so the output needs no OPFS space and no
+  workspace.
+
+## Failures, retries and the receipt
+
+Execution stops at the first failing step (a USB drop, a hash mismatch, a
+device FAIL reply) and reports the step, its status and the reason. Nothing is
+resent automatically. The user chooses:
+
+- **Retry step** — reopens the confirmed serial, rechecks product and mode,
+  and writes the failed step again from byte zero, then continues.
+- **Reboot to fastboot and retry** — reboots to the mode the failed step needs
+  and then does the same.
+- **Stop** — ends the run; commands already sent stay applied.
+
+A write whose completion is unknown is reported as uncertain, and a retry is
+an explicit choice, never a reaction to a lost acknowledgement.
+
+The receipt is the only record: status, device, serial, OTA version, ARB index,
+the per-image SHA-256 map (including `super.img` and, for X9U, the ABL source),
+the step and write list, the start and end modes, the failure and its step,
+uncertainty, cleanup errors and the strategy that ran. The page shows it and
+downloads it as JSON; the CLI writes it as a file. FASTBOOT `OKAY` is not a
+readback check, so verification stays `unverified`, and the Android mode after
+the final reboot is reported as unverified because it is not probed.
+
+Physical-device qualification is still pending: real OTA flashing on a real
+phone has not been performed for this work. The tests drive a fake fastboot
+transport and synthetic OTAs, and compare written bytes with the exported ZIP
+and the expected images.
 
 ## Conventions
 
@@ -185,3 +249,7 @@ come from it.
 - **Patched Squadron.** squadron_process needs Squadron with its
   channel-factory patch; bootstrap runs `squadron_process:squadron_patch`,
   which puts it under `.dart_tool/` and writes `pubspec_overrides.yaml`.
+
+Generated by the `p0g_app` brick (p0g-stack/bricks); the conventions above
+come from it.
+

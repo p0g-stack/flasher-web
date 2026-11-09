@@ -914,15 +914,12 @@ final class SetupState extends ChangeNotifier {
 
   // ------------------------------------------------------------------ export
 
-  /// Whether this page can show a save-file picker at all.
+  /// Whether this page can deliver an export at all.
   bool get canSaveZip => exports.available;
 
   /// Why Export ZIP is not offered, or empty when it is.
   String get exportRequirementsError {
-    if (!canSaveZip) {
-      return 'This browser has no save-file picker. Open the app in a '
-          'current Chromium browser over HTTPS or localhost.';
-    }
+    if (!canSaveZip) return exports.unavailableHint;
     return _requirementsError('exporting the package');
   }
 
@@ -944,6 +941,7 @@ final class SetupState extends ChangeNotifier {
         'ota': ota,
         'base': ?base,
         'bloat': directFlashBloat,
+        if (_vulnerableAbl != null) 'vulnerableAbl': _vulnerableAbl,
       },
       selection: Map<String, Object?>.from(selectionMap!),
       label: '$deviceDisplay $_kind $regionDisplay',

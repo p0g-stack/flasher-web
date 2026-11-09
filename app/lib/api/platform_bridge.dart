@@ -199,6 +199,30 @@ abstract interface class PlatformBridge {
   void dispose();
 }
 
+/// The page's streamed download, for browsers without a save-file picker.
+///
+/// Android Chrome has no `showSaveFilePicker`, so the page registers a one-use
+/// download with its service worker and hands the export a destination the
+/// worker streams the ZIP through instead of a file handle. Only the real
+/// browser bridge implements this; a bridge without it keeps the picker path.
+abstract interface class StreamExportBridge {
+  /// Whether the app's service worker controls this page, which is what serves
+  /// the download. A page loaded before the worker first activated is not, and
+  /// must be reloaded.
+  bool get canStreamExport;
+
+  /// Registers a one-use download named [suggestedName] and starts it.
+  ///
+  /// Returns the export destination `{"kind": "stream", "id", "channel"}`: the
+  /// service streams the archive over the channel named here. Throws when the
+  /// service worker does not answer.
+  Future<Object?> beginStreamExport({required String suggestedName});
+
+  /// Drops the registered download after a failed export, so the browser does
+  /// not keep a broken file.
+  void abortStreamExport(Object destination, {String? reason});
+}
+
 /// A bridge for platforms without a browser, and the analyzer's stub branch.
 ///
 /// Widget tests supply a scripted bridge; this one fails loudly if a caller

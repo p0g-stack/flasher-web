@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
+import 'dart:math' as math;
 
 import 'package:flasher_web_core/flasher_web_core.dart' show HandleWorkspace;
 import 'package:web/web.dart' as web;
@@ -14,7 +15,7 @@ PlatformBridge createBridge() => WebPlatformBridge();
 /// The browser implementation: File System Access, IndexedDB, `fetch`,
 /// downloads, the screen wake lock, page-level drag and drop, and the WebUSB
 /// fastboot device chooser.
-final class WebPlatformBridge implements PlatformBridge {
+final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   WebPlatformBridge() {
     _dragOver = ((web.Event event) {
       event.preventDefault();
@@ -503,6 +504,132 @@ final class WebPlatformBridge implements PlatformBridge {
       if (_jsString(_toJSAny(error), 'name') == 'AbortError') return null;
       rethrow;
     }
+  }
+
+  /// The page's service worker container, or null in a browser without one.
+  web.ServiceWorkerContainer? get _serviceWorkers {
+    final navigator = globalContext['navigator'];
+    if (navigator == null || !navigator.isA<JSObject>()) return null;
+    final container = (navigator as JSObject)['serviceWorker'];
+    if (container == null || !container.isA<JSObject>()) return null;
+    return container as web.ServiceWorkerContainer;
+  }
+
+  @override
+  bool get canStreamExport => _serviceWorkers?.controller != null;
+
+  @override
+  Future<Object?> beginStreamExport({required String suggestedName}) async {
+    final controller = _serviceWorkers?.controller;
+    if (controller == null) {
+      throw UnsupportedError(
+        'The download service is not running yet; reload the page.',
+      );
+    }
+    final id = _exportId();
+    final channel = 'flasher-export-$id';
+    final accepted = _awaitExportAccepted(id);
+    controller.postMessage(
+      <String, Object?>{
+        'type': 'flasher-export-register',
+        'id': id,
+        'filename': suggestedName,
+        'channel': channel,
+      }.jsify(),
+    );
+    await accepted;
+    // A hidden iframe keeps the app page: the service worker answers this
+    // navigation with `Content-Disposition: attachment`, so the browser turns
+    // it into a download. An `<a download>` never reaches the worker.
+    final frame = web.HTMLIFrameElement()
+      ..src = 'download/$id'
+      ..style.display = 'none';
+    web.document.body?.append(frame);
+    // The frame only starts the download; removing it earlier would cancel
+    // the request.
+    Timer(const Duration(minutes: 10), () => frame.remove());
+    return <String, Object?>{'kind': 'stream', 'id': id, 'channel': channel};
+  }
+
+  @override
+  void abortStreamExport(Object destination, {String? reason}) {
+    final controller = _serviceWorkers?.controller;
+    final id = destination is Map ? destination['id'] : null;
+    if (controller == null || id is! String || id.isEmpty) return;
+    try {
+      controller.postMessage(
+        <String, Object?>{
+          'type': 'flasher-export-abort',
+          'id': id,
+          'reason': ?reason,
+        }.jsify(),
+      );
+    } on Object {
+      // The page or the worker is already gone; nothing is left to abort.
+    }
+  }
+
+  /// A one-use download id; `randomUUID` needs a secure context, the clock and
+  /// a random number do not.
+  String _exportId() {
+    final crypto = globalContext['crypto'];
+    if (crypto != null && crypto.isA<JSObject>()) {
+      final randomUuid = (crypto as JSObject)['randomUUID'];
+      if (randomUuid != null && randomUuid.isA<JSFunction>()) {
+        try {
+          final value = (randomUuid as JSFunction).callAsFunction(crypto);
+          if (value.isA<JSString>()) return (value as JSString).toDart;
+        } on Object {
+          // Fall through to the clock.
+        }
+      }
+    }
+    final now = DateTime.now().microsecondsSinceEpoch;
+    final random = math.Random().nextInt(1 << 32).toRadixString(16);
+    return '$now-$random';
+  }
+
+  /// Waits for the service worker to acknowledge [id] before the download is
+  /// requested, so the route never answers 404 for an unknown id.
+  Future<void> _awaitExportAccepted(String id) async {
+    final completer = Completer<void>();
+    late final JSFunction listener;
+    void finish([Object? error]) {
+      _serviceWorkers?.removeEventListener('message', listener);
+      if (completer.isCompleted) return;
+      if (error == null) {
+        completer.complete();
+      } else {
+        completer.completeError(error);
+      }
+    }
+
+    listener = ((web.MessageEvent event) {
+      final data = event.data;
+      if (data == null || !data.isA<JSObject>()) return;
+      final object = data as JSObject;
+      if (!_jsEquals(object, 'type', 'flasher-export-accepted')) return;
+      if (!_jsEquals(object, 'id', id)) return;
+      finish();
+    }).toJS;
+    _serviceWorkers?.addEventListener('message', listener);
+    final timer = Timer(const Duration(seconds: 5), () {
+      finish(
+        StateError('The download service did not answer; reload the page.'),
+      );
+    });
+    try {
+      await completer.future;
+    } finally {
+      timer.cancel();
+    }
+  }
+
+  bool _jsEquals(JSObject object, String key, String expected) {
+    final value = object.getProperty<JSAny?>(key.toJS);
+    return value != null &&
+        value.isA<JSString>() &&
+        (value as JSString).toDart == expected;
   }
 
   @override

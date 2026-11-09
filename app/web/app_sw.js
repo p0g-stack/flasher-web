@@ -11,6 +11,11 @@
 //   - keep OTA, bloat or package bytes: only the app shell and the engine
 //     assets the page itself loads are cached.
 //
+// It also serves the streamed export download, `download/<id>`: the page
+// registers a one-use id, and the response body is the export worker's ZIP,
+// pulled chunk by chunk over a broadcast channel. Those bytes are never cached
+// and the route is answered before anything else.
+//
 // Bump CACHE_VERSION when the strategy changes. Asset URLs are stable across
 // builds, so cached responses are revalidated in the background; a deploy is
 // picked up on the next navigation without wiping the cache up front.
@@ -54,6 +59,14 @@ const PRECACHE_URLS = [
 // Resolved against this script (the app's base href), not against the page.
 const INDEX_URL = new URL('index.html', self.location.href).href;
 const ROOT_URL = new URL('./', self.location.href).href;
+
+// One streamed export: how much the download asks for at a time, and how long
+// a registration waits for its download before it is dropped.
+const EXPORT_CHUNK_BYTES = 1024 * 1024;
+const EXPORT_REGISTRATION_TTL = 120000;
+
+/// Registered exports by id, until their one download has finished.
+const exportStreams = new Map();
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -99,6 +112,18 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data || typeof data !== 'object' || typeof data.type !== 'string') {
+    return;
+  }
+  if (data.type === 'flasher-export-register') {
+    registerExport(event, data);
+  } else if (data.type === 'flasher-export-abort') {
+    abortExport(data);
+  }
+});
+
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
@@ -110,6 +135,14 @@ self.addEventListener('fetch', (event) => {
     return;
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+
+  // A streamed export download outranks every other route: it is not an
+  // asset, it is never cached, and its body comes from the export worker.
+  const exportId = exportDownloadId(url);
+  if (exportId != null) {
+    event.respondWith(exportResponse(exportId));
+    return;
+  }
 
   // /api/ and every range read stay network-only. OTA, bloat and hosted
   // artifacts are streamed ranges and a cached 200 can never replace them.
@@ -132,6 +165,227 @@ self.addEventListener('fetch', (event) => {
 /// `/api/catalog`, `/api/resolve`, `/api/ota`, `/api/bloat/…`, `/api/hosted/…`.
 function isApiPath(pathname) {
   return pathname === '/api' || pathname.startsWith('/api/');
+}
+
+/// The export id of a `…/download/<id>` request, or null for any other path.
+function exportDownloadId(url) {
+  if (url.origin !== self.location.origin) return null;
+  const parts = url.pathname.split('/');
+  if (parts.length < 3) return null;
+  if (parts[parts.length - 2] !== 'download') return null;
+  const id = parts[parts.length - 1];
+  return id.length > 0 ? id : null;
+}
+
+/// `Content-Disposition` wants a plain ASCII name; anything else is dropped.
+function exportFilename(value) {
+  const name = typeof value === 'string' ? value : '';
+  const safe = name.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '');
+  return safe.length > 0 ? safe : 'flasher.zip';
+}
+
+/// Registers one download. The page waits for `flasher-export-accepted` before
+/// it requests `download/<id>`, so the route below always finds the entry.
+function registerExport(event, data) {
+  const id = typeof data.id === 'string' ? data.id : '';
+  const channelName = typeof data.channel === 'string' ? data.channel : '';
+  const source = event.source;
+  const reply = (message) => {
+    if (source && typeof source.postMessage === 'function') {
+      source.postMessage(message);
+    }
+  };
+  if (id.length === 0 || channelName.length === 0) {
+    reply({ type: 'flasher-export-rejected', id });
+    return;
+  }
+  const previous = exportStreams.get(id);
+  if (previous) disposeExport(previous);
+  const entry = {
+    id,
+    filename: exportFilename(data.filename),
+    channel: new BroadcastChannel(channelName),
+    controller: null,
+    resolvePull: null,
+    ready: false,
+    creditSent: false,
+    used: false,
+    closed: false,
+    timer: null,
+  };
+  entry.channel.onmessage = (message) => onExportMessage(entry, message.data);
+  entry.timer = setTimeout(() => {
+    if (exportStreams.get(id) === entry && !entry.used) disposeExport(entry);
+  }, EXPORT_REGISTRATION_TTL);
+  exportStreams.set(id, entry);
+  reply({ type: 'flasher-export-accepted', id });
+}
+
+/// The page gave up before the worker finished: fail the download so the
+/// browser drops the partial file instead of saving a broken ZIP.
+function abortExport(data) {
+  const id = typeof data.id === 'string' ? data.id : '';
+  const entry = exportStreams.get(id);
+  if (!entry) return;
+  const reason =
+    typeof data.reason === 'string' && data.reason.length > 0
+      ? data.reason
+      : 'The export was cancelled.';
+  if (!entry.used) {
+    // The download has not been requested yet. Remember the failure so the
+    // navigation that may still arrive fails the download instead of saving a
+    // 404 page as the ZIP; the registration's timer drops it otherwise.
+    entry.failure = reason;
+    return;
+  }
+  failExport(entry, reason);
+}
+
+/// The response body: bytes arrive only after `pull` grants credit, so the
+/// worker never runs ahead of the file the browser is writing.
+function exportResponse(id) {
+  const entry = exportStreams.get(id);
+  if (!entry || entry.used) {
+    return new Response('Unknown export download.', {
+      status: 404,
+      headers: {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'text/plain;charset=utf-8',
+      },
+    });
+  }
+  entry.used = true;
+  if (entry.timer != null) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+
+  if (entry.failure) {
+    // The export failed before the download asked for bytes: error the body
+    // so the browser drops the download instead of keeping a broken file.
+    const failure = entry.failure;
+    disposeExport(entry);
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(new Error(failure));
+        },
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/zip',
+          'Cache-Control': 'no-store',
+        },
+      },
+    );
+  }
+
+  const stream = new ReadableStream({
+    start(controller) {
+      entry.controller = controller;
+      grantExportCredit(entry);
+    },
+    pull() {
+      if (entry.closed) return undefined;
+      return new Promise((resolve) => {
+        entry.resolvePull = resolve;
+        grantExportCredit(entry);
+      });
+    },
+    cancel() {
+      if (entry.closed) return;
+      entry.channel.postMessage({ type: 'cancel' });
+      disposeExport(entry);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${entry.filename}"`,
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
+}
+
+function onExportMessage(entry, data) {
+  if (entry.closed || !data || typeof data !== 'object') return;
+  switch (data.type) {
+    case 'ready':
+      entry.ready = true;
+      grantExportCredit(entry);
+      return;
+    case 'chunk':
+      deliverExportChunk(entry, data.bytes);
+      return;
+    case 'end':
+      finishExport(entry);
+      return;
+    case 'error':
+      failExport(
+        entry,
+        typeof data.message === 'string' && data.message.length > 0
+          ? data.message
+          : 'The export failed.',
+      );
+      return;
+    default:
+      return;
+  }
+}
+
+/// Grants one chunk of credit per pending pull, and none while the worker has
+/// not opened its side of the channel yet.
+function grantExportCredit(entry) {
+  if (entry.closed || entry.creditSent) return;
+  if (!entry.ready || !entry.resolvePull) return;
+  entry.creditSent = true;
+  entry.channel.postMessage({ type: 'credit', bytes: EXPORT_CHUNK_BYTES });
+}
+
+function deliverExportChunk(entry, bytes) {
+  if (entry.closed || !entry.controller) return;
+  if (!(bytes instanceof Uint8Array)) return;
+  entry.creditSent = false;
+  entry.controller.enqueue(bytes);
+  resolveExportPull(entry);
+}
+
+function resolveExportPull(entry) {
+  const resolve = entry.resolvePull;
+  entry.resolvePull = null;
+  if (resolve) resolve();
+}
+
+function finishExport(entry) {
+  if (entry.closed) return;
+  const controller = entry.controller;
+  resolveExportPull(entry);
+  if (controller) controller.close();
+  disposeExport(entry);
+}
+
+function failExport(entry, message) {
+  if (entry.closed) return;
+  const controller = entry.controller;
+  resolveExportPull(entry);
+  if (controller) controller.error(new Error(message));
+  disposeExport(entry);
+}
+
+function disposeExport(entry) {
+  entry.closed = true;
+  if (entry.timer != null) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+  if (exportStreams.get(entry.id) === entry) exportStreams.delete(entry.id);
+  try {
+    entry.channel.close();
+  } catch (error) {
+    // Already closed by the browser.
+  }
 }
 
 /// 200/ok responses of a type that can be replayed for the same request.

@@ -78,6 +78,20 @@ void main() {
     });
   });
 
+  group('virtual request', () {
+    test('a local OTA is absolute and a URL stays a URL', () {
+      expect(fileOta('ota.zip'), {
+        'kind': 'file',
+        'file': File('ota.zip').absolute.path,
+      });
+      expect(otaInput('https://example.com/ota.zip'), {
+        'kind': 'url',
+        'url': 'https://example.com/ota.zip',
+      });
+      expect(otaInput('ota.zip')['kind'], 'file');
+    });
+  });
+
   group('usage', () {
     Future<int> run(List<String> args) => AppRunner().run(args);
 
@@ -99,6 +113,182 @@ void main() {
           '127.0.0.1:8787',
         ]),
         64,
+      );
+    });
+
+    const selection = [
+      '--device',
+      'Oneplus 13',
+      '--kind',
+      'RegionalHybrid Flasher',
+      '--region',
+      'GLO',
+    ];
+
+    test('flash requires a selection, serial and bloat folder', () async {
+      expect(await run(['flash']), 64);
+      expect(
+        await run(['flash', ...selection, '--serial', 'SERIAL1']),
+        64,
+      );
+    });
+
+    test('flash requires exactly one OTA source', () async {
+      expect(
+        await run([
+          'flash',
+          ...selection,
+          '--bloat-dir',
+          '/tmp/bloat',
+          '--serial',
+          'SERIAL1',
+        ]),
+        64,
+      );
+      expect(
+        await run([
+          'flash',
+          ...selection,
+          '--bloat-dir',
+          '/tmp/bloat',
+          '--serial',
+          'SERIAL1',
+          '--ota',
+          'ota.zip',
+          '--catalog',
+          '1.2.3',
+        ]),
+        64,
+      );
+    });
+
+    test('flash rejects a malformed answer and API base', () async {
+      expect(
+        await run([
+          'flash',
+          ...selection,
+          '--bloat-dir',
+          '/tmp/bloat',
+          '--serial',
+          'SERIAL1',
+          '--ota',
+          'ota.zip',
+          '--answer',
+          'product',
+        ]),
+        64,
+      );
+      expect(
+        await run([
+          'flash',
+          ...selection,
+          '--bloat-dir',
+          '/tmp/bloat',
+          '--serial',
+          'SERIAL1',
+          '--ota',
+          'ota.zip',
+          '--api-base',
+          '127.0.0.1:8787',
+        ]),
+        64,
+      );
+    });
+
+    test('flash refuses a confirm serial that is not the serial', () async {
+      expect(
+        await run([
+          'flash',
+          ...selection,
+          '--bloat-dir',
+          '/tmp/bloat',
+          '--serial',
+          'SERIAL1',
+          '--confirm-serial',
+          'SERIAL2',
+          '--ota',
+          'ota.zip',
+        ]),
+        1,
+      );
+    });
+
+    test('flash fails without a device or a readable upstream', () async {
+      final directory = await Directory.systemTemp.createTemp('cli_flash_');
+      addTearDown(() => directory.delete(recursive: true));
+      expect(
+        await run([
+          'flash',
+          ...selection,
+          '--bloat-dir',
+          directory.path,
+          '--upstream',
+          '${directory.path}/upstream',
+          '--serial',
+          'SERIAL1',
+          '--confirm-serial',
+          'SERIAL1',
+          '--ota',
+          '${directory.path}/ota.zip',
+        ]),
+        1,
+      );
+    });
+
+    test('export requires a selection, bloat folder and output', () async {
+      expect(await run(['export']), 64);
+      expect(
+        await run(['export', ...selection, '--bloat-dir', '/tmp/bloat']),
+        64,
+      );
+    });
+
+    test('export requires exactly one OTA source', () async {
+      expect(
+        await run([
+          'export',
+          ...selection,
+          '--bloat-dir',
+          '/tmp/bloat',
+          '--out',
+          'out.zip',
+        ]),
+        64,
+      );
+      expect(
+        await run([
+          'export',
+          ...selection,
+          '--bloat-dir',
+          '/tmp/bloat',
+          '--out',
+          'out.zip',
+          '--ota',
+          'ota.zip',
+          '--catalog',
+          '1.2.3',
+        ]),
+        64,
+      );
+    });
+
+    test('export fails without a readable upstream', () async {
+      final directory = await Directory.systemTemp.createTemp('cli_export_');
+      addTearDown(() => directory.delete(recursive: true));
+      expect(
+        await run([
+          'export',
+          ...selection,
+          '--bloat-dir',
+          directory.path,
+          '--upstream',
+          '${directory.path}/upstream',
+          '--ota',
+          '${directory.path}/ota.zip',
+          '--out',
+          '${directory.path}/out.zip',
+        ]),
+        1,
       );
     });
   });

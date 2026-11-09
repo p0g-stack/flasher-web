@@ -35,6 +35,13 @@ final class SquadronFlasherApi implements FlasherApi {
       _worker.flash(request);
 
   @override
+  Stream<Map<String, Object?>> retryStep(Map<String, Object?> request) => _worker.retryStep(request);
+  @override
+  Stream<Map<String, Object?>> rebootRetry(Map<String, Object?> request) => _worker.rebootRetry(request);
+  @override
+  Future<Map<String, Object?>> stopRun(Map<String, Object?> request) => _worker.stopRun(request);
+
+  @override
   Future<Map<String, Object?>> storageBudget(Map<String, Object?> request) =>
       _worker.storageBudget(request);
 
