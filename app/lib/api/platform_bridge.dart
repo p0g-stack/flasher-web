@@ -155,6 +155,12 @@ abstract interface class PlatformBridge {
     required Object destination,
   });
 
+  /// Opens the OTA a catalog download wrote into a save-picker [destination].
+  ///
+  /// With [remember] the handle replaces the remembered OTA, as a pick does,
+  /// so a reload reopens the saved file. Null means the file is unreadable.
+  Future<PickedFile?> openSavedOta(Object destination, {required bool remember});
+
   /// Whether the page can open a WebUSB fastboot chooser right now.
   ///
   /// This is a page capability probe; whether the place can write is the
@@ -293,6 +299,12 @@ final class UnsupportedPlatformBridge implements PlatformBridge {
     String path, {
     Object? handle,
     required Object destination,
+  }) async => _unsupported();
+
+  @override
+  Future<PickedFile?> openSavedOta(
+    Object destination, {
+    required bool remember,
   }) async => _unsupported();
 
   @override

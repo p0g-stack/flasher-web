@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../format.dart';
 import '../widgets/common.dart';
+import 'ota_download_controller.dart';
 import 'setup_state.dart';
 
 /// The Flash or export page: steps 1–4 and the two actions.
@@ -718,60 +719,176 @@ class _CatalogRole extends StatelessWidget {
         ),
         if (selected != null) ...[
           const SizedBox(height: 6),
-          if (setup.isOtaCached(selected))
-            HintText(
-              'A complete offline copy is cached in the bloat store.',
-              key: ValueKey('catalogCached-$role'),
-            )
-          else if (setup.canKeepOtaOffline(selected))
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                key: ValueKey('keepOffline-$role'),
-                onPressed: setup.keepOtaOffline,
-                icon: const Icon(
-                  Icons.download_for_offline_outlined,
-                  size: 18,
-                ),
-                label: Text(
-                  'Keep offline copy · '
-                  '${formatBytes((selected['size'] as num).toInt())}',
-                ),
-              ),
-            )
-          else if (!setup.cachingOta && setup.budget != null)
-            HintText(
-              'The offline copy does not fit the remaining '
-              '${formatBytes(setup.budgetAvailable)} under the app storage '
-              'cap. Evict a cached OTA from Environment first.',
-              key: ValueKey('catalogNoFit-$role'),
+          _OtaDownload(setup: setup, role: role, entry: selected),
+        ],
+      ],
+    );
+  }
+}
+
+/// The catalog OTA's download button, its progress and its outcome.
+class _OtaDownload extends StatelessWidget {
+  const _OtaDownload({
+    required this.setup,
+    required this.role,
+    required this.entry,
+  });
+
+  final SetupState setup;
+  final String role;
+  final Map<String, dynamic> entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final downloads = setup.otaDownloads;
+    final mine = downloads.role == role;
+    final size = entry['size'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (setup.isOtaCached(entry))
+          HintText(
+            'A complete offline copy is cached in the app storage.',
+            key: ValueKey('catalogCached-$role'),
+          ),
+        if (downloads.running && mine) ...[
+          Text(
+            downloads.target == OtaDownloadTarget.cache
+                ? 'Downloading into the app cache…'
+                : 'Saving to this computer…',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          for (final item in downloads.progress.entries)
+            ByteProgress(
+              label: item.key,
+              done: item.value.done,
+              total: item.value.total,
             ),
-          if (setup.cachingOta &&
-              setup.cachingKey != null &&
-              setup.cacheKeyFor(selected) == setup.cachingKey) ...[
-            for (final entry in setup.cacheProgress.entries)
-              ByteProgress(
-                label: entry.key,
-                done: entry.value.done,
-                total: entry.value.total,
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              key: ValueKey('cancelOtaDownload-$role'),
+              onPressed: downloads.cancel,
+              icon: const Icon(Icons.stop, size: 16),
+              label: const Text('Cancel download'),
+            ),
+          ),
+        ] else
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              key: ValueKey('downloadOta-$role'),
+              onPressed: setup.canDownloadOta(role)
+                  ? () => _choose(context)
+                  : null,
+              icon: const Icon(Icons.download_outlined, size: 18),
+              label: Text(
+                size is num && size > 0
+                    ? 'Download OTA · ${formatBytes(size.toInt())}'
+                    : 'Download OTA',
               ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                key: ValueKey('cancelCacheOta-$role'),
-                onPressed: setup.cancelCacheOta,
-                icon: const Icon(Icons.stop, size: 16),
-                label: const Text('Cancel download'),
-              ),
+            ),
+          ),
+        if (mine && downloads.notice != null)
+          HintText(
+            downloads.notice!,
+            key: ValueKey('otaDownloadNotice-$role'),
+          ),
+        if (mine && downloads.error != null)
+          HintText(
+            downloads.error!,
+            key: ValueKey('otaDownloadError-$role'),
+            error: true,
+          ),
+      ],
+    );
+  }
+
+  Future<void> _choose(BuildContext context) async {
+    final target = await showDialog<OtaDownloadTarget>(
+      context: context,
+      builder: (context) => _OtaDownloadDialog(setup: setup, entry: entry),
+    );
+    switch (target) {
+      case OtaDownloadTarget.computer:
+        // The dialog's tap is the gesture the save picker needs.
+        await setup.downloadOtaToComputer(role);
+      case OtaDownloadTarget.cache:
+        await setup.downloadOtaToCache(role);
+      case null:
+        break;
+    }
+  }
+}
+
+/// Asks where a catalog OTA goes: onto this computer or into the app cache.
+class _OtaDownloadDialog extends StatelessWidget {
+  const _OtaDownloadDialog({required this.setup, required this.entry});
+
+  final SetupState setup;
+  final Map<String, dynamic> entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final downloads = setup.otaDownloads;
+    final cached = setup.isOtaCached(entry);
+    final fits = setup.otaFitsCache(entry);
+    final String cacheText;
+    if (cached) {
+      cacheText = 'Already cached; a flash of this version reads it.';
+    } else if (fits) {
+      cacheText =
+          'Keep it in browser storage, under the app storage cap '
+          '(${formatBytes(setup.budgetAvailable)} free). A flash of this '
+          'version then reads it instead of the network; an interrupted '
+          'download resumes.';
+    } else if (setup.budget == null) {
+      cacheText = 'The app storage budget is unknown, so nothing is cached.';
+    } else {
+      cacheText =
+          'Does not fit the remaining ${formatBytes(setup.budgetAvailable)} '
+          'under the app storage cap. Evict a cached OTA from Environment '
+          'first.';
+    }
+    final computerText = !downloads.canSaveToComputer
+        ? 'This browser cannot save files.'
+        : downloads.savesIntoPickedFile
+        ? 'Save the ZIP where you choose, outside the app storage cap. The '
+              'app then reads it as the local OTA.'
+        : 'Download the ZIP to the browser downloads, outside the app '
+              'storage cap. Choose it under Local file afterwards.';
+    return AlertDialog(
+      title: const Text('Download OTA'),
+      content: SizedBox(
+        width: 460,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              key: const ValueKey('downloadOtaComputer'),
+              enabled: downloads.canSaveToComputer,
+              leading: const Icon(Icons.computer_outlined),
+              title: const Text('This computer'),
+              subtitle: Text(computerText),
+              onTap: () =>
+                  Navigator.of(context).pop(OtaDownloadTarget.computer),
+            ),
+            ListTile(
+              key: const ValueKey('downloadOtaCache'),
+              enabled: fits && !cached,
+              leading: const Icon(Icons.download_for_offline_outlined),
+              title: const Text('App cache'),
+              subtitle: Text(cacheText),
+              onTap: () => Navigator.of(context).pop(OtaDownloadTarget.cache),
             ),
           ],
-          if (setup.cacheOtaError != null)
-            HintText(
-              setup.cacheOtaError!,
-              key: ValueKey('catalogCacheError-$role'),
-              error: true,
-            ),
-        ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
       ],
     );
   }

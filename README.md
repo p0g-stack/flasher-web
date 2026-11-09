@@ -129,6 +129,11 @@ The setup page has four steps and one action card:
    handle can reconnect after a reload) or a catalog version (read through
    `/api/ota`, a range proxy limited to the OTA CDNs; an expired signed link is
    resolved again). Full OTA packages only; incremental updates are rejected.
+   **Download OTA** on a catalog version asks where the ZIP goes: **This
+   computer** saves it where you choose (outside the app cap) and then reads it
+   as the local OTA, or starts a browser download on Android Chrome; **App
+   cache** keeps it in `ota-cache/` under the app cap, and a flash of the same
+   version reads it instead of the network.
 4. **Vulnerable ABL** — the X9U choice between the bloat ABL 16.0.6 and the
    OTA's ABL.
 
@@ -137,9 +142,10 @@ opens the flash page; exporting opens the save-file picker where the browser
 has one, and otherwise (Android Chrome) starts a streamed download. A failed
 streamed export aborts the download. Discard a partial ZIP left at a picked file.
 
-Keep the tab open while a flash, bloat download or export runs; the app holds a
-screen wake lock and a leave guard. The Environment page shows the engine, the
-documented storage budget and the cached catalog OTAs, where one can be evicted.
+Keep the tab open while a flash, bloat download, OTA download or export runs;
+the app holds a screen wake lock and a leave guard. The Environment page shows
+the engine, the documented storage budget and the cached catalog OTAs, where
+one can be evicted.
 
 Flashing requires current Chrome or Edge on HTTPS or localhost, outside an
 embedded webview. The page opens the WebUSB chooser from the click, filtered to
@@ -171,9 +177,10 @@ about 1.72 GiB raw), an optional cache of catalog OTA ZIPs and the service
 worker shell. A local OTA file costs nothing because it is read in place.
 
 - Bloat uses OPFS by default, or an optionally picked folder on desktop
-  Chromium. Its `ota-cache/` holds an OTA only when the user asks for an offline
-  copy of one catalog release; interrupted downloads resume at their recorded
-  offsets, and least-recently-used eviction makes room for a new write.
+  Chromium. Its `ota-cache/` holds an OTA only when the user downloads one
+  catalog release into the app cache; interrupted downloads resume at their
+  recorded offsets, and least-recently-used eviction makes room for a new
+  write. An OTA saved to this computer is outside the cap.
 - A write that would pass the cap is refused after eviction has freed what it
   could. The browser's origin quota may be lower than the cap. A picked
   folder's free disk space is not reported by the browser; only the app cap

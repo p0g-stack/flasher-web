@@ -34,6 +34,7 @@ import '../storage/budget.dart';
 import '../storage/catalog_ota_source.dart';
 import '../storage/estimate.dart';
 import '../storage/export_sink.dart';
+import '../storage/hashing.dart';
 import '../storage/ota_cache.dart';
 import '../storage/storage.dart';
 import '../upstream/tables.dart';
@@ -285,6 +286,77 @@ base class FlasherService {
             'lastUsed': entry.lastUsedAt.toIso8601String(),
           };
       }
+    }
+  }
+
+  /// Copies one catalog OTA, byte for byte, into a file outside the stores.
+  ///
+  /// The request names `ota: {"kind": "catalog", "entry": <release>}`,
+  /// `apiBase` and `destination` (the shapes `exportVirtual` accepts: a
+  /// save-picker `FileSystemFileHandle`, the page's streamed download, or
+  /// `{"kind": "path", "path": "<file>"}` on the VM). Events are `started`,
+  /// `progress` and a final `result` with `label`, `bytes` and `sha256`. The
+  /// copy needs no app storage and is not checked against the budget; a
+  /// cancelled or failed copy leaves a partial file at the destination.
+  @squadronMethod
+  Stream<Map<String, Object?>> saveOta(Map<String, Object?> req) async* {
+    final input = req['ota'];
+    if (input is! Map || input['kind'] != 'catalog') {
+      throw const BuildException('Only a catalog OTA can be downloaded.');
+    }
+    final value = input['entry'];
+    if (value is! Map) {
+      throw const BuildException('Select an OTA catalog version.');
+    }
+    final entry = Map<String, dynamic>.from(value);
+    final label = otaEntryLabel(entry);
+    final declared = entry['size'] is int ? entry['size'] as int : 0;
+    final reader = await CatalogOtaReader.open(
+      _catalogSources(
+        req['apiBase'] as String? ?? '',
+        proxied: await _useOtaProxy(),
+      ),
+      entry,
+    );
+    ByteSink? sink;
+    try {
+      final total = reader.length;
+      if (declared > 0 && declared != total) {
+        throw BuildException(
+          'The OTA server reports $total bytes but the catalog says '
+          '$declared. Fetch versions again and retry.',
+        );
+      }
+      sink = await openExportSink(req['destination']);
+      yield {'type': 'started', 'label': label, 'total': total};
+      final hasher = StreamingSha256();
+      var written = 0;
+      while (written < total) {
+        final bytes = await reader.read(
+          written,
+          min(_saveChunkBytes, total - written),
+        );
+        await sink.write(bytes, written);
+        hasher.add(bytes);
+        written += bytes.length;
+        yield {
+          'type': 'progress',
+          'label': label,
+          'done': written,
+          'total': total,
+        };
+      }
+      // A streamed download ends only at its declared length.
+      await sink.truncate(written);
+      yield {
+        'type': 'result',
+        'label': label,
+        'bytes': written,
+        'sha256': hasher.hex,
+      };
+    } finally {
+      await sink?.close();
+      await reader.close();
     }
   }
 
@@ -877,17 +949,23 @@ OtaCache _otaCache(
   Workspace workspace,
   String apiBase, {
   required bool proxied,
-}) => OtaCache(
-  workspace: workspace,
-  sources: CatalogOtaSourceFactory(
-    client: CatalogClient(
-      transport: HttpCatalogTransport(),
-      base: _base(apiBase),
-    ),
-    apiBase: apiBase,
-    proxyOta: proxied,
+}) => OtaCache(workspace: workspace, sources: _catalogSources(apiBase, proxied: proxied));
+
+/// Catalog OTAs resolved through `/api/resolve` and read through ranges.
+CatalogOtaSourceFactory _catalogSources(
+  String apiBase, {
+  required bool proxied,
+}) => CatalogOtaSourceFactory(
+  client: CatalogClient(
+    transport: HttpCatalogTransport(),
+    base: _base(apiBase),
   ),
+  apiBase: apiBase,
+  proxyOta: proxied,
 );
+
+/// Bytes per ranged read while a catalog OTA is copied to a file.
+const int _saveChunkBytes = 8 << 20;
 
 /// Whether reads go through the same-origin `/api/ota` proxy.
 ///

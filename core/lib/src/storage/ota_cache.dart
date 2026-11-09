@@ -96,6 +96,88 @@ abstract interface class OtaSourceFactory {
   Future<OtaRemoteSource> open(Map<String, dynamic> entry);
 }
 
+/// Sequential reads of one catalog OTA that survive an expired signed link.
+///
+/// A failed read resolves a fresh link through [OtaSourceFactory.open] and
+/// reads the same range again, at most [maxRefreshes] times over the reader's
+/// life. A reopened source must report the same length and, when both sides
+/// have one, the same ETag; a server that swapped the file is refused instead
+/// of being mixed into one copy.
+final class CatalogOtaReader {
+  CatalogOtaReader._(this._sources, this._entry, this._source, this._etag)
+    : length = _source.length;
+
+  /// Resolves [entry] and opens it for reading. [etag] is the ETag an earlier
+  /// partial copy recorded; it pins the file when the server sends none now.
+  static Future<CatalogOtaReader> open(
+    OtaSourceFactory sources,
+    Map<String, dynamic> entry, {
+    String? etag,
+  }) async {
+    final remote = await sources.open(entry);
+    return CatalogOtaReader._(
+      sources,
+      entry,
+      remote.source,
+      remote.etag ?? etag,
+    );
+  }
+
+  static const int maxRefreshes = 2;
+
+  final OtaSourceFactory _sources;
+  final Map<String, dynamic> _entry;
+  ByteSource _source;
+  String? _etag;
+  int _refreshes = 0;
+
+  /// The OTA length the first resolution reported.
+  final int length;
+
+  /// The strong ETag the server reported, or null when it sent none.
+  String? get etag => _etag;
+
+  /// Exactly [count] bytes at [offset].
+  Future<Uint8List> read(int offset, int count) async {
+    while (true) {
+      final Uint8List bytes;
+      try {
+        bytes = await _source.read(offset, count);
+      } on Object {
+        if (_refreshes++ >= maxRefreshes) rethrow;
+        await _reopen();
+        continue;
+      }
+      if (bytes.length != count) {
+        throw OtaCacheException(
+          'The OTA server ended a range early at $offset of $length bytes.',
+        );
+      }
+      return bytes;
+    }
+  }
+
+  Future<void> _reopen() async {
+    await closeByteSource(_source);
+    final reopened = await _sources.open(_entry);
+    _source = reopened.source;
+    if (_source.length != length) {
+      throw OtaCacheException(
+        'The OTA server now reports ${_source.length} bytes, was $length.',
+      );
+    }
+    final etag = _etag;
+    if (etag != null && reopened.etag != null && reopened.etag != etag) {
+      throw const OtaCacheException(
+        'The OTA changed on the server during the download.',
+      );
+    }
+    _etag ??= reopened.etag;
+  }
+
+  Future<void> close() => closeByteSource(_source);
+}
+
 /// One catalog OTA the cache knows about: complete, partial or damaged.
 final class OtaCacheEntry {
   const OtaCacheEntry({
@@ -306,7 +388,6 @@ final class OtaCache {
 
   static final RegExp _hexKey = RegExp(r'^[a-f0-9]{64}$');
   static const int _maxMetadataBytes = 64 * 1024;
-  static const int _maxRefreshes = 2;
 
   /// The cache directory inside [workspace].
   String get directory => _directory;
@@ -396,10 +477,12 @@ final class OtaCache {
         cached = null;
       }
 
-      final remote = await sources.open(entry);
-      var source = remote.source;
-      var etag = remote.etag;
-      final total = source.length;
+      final reader = await CatalogOtaReader.open(
+        sources,
+        entry,
+        etag: cached?.etag,
+      );
+      final total = reader.length;
       try {
         if (declared > 0 && declared != total) {
           throw OtaCacheException(
@@ -414,14 +497,13 @@ final class OtaCache {
               'server now reports $total. Delete the cached OTA and retry.',
             );
           }
-          if (cached.etag != null && etag != null && cached.etag != etag) {
+          if (cached.etag != null && cached.etag != reader.etag) {
             throw OtaCacheException(
               'The OTA changed on the server since the download started '
-              '(ETag $etag, was ${cached.etag}). Delete the cached OTA and '
-              'retry.',
+              '(ETag ${reader.etag}, was ${cached.etag}). Delete the cached '
+              'OTA and retry.',
             );
           }
-          etag ??= cached.etag;
         }
         var written = cached?.written ?? 0;
         if (written < 0 || written > total) written = 0;
@@ -433,7 +515,7 @@ final class OtaCache {
           length: total,
           written: written,
           complete: false,
-          etag: etag,
+          etag: reader.etag,
           createdAt: cached?.createdAt ?? _now(),
           lastUsedAt: _now(),
         );
@@ -459,42 +541,9 @@ final class OtaCache {
           final sink = await workspace.update(_archive(key));
           try {
             await sink.truncate(written);
-            var refreshes = 0;
             while (written < total) {
               final want = min(chunkBytes, total - written);
-              final Uint8List bytes;
-              try {
-                bytes = await source.read(written, want);
-              } on Object {
-                if (refreshes++ >= _maxRefreshes) rethrow;
-                // A signed URL can expire mid-download; resolve a fresh one
-                // and read the same range again.
-                await closeByteSource(source);
-                final reopened = await sources.open(entry);
-                source = reopened.source;
-                if (source.length != total) {
-                  throw OtaCacheException(
-                    'The OTA server now reports ${source.length} bytes, was '
-                    '$total. Delete the cached OTA and retry.',
-                  );
-                }
-                if (etag != null &&
-                    reopened.etag != null &&
-                    reopened.etag != etag) {
-                  throw OtaCacheException(
-                    'The OTA changed on the server during the download. '
-                    'Delete the cached OTA and retry.',
-                  );
-                }
-                etag ??= reopened.etag;
-                continue;
-              }
-              if (bytes.length != want) {
-                throw OtaCacheException(
-                  'The OTA server ended a range early at $written of $total '
-                  'bytes.',
-                );
-              }
+              final bytes = await reader.read(written, want);
               await sink.write(bytes, written);
               hasher.add(bytes);
               written += want;
@@ -505,7 +554,7 @@ final class OtaCache {
                 length: total,
                 written: written,
                 complete: false,
-                etag: etag,
+                etag: reader.etag,
                 createdAt: record.createdAt,
                 lastUsedAt: _now(),
               );
@@ -529,7 +578,7 @@ final class OtaCache {
           length: total,
           written: total,
           complete: true,
-          etag: etag,
+          etag: reader.etag,
           sha256: hasher.hex,
           createdAt: record.createdAt,
           completedAt: now,
@@ -538,7 +587,7 @@ final class OtaCache {
         await _write(complete);
         yield OtaCacheFinished(complete);
       } finally {
-        await closeByteSource(source);
+        await reader.close();
       }
     } finally {
       _active.remove(key);

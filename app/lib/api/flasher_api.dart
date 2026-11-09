@@ -62,6 +62,13 @@ abstract interface class FlasherApi {
   /// `sha256`, `etag` and `lastUsed`.
   Stream<Map<String, Object?>> cacheOta(Map<String, Object?> request);
 
+  /// Copies one catalog OTA into a file outside the app's stores.
+  ///
+  /// Request: `{apiBase, ota: {kind: 'catalog', entry}, destination}`, where
+  /// `destination` is a save-picker handle or a streamed download. Events:
+  /// `started`, `progress`, then one `result` carrying `bytes` and `sha256`.
+  Stream<Map<String, Object?>> saveOta(Map<String, Object?> request);
+
   /// Removes one cached OTA. Request: `{store, key}`.
   Future<Map<String, Object?>> evictCachedOta(Map<String, Object?> request);
 

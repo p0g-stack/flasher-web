@@ -63,6 +63,7 @@ final class FakeFlasherApi implements FlasherApi {
   Map<String, Object?>? lastFlashRequest;
   Map<String, Object?>? lastStorageBudgetRequest;
   Map<String, Object?>? lastCacheOtaRequest;
+  Map<String, Object?>? lastSaveOtaRequest;
   Map<String, Object?>? lastEvictRequest;
   Map<String, Object?>? lastExportRequest;
   Map<String, Object?>? lastInspectRequest;
@@ -80,6 +81,8 @@ final class FakeFlasherApi implements FlasherApi {
 
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   cacheOtaStream;
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
+  saveOtaStream;
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   exportVirtualStream;
 
@@ -162,6 +165,12 @@ final class FakeFlasherApi implements FlasherApi {
   Stream<Map<String, Object?>> cacheOta(Map<String, Object?> request) {
     lastCacheOtaRequest = request;
     return cacheOtaStream?.call(request) ?? const Stream.empty();
+  }
+
+  @override
+  Stream<Map<String, Object?>> saveOta(Map<String, Object?> request) {
+    lastSaveOtaRequest = request;
+    return saveOtaStream?.call(request) ?? const Stream.empty();
   }
 
   @override
@@ -295,6 +304,20 @@ final class FakePlatformBridge implements PlatformBridge {
     required Object destination,
   }) async {
     savedFiles.add('$path|$destination');
+  }
+
+  /// The saved OTA [openSavedOta] returns, and the handles it was given.
+  PickedFile? savedOta;
+  final openedSavedOtas = <String>[];
+
+  @override
+  Future<PickedFile?> openSavedOta(
+    Object destination, {
+    required bool remember,
+  }) async {
+    openedSavedOtas.add('$destination|remember=$remember');
+    if (remember) rememberedOta = savedOta;
+    return savedOta;
   }
 
   @override

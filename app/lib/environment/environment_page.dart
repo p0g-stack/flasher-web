@@ -346,8 +346,8 @@ class _StorageBudgetCard extends StatelessWidget {
               const SizedBox(height: 4),
               if (items.isEmpty)
                 const HintText(
-                  'No catalog OTA is cached. Use Keep offline copy on a '
-                  'catalog version to read the same release offline.',
+                  'No catalog OTA is cached. Use Download OTA › App cache on '
+                  'a catalog version to read the same release offline.',
                 )
               else
                 for (final item in items) _CachedOtaRow(setup: setup, item: item),

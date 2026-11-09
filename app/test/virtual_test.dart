@@ -765,25 +765,11 @@ void main() {
     expect(harness.api.lastEvictRequest?['store'], {'kind': 'opfs'});
   });
 
-  testWidgets('a catalog OTA offers an offline copy only when it fits', (
+  testWidgets('a catalog OTA downloads into the app cache from the dialog', (
     tester,
   ) async {
     final harness = Harness();
-    harness.api.catalog = {
-      'api_version': '1',
-      'releases': [
-        {
-          'id': 'regional-1',
-          'device': 'OP 13',
-          'region': 'GLO',
-          'version': 'CPH2647_11.A.30',
-          'source_url': 'https://example.test/regional.zip',
-          'security_patch': '2025-09-01',
-          'size': 4 * 1024 * 1024 * 1024,
-          'is_latest': true,
-        },
-      ],
-    };
+    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
     harness.api.cacheOtaStream = (_) =>
         Stream.fromIterable(const [
           {
@@ -799,10 +785,8 @@ void main() {
     await tester.tap(find.text('Version catalog'));
     await tester.pumpAndSettle();
 
-    final keep = find.byKey(const ValueKey('keepOffline-ota'));
-    expect(keep, findsOneWidget);
-    await tester.ensureVisible(keep);
-    await tester.tap(keep);
+    await _openDownloadDialog(tester);
+    await tester.tap(find.byKey(const ValueKey('downloadOtaCache')));
     await tester.pumpAndSettle();
 
     final request = harness.api.lastCacheOtaRequest!;
@@ -810,6 +794,7 @@ void main() {
     final ota = Map<String, Object?>.from(request['ota']! as Map);
     expect(ota['kind'], 'catalog');
     expect((ota['entry']! as Map)['id'], 'regional-1');
+    expect(harness.bridge.keepAwake, 0, reason: 'the wake lock is released');
   });
 
   testWidgets('a cached OTA that does not fit is not offered', (tester) async {
@@ -821,27 +806,105 @@ void main() {
       'available': 1 * 1024 * 1024 * 1024,
       'items': <Map<String, Object?>>[],
     };
-    harness.api.catalog = {
-      'api_version': '1',
-      'releases': [
-        {
-          'id': 'regional-1',
-          'device': 'OP 13',
-          'region': 'GLO',
-          'version': 'CPH2647_11.A.30',
-          'source_url': 'https://example.test/regional.zip',
-          'security_patch': '2025-09-01',
-          'size': 4 * 1024 * 1024 * 1024,
-          'is_latest': true,
-        },
-      ],
-    };
+    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
     await pumpApp(tester, harness: harness);
     await _chooseRegional(tester);
     await tester.tap(find.text('Version catalog'));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('keepOffline-ota')), findsNothing);
-    expect(find.byKey(const ValueKey('catalogNoFit-ota')), findsOneWidget);
+    await _openDownloadDialog(tester);
+    final cache = tester.widget<ListTile>(
+      find.byKey(const ValueKey('downloadOtaCache')),
+    );
+    expect(cache.enabled, isFalse);
+    expect(find.textContaining('Does not fit the remaining'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('downloadOtaCache')));
+    await tester.pumpAndSettle();
+    expect(harness.api.lastCacheOtaRequest, isNull);
   });
+
+  testWidgets('a catalog OTA saved to this computer becomes the local OTA', (
+    tester,
+  ) async {
+    final harness = Harness();
+    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
+    harness.api.inspectResult = _inspection();
+    const saved = PickedFile(
+      handle: 'saved-file',
+      name: 'regional.zip',
+      size: 4 * 1024 * 1024 * 1024,
+    );
+    harness.bridge.savedOta = saved;
+    harness.api.saveOtaStream = (_) =>
+        Stream.fromIterable(const [
+          {'type': 'started', 'label': 'OP 13 / GLO', 'total': 10},
+          {'type': 'progress', 'label': 'OP 13 / GLO', 'done': 10, 'total': 10},
+          {'type': 'result', 'label': 'OP 13 / GLO', 'bytes': 10, 'sha256': 'a'},
+        ]);
+    await pumpApp(tester, harness: harness);
+    await _chooseRegional(tester);
+    await tester.tap(find.text('Version catalog'));
+    await tester.pumpAndSettle();
+
+    await _openDownloadDialog(tester);
+    await tester.tap(find.byKey(const ValueKey('downloadOtaComputer')));
+    await tester.pumpAndSettle();
+
+    expect(harness.bridge.saveFileNames, ['regional.zip']);
+    final request = harness.api.lastSaveOtaRequest!;
+    expect(request['destination'], harness.bridge.saveFileResult);
+    expect((request['ota']! as Map)['kind'], 'catalog');
+    expect(harness.bridge.openedSavedOtas, [
+      'save-destination|remember=true',
+    ]);
+    expect(harness.bridge.rememberedOta, same(saved));
+    expect(harness.api.lastInspectRequest?['ota'], {
+      'kind': 'file',
+      'file': 'saved-file',
+    });
+    expect(find.text('regional.zip'), findsWidgets);
+    expect(harness.bridge.keepAwake, 0, reason: 'the wake lock is released');
+  });
+
+  testWidgets('a cancelled save picker starts no download', (tester) async {
+    final harness = Harness();
+    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
+    harness.bridge.saveFileResult = null;
+    await pumpApp(tester, harness: harness);
+    await _chooseRegional(tester);
+    await tester.tap(find.text('Version catalog'));
+    await tester.pumpAndSettle();
+
+    await _openDownloadDialog(tester);
+    await tester.tap(find.byKey(const ValueKey('downloadOtaComputer')));
+    await tester.pumpAndSettle();
+
+    expect(harness.bridge.pickSaveFileCalls, 1);
+    expect(harness.api.lastSaveOtaRequest, isNull);
+    expect(harness.bridge.keepAwake, 0);
+  });
+}
+
+Map<String, dynamic> _catalogOf(int size) => {
+  'api_version': '1',
+  'releases': [
+    {
+      'id': 'regional-1',
+      'device': 'OP 13',
+      'region': 'GLO',
+      'version': 'CPH2647_11.A.30',
+      'source_url': 'https://example.test/regional.zip',
+      'security_patch': '2025-09-01',
+      'size': size,
+      'is_latest': true,
+    },
+  ],
+};
+
+Future<void> _openDownloadDialog(WidgetTester tester) async {
+  final download = find.byKey(const ValueKey('downloadOta-ota'));
+  expect(download, findsOneWidget);
+  await tester.ensureVisible(download);
+  await tester.tap(download);
+  await tester.pumpAndSettle();
 }

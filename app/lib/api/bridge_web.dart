@@ -675,6 +675,17 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   }
 
   @override
+  Future<PickedFile?> openSavedOta(
+    Object destination, {
+    required bool remember,
+  }) async {
+    final handle = destination as web.FileSystemFileHandle;
+    // The save picker granted read and write, so this needs no prompt.
+    if (remember) await _putHandle('ota', handle);
+    return _otaFileFrom(handle);
+  }
+
+  @override
   Future<bool> requestPersistentStorage() async {
     try {
       return (await web.window.navigator.storage.persist().toDart).toDart;

@@ -8,6 +8,7 @@ import '../format.dart';
 import '../preferences.dart';
 import '../runtime.dart';
 import 'export_controller.dart';
+import 'ota_download_controller.dart';
 
 /// Which OTA source step 3 shows.
 enum OtaMode { localFile, catalog }
@@ -45,7 +46,12 @@ final class SetupState extends ChangeNotifier {
          api: runtime.service,
          bridge: runtime.bridge,
          upstreamBase: runtime.upstreamBase,
+       ),
+       otaDownloads = OtaDownloadController(
+         api: runtime.service,
+         bridge: runtime.bridge,
        ) {
+    otaDownloads.addListener(_notify);
     _device = _initialDevice();
     _kind = _initialKind();
     _region = _initialRegion();
@@ -70,6 +76,9 @@ final class SetupState extends ChangeNotifier {
 
   /// Streams the same package to a save-picker file.
   final ExportController exports;
+
+  /// Copies a catalog OTA into the app cache or onto this computer.
+  final OtaDownloadController otaDownloads;
 
   late String _device;
   late String _kind;
@@ -116,12 +125,6 @@ final class SetupState extends ChangeNotifier {
   Map<String, Object?>? _budget;
   bool _budgetLoading = false;
   String? _budgetError;
-  bool _cachingOta = false;
-  String? _cacheOtaError;
-  String? _cachingKey;
-  int _cacheToken = 0;
-  StreamSubscription<Map<String, Object?>>? _cacheSubscription;
-  final _cacheProgress = <String, ({int done, int total})>{};
 
   String get device => _device;
   String get kind => _kind;
@@ -968,11 +971,6 @@ final class SetupState extends ChangeNotifier {
     ];
   }
 
-  bool get cachingOta => _cachingOta;
-  String? get cacheOtaError => _cacheOtaError;
-  Map<String, ({int done, int total})> get cacheProgress =>
-      Map.unmodifiable(_cacheProgress);
-
   /// The cache key of a catalog entry, or null when the entry is not
   /// cacheable.
   String? cacheKeyFor(Map<String, dynamic> entry) {
@@ -991,15 +989,21 @@ final class SetupState extends ChangeNotifier {
     );
   }
 
-  /// Whether one more catalog OTA fits under the app cap and the platform
-  /// quota. Unknown numbers never promise a fit.
-  bool canKeepOtaOffline(Map<String, dynamic> entry) {
-    if (!selectionValid || _cachingOta) return false;
+  /// Whether a catalog OTA fits under the app cap and the platform quota.
+  /// Unknown numbers never promise a fit.
+  bool otaFitsCache(Map<String, dynamic> entry) {
     if (_budget == null || _budgetError != null) return false;
     final size = entry['size'];
     if (size is! num || size <= 0) return false;
-    return size.toInt() <= budgetAvailable && !isOtaCached(entry);
+    return size.toInt() <= budgetAvailable;
   }
+
+  /// Whether the catalog [role] may be downloaded now.
+  bool canDownloadOta(String role) =>
+      selectionValid &&
+      !otaDownloads.running &&
+      _otaMode == OtaMode.catalog &&
+      _selectedReleases[role] != null;
 
   Future<void> refreshBudget() async {
     if (_budgetLoading) return;
@@ -1025,78 +1029,37 @@ final class SetupState extends ChangeNotifier {
     }
   }
 
-  /// Downloads the selected catalog OTA into the local OTA cache so it can be
-  /// flashed offline. Only catalog sources are cacheable.
-  Future<void> keepOtaOffline() async {
-    final entry = _selectedReleases['ota'];
-    if (entry == null || !canKeepOtaOffline(entry)) return;
-    final ota = otaInput('ota');
-    if (ota == null || ota['kind'] != 'catalog') return;
-    final token = ++_cacheToken;
-    _cachingOta = true;
-    _cacheOtaError = null;
-    _cachingKey = cacheKeyFor(entry);
-    _cacheProgress.clear();
-    _notify();
-    _cacheSubscription = runtime.service
-        .cacheOta({
-          'store': _bloatStore.toService(),
-          'apiBase': runtime.apiBase,
-          'ota': ota,
-        })
-        .listen(
-          (event) {
-            if (_disposed || token != _cacheToken) return;
-            switch (event['type']) {
-              case 'progress':
-                final label = event['label'];
-                final done = event['done'];
-                final total = event['total'];
-                if (label is String && done is num && total is num) {
-                  _cacheProgress[label] = (
-                    done: done.toInt(),
-                    total: total.toInt(),
-                  );
-                }
-              case 'result':
-                _cachingOta = false;
-                _cachingKey = null;
-                _cacheSubscription = null;
-                unawaited(refreshBudget());
-              default:
-                break;
-            }
-            _notify();
-          },
-          onError: (Object error) {
-            if (_disposed || token != _cacheToken) return;
-            _cachingOta = false;
-            _cachingKey = null;
-            _cacheSubscription = null;
-            _cacheOtaError = 'Could not keep the OTA offline: $error';
-            _notify();
-          },
-          onDone: () {
-            if (_disposed || token != _cacheToken) return;
-            if (_cachingOta) {
-              _cachingOta = false;
-              _cachingKey = null;
-              _cacheSubscription = null;
-              _notify();
-            }
-          },
-          cancelOnError: false,
-        );
+  /// Downloads the catalog [role] into `ota-cache/` in the bloat store, where
+  /// a later flash of the same catalog version finds it.
+  Future<void> downloadOtaToCache(String role) async {
+    final entry = _selectedReleases[role];
+    final ota = otaInput(role);
+    if (entry == null || ota == null || !canDownloadOta(role)) return;
+    if (!otaFitsCache(entry) || isOtaCached(entry)) return;
+    await otaDownloads.toCache(
+      role: role,
+      ota: ota,
+      store: _bloatStore.toService(),
+      apiBase: runtime.apiBase,
+      onCached: () => unawaited(refreshBudget()),
+    );
   }
 
-  void cancelCacheOta() {
-    if (!_cachingOta) return;
-    _cacheToken++;
-    _cachingOta = false;
-    _cachingKey = null;
-    unawaited(_cacheSubscription?.cancel());
-    _cacheSubscription = null;
-    _notify();
+  /// Saves the catalog [role] onto this computer and, where the browser can
+  /// read the saved file back, makes it the local OTA for [role].
+  ///
+  /// Call from the click handler: the save picker needs the user gesture.
+  Future<void> downloadOtaToComputer(String role) async {
+    final entry = _selectedReleases[role];
+    final ota = otaInput(role);
+    if (entry == null || ota == null || !canDownloadOta(role)) return;
+    await otaDownloads.toComputer(
+      role: role,
+      ota: ota,
+      apiBase: runtime.apiBase,
+      suggestedName: otaFileName(entry),
+      onSaved: (file) => setLocalFile(role, file),
+    );
   }
 
   /// Removes one cached OTA from the store the budget covers.
@@ -1115,7 +1078,20 @@ final class SetupState extends ChangeNotifier {
     await refreshBudget();
   }
 
-  String? get cachingKey => _cachingKey;
+  /// The file name a saved catalog OTA gets: the CDN's own name when it is a
+  /// ZIP, otherwise the version.
+  static String otaFileName(Map<String, dynamic> entry) {
+    final source = entry['source_url'];
+    if (source is String) {
+      final segments = Uri.tryParse(source)?.pathSegments ?? const <String>[];
+      final last = segments.isEmpty ? '' : segments.last;
+      if (last.toLowerCase().endsWith('.zip')) return last;
+    }
+    final version = entry['version'];
+    final name = (version is String && version.isNotEmpty ? version : 'ota')
+        .replaceAll(RegExp(r'[^A-Za-z0-9._()-]+'), '-');
+    return '$name.zip';
+  }
 
   void _savePreferences() {
     final value = preferences
@@ -1143,7 +1119,9 @@ final class SetupState extends ChangeNotifier {
     _dropSubscription?.cancel();
     _launchSubscription?.cancel();
     _bloatSubscription?.cancel();
-    _cacheSubscription?.cancel();
+    otaDownloads
+      ..removeListener(_notify)
+      ..dispose();
     exports.dispose();
     if (_bloatAwake) {
       _bloatAwake = false;
