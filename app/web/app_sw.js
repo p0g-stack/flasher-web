@@ -47,7 +47,6 @@ const PRECACHE_URLS = [
   './pkg/flasher_web_native.js',
   './pkg/flasher_web_native_bg.wasm',
   './workers/flasher_service.web.g.dart.js',
-  './workers/hello_service.web.g.dart.js',
   './upstream/tables.json',
   './upstream/bloat-manifest.json',
   './canvaskit/canvaskit.js',

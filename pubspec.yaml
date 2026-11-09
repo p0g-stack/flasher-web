@@ -8,6 +8,7 @@ workspace:
   - core
   - app
   - cli
+  - e2e
   - packages/device_link
 
 # tool/sync_upstream.dart (run from the workspace root).

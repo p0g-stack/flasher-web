@@ -4,7 +4,8 @@ import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'dart:math' as math;
 
-import 'package:flasher_web_core/flasher_web_core.dart' show HandleWorkspace;
+import 'package:flasher_web_core/flasher_web_core.dart'
+    show HandleWorkspace, fakeFastbootSerial;
 import 'package:web/web.dart' as web;
 
 import 'platform_bridge.dart';
@@ -101,6 +102,16 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
 
   @override
   Future<FastbootUsbDevice?> chooseFastbootDevice() {
+    // The e2e build pairs this with the worker's recording fake transport:
+    // the page hands over the fake serial without touching WebUSB.
+    if (const bool.fromEnvironment('FLASHER_FAKE_USB')) {
+      return Future.value(
+        const FastbootUsbDevice(
+          serial: fakeFastbootSerial,
+          label: 'Fake fastboot phone',
+        ),
+      );
+    }
     final usb = _usb;
     if (usb == null || !usb.has('requestDevice')) {
       return Future.error(

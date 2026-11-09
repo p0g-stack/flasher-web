@@ -1,0 +1,19 @@
+name: flasher_web_e2e
+description: >-
+  End-to-end proof for flasher_web: a synthetic Super OTA flashed through the
+  real browser app and CLI against a recording fake fastboot device.
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  archive: ^4.0.7
+  crypto: ^3.0.6
+  flasher_web_cli: any
+  flasher_web_core: any
+  webkit_inspection_protocol: ^1.2.1
+
+dev_dependencies:
+  lints: ^6.1.0

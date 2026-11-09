@@ -201,6 +201,10 @@ class FlashCommand extends Command<int> {
         stderr.writeln('ERROR: The service returned no confirmation token.');
         return 1;
       }
+      // The service binds the prepared plan to the job it derived and
+      // refuses an execution request that omits it.
+      final job = prepared['job'];
+      if (job is String && job.isNotEmpty) request['job'] = job;
       return await _execute(
         service,
         request,

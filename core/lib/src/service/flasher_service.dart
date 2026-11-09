@@ -12,6 +12,7 @@ import '../bloat/manifest.dart';
 import '../catalog/catalog_client.dart';
 import '../catalog/http_transport.dart';
 import '../catalog/ota_catalog.dart';
+import '../e2e/fake_fastboot.dart';
 import '../facts/facts.dart';
 import '../flash/executor.dart';
 import '../flash/identity.dart';
@@ -46,6 +47,18 @@ final _log = Logger('service.flasher');
 /// The upstream commit of the last snapshot this service read.
 String _upstreamCommit = '';
 
+/// How the service opens fastboot devices when the caller injects nothing.
+///
+/// The e2e build defines `FLASHER_FAKE_USB=true`; the constant branch below
+/// is dead code in every other build, so the fake and its marker are dropped
+/// from the compiled output.
+FastbootTransport _defaultFastbootFactory() {
+  if (const bool.fromEnvironment('FLASHER_FAKE_USB')) {
+    return fakeFastbootTransport();
+  }
+  return nativeFastbootTransport();
+}
+
 /// The app's one service: inspect an OTA, download bloat, build a flasher.
 ///
 /// Runs in a Web Worker on the web and in an isolate natively; the CLI calls
@@ -57,7 +70,7 @@ String _upstreamCommit = '';
 )
 base class FlasherService {
   FlasherService({Object? transportFactory})
-    : _transportFactory = transportFactory ?? nativeFastbootTransport {
+    : _transportFactory = transportFactory ?? _defaultFastbootFactory {
     forwardLogs();
   }
 
@@ -395,7 +408,7 @@ base class FlasherService {
   @squadronMethod
   Future<Map<String, Object?>> fastbootDevices() async {
     try {
-      final devices = await nativeFastbootTransport().devices();
+      final devices = await _fastbootTransport().devices();
       return {
         'devices': [for (final device in devices) device.toMap()],
       };

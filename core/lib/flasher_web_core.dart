@@ -13,6 +13,18 @@ export 'src/bloat/manifest.dart';
 export 'src/catalog/catalog_client.dart';
 export 'src/catalog/http_transport.dart';
 export 'src/catalog/ota_catalog.dart';
+// Inert unless the build defines FLASHER_FAKE_USB=true: the service's default
+// transport factory keeps it behind a constant branch, so a production bundle
+// treeshakes the fake and its marker. The e2e harness and the page's chooser
+// names it under the define.
+export 'src/e2e/fake_fastboot.dart'
+    show
+        configureFakeFastboot,
+        fakeFastbootChannelName,
+        fakeFastbootMarker,
+        fakeFastbootSerial,
+        fakeFastbootState,
+        fakeFastbootTransport;
 export 'src/facts/facts.dart';
 export 'src/flash/executor.dart';
 export 'src/flash/identity.dart';
