@@ -7,7 +7,7 @@ import 'dart:typed_data';
 import '../pipeline/ota.dart';
 import '../rust/api/payload.dart';
 import 'model.dart';
-import 'package_source.dart';
+import 'package.dart';
 
 /// One package-wide decoded-operation cache (at most 64 MiB).
 final class OtaOperationCache {

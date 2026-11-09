@@ -97,7 +97,7 @@ class _EnvironmentPageState extends State<EnvironmentPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  'Check the local engine and verify the build pipeline.',
+                  'Check the local engine, storage and device support.',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -223,9 +223,9 @@ class _EnvironmentPageState extends State<EnvironmentPage> {
                   title: 'File System Access',
                   available: picker && storage.handle,
                   detail: picker && storage.handle
-                      ? 'Available: choose a folder for bloat, output and '
-                            'packages.'
-                      : 'Not available: bloat and packages use origin-private '
+                      ? 'Available: choose a folder for the bloat cache and '
+                            'OTAs.'
+                      : 'Not available: bloat and OTAs use origin-private '
                             'storage.',
                 ),
                 const SizedBox(height: 10),
@@ -250,8 +250,8 @@ class _EnvironmentPageState extends State<EnvironmentPage> {
                   title: 'Screen wake lock',
                   available: true,
                   detail:
-                      'Held while a build or bloat download runs, together '
-                      'with a leave guard.',
+                      'Held while a flash, bloat download or ZIP export runs, '
+                      'together with a leave guard.',
                 ),
               ],
             ),

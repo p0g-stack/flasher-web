@@ -13,10 +13,14 @@ import 'fake.dart';
 const _serial = 'SERIAL123';
 const _phone = FastbootUsbDevice(serial: _serial, label: 'Realme NEO8');
 
-FlashTarget flashTarget() => const FlashTarget(
-  job: '20260101-000000-abcdef',
-  store: {'kind': 'opfs'},
-  selection: {'device': 'Realme NEO8', 'kind': 'Super Flasher', 'region': 'CN'},
+FlashTarget flashTarget() => FlashTarget(
+  ota: {'kind': 'file', 'file': Object()},
+  bloat: const {'kind': 'opfs'},
+  selection: const {
+    'device': 'Realme NEO8',
+    'kind': 'Super Flasher',
+    'region': 'CN',
+  },
   label: 'Realme NEO8 / Super Flasher',
 );
 
@@ -118,68 +122,6 @@ Future<void> confirmAndFlash(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('a built job opens the flash page with its exact job', (
-    tester,
-  ) async {
-    final harness = Harness();
-    harness.api.inspectResult = {
-      'version': 'CPH2647_11.A.30',
-      'fields': {
-        'pre-device': 'CPH2647',
-        'post-build': 'CPH2647_11.A.30(EX01)',
-        'post-security-patch-level': '2025-09-01',
-      },
-      'partitions': {'system': 100, 'boot': 50, 'vendor': 25},
-      'length': 16 * 1024 * 1024 * 1024,
-      'stored': false,
-      'device': 'CPH2647',
-      'securityPatch': '2025-09-01',
-      'arb': {'major': 1, 'minor': 2, 'index': 3},
-    };
-    harness.api.buildStream = (_) => Stream.fromIterable([
-      {'type': 'step', 'index': 5, 'total': 5, 'title': 'Complete'},
-      {
-        'type': 'result',
-        'job': '20260101-000000-abcdef',
-        'artifact': 'SuperHybrid Flasher 13 GLO CPH2647.zip',
-        'format': 'zip',
-        'sha256': 'abc123',
-        'manifest': {'device': 'Oneplus 13', 'arb': 3},
-      },
-    ]);
-    harness.api.prepareFlashResult = (_) => resolvedPrepare();
-    harness.bridge.fastbootChoices.add(_phone);
-    await pumpApp(tester, harness: harness);
-    harness.bridge.otaFile = const PickedFile(
-      handle: Object(),
-      name: 'full-ota.zip',
-      size: 16 * 1024 * 1024 * 1024,
-    );
-    await tester.tap(find.byKey(const ValueKey('chooseOtaFile')));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byKey(const ValueKey('buildButton')));
-    await tester.tap(find.byKey(const ValueKey('buildButton')));
-    await tester.pumpAndSettle();
-
-    await tester.ensureVisible(find.byKey(const ValueKey('flashBuild')));
-    await tester.tap(find.byKey(const ValueKey('flashBuild')));
-    await tester.pumpAndSettle();
-
-    expect(find.byKey(const ValueKey('flashStatus')), findsOneWidget);
-    expect(find.text('20260101-000000-abcdef'), findsWidgets);
-    expect(find.text('Flash'), findsWidgets);
-
-    await tester.ensureVisible(find.byKey(const ValueKey('chooseDevice')));
-    await tester.tap(find.byKey(const ValueKey('chooseDevice')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('granted-SERIAL123')));
-    await tester.pumpAndSettle();
-
-    expect(find.byKey(const ValueKey('flashPlan')), findsOneWidget);
-    expect(find.text('Flash boot from boot.img'), findsWidgets);
-    expect(find.byKey(const ValueKey('confirmSerialValue')), findsOneWidget);
-  });
-
   testWidgets('the usb.web fact alone enables browser writes', (tester) async {
     final harness = Harness(
       environment: testEnvironment(facts: const ['fs.opfs', 'net']),
@@ -266,87 +208,6 @@ void main() {
     expect(
       harness.bridge.downloads,
       contains('flash-20260101-000000-abcdef-SERIAL123.json'),
-    );
-  });
-
-  testWidgets('a hosted target binds the artifact and never names a store', (
-    tester,
-  ) async {
-    const hostedId = 'hosted-job-0123456789abcdef';
-    const hostedSha =
-        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const hostedTarget = FlashTarget.hosted(
-      jobId: hostedId,
-      sha256: hostedSha,
-      bytes: 4096,
-      selection: {
-        'device': 'Realme NEO8',
-        'kind': 'Super Flasher',
-        'region': 'CN',
-      },
-      label: 'Realme NEO8 / Super Flasher',
-    );
-    final harness = Harness();
-    final events = StreamController<Map<String, Object?>>();
-    addTearDown(events.close);
-    harness.api.prepareFlashResult = (_) => {
-      ...resolvedPrepare(),
-      'job': hostedId,
-    };
-    harness.api.flashStream = (_) => events.stream;
-    final controller = await pumpFlash(
-      tester,
-      harness,
-      target: hostedTarget,
-    );
-    await selectDevice(tester, controller);
-
-    final prepareRequest = harness.api.lastPrepareRequest!;
-    expect(prepareRequest.containsKey('output'), isFalse);
-    expect(prepareRequest['hosted'], {
-      'jobId': hostedId,
-      'sha256': hostedSha,
-      'bytes': 4096,
-    });
-    expect(controller.receiptPath, contains('browser download'));
-
-    await confirmAndFlash(tester);
-    final flashRequest = harness.api.lastFlashRequest!;
-    expect(flashRequest.containsKey('output'), isFalse);
-    expect(flashRequest['hosted'], {
-      'jobId': hostedId,
-      'sha256': hostedSha,
-      'bytes': 4096,
-    });
-    expect(flashRequest['confirmationToken'], 'token-1');
-
-    events.add({
-      'type': 'result',
-      'status': 'succeeded',
-      'receipt': {
-        'status': 'succeeded',
-        'serial': _serial,
-        'job': hostedId,
-        'hosted': {
-          'jobId': hostedId,
-          'sha256': hostedSha,
-          'bytes': 4096,
-        },
-        'persistenceWarnings': <String>[],
-        'steps': <Map<String, Object?>>[],
-      },
-    });
-    await tester.pumpAndSettle();
-    expect(find.textContaining('no local job'), findsWidgets);
-
-    await tester.ensureVisible(
-      find.byKey(const ValueKey('downloadFlashReceipt')),
-    );
-    await tester.tap(find.byKey(const ValueKey('downloadFlashReceipt')));
-    await tester.pumpAndSettle();
-    expect(
-      harness.bridge.downloads,
-      contains('flash-$hostedId-SERIAL123.json'),
     );
   });
 

@@ -6,13 +6,108 @@ import 'dart:collection';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import '../pipeline/package.dart' show flasherSuperLayout;
+import '../pipeline/errors.dart';
+import '../rust/api/lp.dart';
 import '../rust/api/payload.dart' show Sha256Hasher;
 import '../rust/api/sparse.dart' show SparseWriter;
 import 'model.dart';
 import 'ota_source.dart';
-import 'package_source.dart';
+import 'package.dart';
 import 'sparse.dart';
+
+/// Partitions `pack_super` may put in `super.img`, in `lpmake` order.
+const List<String> superParts = [
+  'my_bigball',
+  'my_carrier',
+  'my_company',
+  'my_engineering',
+  'my_heytap',
+  'my_manifest',
+  'my_preload',
+  'my_product',
+  'my_region',
+  'my_stock',
+  'odm',
+  'product',
+  'system',
+  'system_dlkm',
+  'system_dlkm_gki',
+  'system_dlkm_oki',
+  'system_ext',
+  'vendor',
+  'vendor_dlkm',
+];
+
+/// Partitions `build_images` moves into `Super/` for every device except X9U.
+final List<String> extractToSuper = [
+  for (final name in superParts)
+    if (name != 'my_company' &&
+        name != 'my_preload' &&
+        name != 'system_dlkm_gki' &&
+        name != 'system_dlkm_oki')
+      name,
+];
+
+/// Root template files removed after every Super build.
+const Set<String> superScrapFiles = {
+  'dtbo.img', 'dtbo_patched.img', 'dtbo_patcher.sh', 'dtbo_patcher.py', 'dtbo_patcher',
+};
+
+/// The LP producer contract the normal and virtual packers share.
+SuperLayout flasherSuperLayout(Map<String, int> images, int size) {
+  if (size <= 4 * 1024 * 1024 || size % 4096 != 0) {
+    throw const BuildException('Invalid physical super partition size.');
+  }
+  for (final name in const ['system', 'vendor', 'product']) {
+    if ((images[name] ?? 0) <= 0) {
+      throw BuildException('Required partition missing: $name.img');
+    }
+  }
+  final included = [
+    for (final name in superParts)
+      if (images.containsKey(name)) name,
+  ];
+  try {
+    return superLayout(
+      spec: SuperSpec(
+        deviceSize: BigInt.from(size),
+        superName: 'super',
+        metadataSize: 65536,
+        metadataSlots: 3,
+        virtualAb: true,
+        logicalBlockSize: 4096,
+        alignment: 1 << 20,
+        groups: [
+          for (final slot in const ['a', 'b'])
+            SuperGroup(
+              name: 'qti_dynamic_partitions_$slot',
+              size: BigInt.from(size - 4 * 1024 * 1024),
+            ),
+        ],
+        partitions: [
+          for (final name in included)
+            SuperPartition(
+              name: '${name}_a',
+              size: BigInt.from(images[name]!),
+              group: 'qti_dynamic_partitions_a',
+              readonly: true,
+              hasImage: true,
+            ),
+          for (final name in included)
+            SuperPartition(
+              name: '${name}_b',
+              size: BigInt.zero,
+              group: 'qti_dynamic_partitions_b',
+              readonly: true,
+              hasImage: false,
+            ),
+        ],
+      ),
+    );
+  } on Object catch (error) {
+    throw BuildException('$error');
+  }
+}
 
 /// A prepared super owns its input handles, not any materialized image.
 /// The preparation pass records five bytes per populated 4096-byte block

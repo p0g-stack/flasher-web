@@ -7,15 +7,12 @@
 
 import { handleBloat } from "./bloat";
 import { handleCatalog } from "./catalog";
-import { handleHosted } from "./hosted";
 import { jsonError, methodNotAllowed } from "./http";
 import { handleOta } from "./ota";
 import { handleResolve } from "./resolve";
 
 export interface Env {
   ASSETS: Fetcher;
-  HOSTED_ORIGIN?: string;
-  HOSTED_TOKEN?: string;
 }
 
 const API_PREFIX = "/api/";
@@ -28,9 +25,6 @@ export default {
       return env.ASSETS.fetch(request);
     }
     try {
-      if (path.startsWith("/api/hosted/")) {
-        return await handleHosted(request, env.HOSTED_ORIGIN, env.HOSTED_TOKEN);
-      }
       if (path === "/api/catalog") {
         if (request.method !== "GET") {
           return methodNotAllowed("GET");

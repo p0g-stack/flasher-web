@@ -4,13 +4,39 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:device_link/device_link.dart';
 import 'package:flasher_web_core/flasher_web_core.dart';
+import 'package:flasher_web_core/src/rust/api/zip.dart' as rust_zip;
 
 import 'ota_fixture.dart' show FixtureExtent, FixtureOp, FixturePartition, OtaFixture, buildZip, fixtureBlock, pattern;
+
+/// Reads a ZIP's central directory from [source], without extracting entries.
+///
+/// The source is read, not closed: the caller owns it.
+Future<Map<String, rust_zip.ZipEntry>> parseZipEntries(ByteSource source) async {
+  final length = source.length;
+  final tailLength = math.min(length, 128 * 1024);
+  final tail = await source.read(length - tailLength, tailLength);
+  final directory = rust_zip.zipEntries(
+    tail: tail,
+    fileLen: BigInt.from(length),
+  );
+  List<rust_zip.ZipEntry> parsed = directory.entries;
+  final needs = directory.needs;
+  if (needs != null) {
+    final (offset, size) = needs;
+    final cd = await source.read(offset.toInt(), size.toInt());
+    parsed = rust_zip.zipParseCentral(cd: cd);
+  }
+  return {
+    for (final entry in parsed)
+      if (!entry.name.endsWith('/')) entry.name: entry,
+  };
+}
 
 /// The human device names the fixture tables list.
 const Map<String, String> fixtureDevices = {

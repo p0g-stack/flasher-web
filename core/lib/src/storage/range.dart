@@ -75,7 +75,7 @@ final class ContentRange {
 /// Returns a strong ETag header value unchanged, or null for a missing or
 /// weak validator.
 ///
-/// An immutable hosted artifact is addressed by its SHA-256 in a strong ETag;
+/// An immutable remote artifact is addressed by its SHA-256 in a strong ETag;
 /// `W/"..."` is a different representation and cannot pin byte identity.
 String? strongEtag(String? header) {
   final value = header?.trim();

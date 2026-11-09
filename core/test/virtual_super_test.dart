@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' show sha256;
 import 'package:flasher_web_core/flasher_web_core.dart';
 import 'package:flasher_web_core/src/rust/api/zip.dart'
     show inflateRaw, zipDataOffset;
@@ -65,30 +66,6 @@ Map<String, Uint8List> fixtureSuperTemplate(String subtree) => {
     '#!/sbin/sh\n'.codeUnits,
   ),
 };
-
-/// Runs the normal build and returns its result event.
-Future<Map<String, Object?>> runBuild(
-  VirtualFixture fixture,
-  Map<String, Object?> selection,
-  Directory output, {
-  required bool zip,
-  String apiBase = '',
-  Map<String, Object?>? base,
-  bool? vulnerableAbl,
-}) async {
-  final events = await buildFlasher({
-    'selection': selection,
-    'ota': {'kind': 'file', 'file': '${fixture.root.path}/ota/ota.zip'},
-    'base': ?base,
-    'vulnerableAbl': ?vulnerableAbl,
-    'zip': zip,
-    'bloat': {'kind': 'path', 'path': '${fixture.root.path}/bloat'},
-    'output': {'kind': 'path', 'path': output.path},
-    'apiBase': apiBase,
-    'upstreamBase': fixture.upstreamPath,
-  }).toList();
-  return events.lastWhere((event) => event['type'] == 'result');
-}
 
 Future<Uint8List> bytesOf(FlashPackage package, String path) async {
   final source = await package.open(path);
@@ -369,57 +346,19 @@ Future<void> expectSuperReadModes(
   }
 }
 
-/// Builds the same inputs twice (folder and ZIP), opens the virtual package,
-/// and proves the three agree: the folder tree, the export ZIP and the package
-/// images.
+/// Opens the virtual package over [fixture] and checks that the export ZIP
+/// carries exactly the package's tree, entry for entry, that every image
+/// equals the bytes the package serves, and that the advertised digests match
+/// those bytes.
 Future<void> verifyParity(
   VirtualFixture fixture,
   Selection selection, {
-  required Map<String, Object?> request,
   required int superSize,
   bool withBase = false,
-  bool? vulnerableAbl,
-  String apiBase = '',
   OtaArchive? donor,
   Map<String, Object?>? donorIdentity,
 }) async {
   final label = '_${selection.region}';
-  final output = await Directory('${fixture.root.path}/output').create();
-  final baseInput = withBase
-      ? <String, Object?>{
-          'kind': 'file',
-          'file': '${fixture.root.path}/ota/base.zip',
-        }
-      : null;
-  final folderBuild = await runBuild(
-    fixture,
-    request,
-    Directory('${output.path}/folder$label')..createSync(recursive: true),
-    zip: false,
-    base: baseInput,
-    vulnerableAbl: vulnerableAbl,
-    apiBase: apiBase,
-  );
-  final zipBuild = await runBuild(
-    fixture,
-    request,
-    Directory('${output.path}/zip$label')..createSync(recursive: true),
-    zip: true,
-    base: baseInput,
-    vulnerableAbl: vulnerableAbl,
-    apiBase: apiBase,
-  );
-  final folder = IoWorkspace(
-    Directory(
-      '${output.path}/folder$label/${folderBuild['job']}/${folderBuild['artifact']}',
-    ),
-  );
-  final tree = (await folder.list('', recursive: true))..sort();
-  final zip = await zipEntriesOf(
-    IoWorkspace(Directory('${output.path}/zip$label')),
-    '${zipBuild['job']}/${zipBuild['artifact']}',
-  );
-
   final baseArchive = withBase ? await fixture.openOta('base.zip') : null;
   final package = await fixture.open(
     selection,
@@ -436,47 +375,56 @@ Future<void> verifyParity(
     expect(package.buildJson.containsKey('image_sha256'), isFalse);
     final available = (package.buildJson['available_image_sha256']! as Map)
         .cast<String, String>();
-    final folderHashes =
-        ((folderBuild['manifest']! as Map)['image_sha256']! as Map)
-            .cast<String, String>();
     expect(available.keys.toSet(), {
       for (final path in package.index.entries)
         if (path.endsWith('.img') && path != 'super.img') path,
     });
     for (final entry in available.entries) {
-      expect(entry.value, folderHashes[entry.key], reason: entry.key);
+      expect(
+        sha256.convert(await bytesOf(package, entry.key)).toString(),
+        entry.value,
+        reason: entry.key,
+      );
     }
 
     final export = await exportEntries(fixture, package, label: label);
 
-    // The folder output, entry for entry and byte for byte.
-    expect(export.keys.toList()..sort(), tree);
-    for (final path in tree) {
+    // The exported tree: the selected template subtree, Platform-Tools over
+    // the template copy, and the package's own entries.
+    const prefix = 'Platform-Tools/';
+    // The fixture writes `oos/super/...` (or `cos/super/...`); the selection
+    // names which subtree the package stages.
+    final template = fixtureSuperTemplate(selection.template.split('/').first);
+    final expectedNames = <String>{
+      for (final name in template.keys)
+        if (name.startsWith('${selection.template}/'))
+          name.substring(selection.template.length + 1),
+      for (final name in fixturePlatformTools().keys) '$prefix$name',
+      ...package.index.entries,
+    };
+    expect(export.keys.toSet(), expectedNames);
+
+    // Every image is the byte range the package serves under that path.
+    for (final path in package.index.entries) {
       expect(
         export[path]!.bytes,
-        await readAll(await folder.open(path)),
-        reason: '$path equals the folder build',
+        await bytesOf(package, path),
+        reason: '$path equals the package image',
       );
     }
 
-    // The virtual super is the folder build's sparse super.img.
-    await expectSuperReadModes(
-      package,
-      await readAll(await folder.open('super.img')),
+    // The super entry is the package's sparse image, read and streamed alike.
+    final superBytes = await bytesOf(package, 'super.img');
+    expect(export['super.img']!.bytes, superBytes);
+    await expectSuperReadModes(package, superBytes);
+    final expanded = expandSparse(superBytes);
+    expect(expanded.blockSize, 4096);
+    expect(expanded.blocks, isNotEmpty);
+    expect(
+      superBytes.length,
+      lessThan(superSize),
+      reason: 'a sparse super is far smaller than its device',
     );
-    expect(package.imageHash('super.img'), folderHashes['super.img']);
-
-    // The exported ZIP is the normal ZIP build, entry for entry.
-    expect(export.keys.toList()..sort(), zip.keys.toList()..sort());
-    for (final entry in zip.entries) {
-      expect(export[entry.key], isNotNull, reason: entry.key);
-      expect(export[entry.key]!.mode, entry.value.mode, reason: '${entry.key} mode');
-      expect(
-        export[entry.key]!.bytes,
-        entry.value.bytes,
-        reason: '${entry.key} equals the ZIP build',
-      );
-    }
   } finally {
     await package.close();
     await baseArchive?.close();
@@ -489,7 +437,7 @@ void main() {
     expect(await loadNative(), isTrue);
   });
 
-  test('13 SuperHybrid GLO: export, folder and package agree', () async {
+  test('13 SuperHybrid GLO: export and package agree', () async {
     final fixture = await VirtualFixture.create(
       partitions: [...bootPartitions, ...logicalPartitions],
       bloatFiles: {
@@ -517,11 +465,6 @@ void main() {
         device: 'Oneplus 13',
         builder: 'BUILD_SUPER.sh',
       ),
-      request: const {
-        'device': 'Oneplus 13',
-        'kind': 'SuperHybrid Flasher',
-        'region': 'GLO',
-      },
       superSize: fixture.superSize('13', 'GLO'),
     );
   });
@@ -547,11 +490,6 @@ void main() {
     await verifyParity(
       fixture,
       selection,
-      request: const {
-        'device': 'Oneplus Ace 5',
-        'kind': 'Super Flasher',
-        'region': 'GLO',
-      },
       superSize: fixture.superSize('Ace5', 'GLO'),
     );
     final package = await fixture.open(
@@ -601,13 +539,7 @@ void main() {
     await verifyParity(
       fixture,
       selection,
-      request: const {
-        'device': 'OPPO Find X9 Ultra',
-        'kind': 'Super Flasher',
-        'region': 'EU',
-      },
       superSize: fixture.superSize('X9U', 'EU'),
-      vulnerableAbl: false,
     );
     final package = await fixture.open(
       selection,
@@ -684,11 +616,6 @@ void main() {
         device: 'Oneplus Ace 6',
         builder: 'BUILD_ACE6_OOS.sh',
       ),
-      request: const {
-        'device': 'Oneplus Ace 6',
-        'kind': 'SuperHybrid Flasher',
-        'region': 'IN',
-      },
       superSize: fixture.superSize('Ace6', 'IN'),
       withBase: true,
     );
@@ -797,22 +724,10 @@ void main() {
             device: 'Oneplus Ace 6T',
             builder: 'BUILD_SUPER.sh',
           ),
-          request: {
-            'device': 'Oneplus Ace 6T',
-            'kind': 'Super Flasher',
-            'region': region,
-          },
           superSize: fixture.superSize('Ace6T', region),
-          apiBase: server.apiBase,
           donor: donor,
           donorIdentity: donorIdentity,
         );
-        expect(
-          server.requests,
-          contains('GET /ota/donor-cn.zip'),
-          reason: 'the builds fetched the matched donor over the catalog',
-        );
-
         // The donor replaces the discarded static ODM inside the super.
         final package = await fixture.open(
           Selection(
@@ -968,11 +883,6 @@ void main() {
       await expectSuperFlash(
         fixture,
         selection13,
-        request: const {
-          'device': 'Oneplus 13',
-          'kind': 'SuperHybrid Flasher',
-          'region': 'GLO',
-        },
         answers: const {'root': 'flash-signal', 'wipe': 'reboot'},
         product: 'sun',
         superSize: fixture.superSize('13', 'GLO'),
@@ -988,11 +898,6 @@ void main() {
       await expectSuperFlash(
         fixture,
         selectionAce6,
-        request: const {
-          'device': 'Oneplus Ace 6',
-          'kind': 'SuperHybrid Flasher',
-          'region': 'IN',
-        },
         answers: const {'wipe': 'reboot', 'product': 'canoe'},
         product: 'canoe',
         superSize: fixture.superSize('Ace6', 'IN'),
@@ -1598,35 +1503,11 @@ int counterBytes(CountingWorkspace ota, CountingWorkspace bloat) =>
 Future<void> expectSuperFlash(
   VirtualFixture fixture,
   Selection selection, {
-  required Map<String, Object?> request,
   required Map<String, String> answers,
   required String product,
   required int superSize,
   bool withBase = false,
-  String apiBase = '',
 }) async {
-  final output = await Directory(
-    '${fixture.root.path}/flash-output',
-  ).create();
-  final built = await runBuild(
-    fixture,
-    request,
-    output,
-    zip: false,
-    apiBase: apiBase,
-    base: withBase
-        ? {
-            'kind': 'file',
-            'file': '${fixture.root.path}/ota/base.zip',
-          }
-        : null,
-  );
-  final folder = IoWorkspace(
-    Directory('${output.path}/${built['job']}/${built['artifact']}'),
-  );
-  final folderSuper = await readAll(await folder.open('super.img'));
-  final expectedBlocks = expandSparse(folderSuper).blocks;
-
   final otaFiles = (await fixture.otaWorkspace.list('', recursive: true))
     ..sort();
   final bloatFiles = (await fixture.bloatWorkspace.list('', recursive: true))
@@ -1724,7 +1605,10 @@ Future<void> expectSuperFlash(
       for (final part in parts) {
         expect(part.length, lessThanOrEqualTo(0x4000));
       }
-      expectSameBlocks(expandParts(parts), expectedBlocks);
+      expectSameBlocks(
+        expandParts(parts),
+        expandSparse(await bytesOf(package, 'super.img')).blocks,
+      );
       final writes = (receipt['writes'] as List)
           .cast<Map<String, Object?>>()
           .where((write) => write['partition'] == 'super')

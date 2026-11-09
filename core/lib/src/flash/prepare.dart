@@ -16,7 +16,7 @@ import 'package:device_link/device_link.dart';
 
 import '../upstream/tables.dart';
 import 'model.dart';
-import 'package_source.dart';
+import 'package.dart';
 import 'plan.dart';
 import 'sparse.dart';
 import 'virtual.dart';
@@ -124,9 +124,9 @@ final class PreparedFlash {
 
   /// Returns the same confirmed ticket, but reads images through [package].
   ///
-  /// A hosted preparation releases its server-side range source when it
-  /// returns, so execution reopens the pinned artifact and swaps the package
-  /// in without changing the token or any confirmed input.
+  /// Preparation releases its OTA handles when it returns, so execution
+  /// reopens the same OTA identity and swaps the package in without changing
+  /// the token or any confirmed input.
   PreparedFlash withPackage(FlashPackage package) => PreparedFlash(
     token: token,
     serial: serial,

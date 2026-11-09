@@ -4,19 +4,17 @@ import '../format.dart';
 import '../widgets/common.dart';
 import 'setup_state.dart';
 
-/// The New package page: steps 1–4, output choice and Build.
+/// The Flash or export page: steps 1–4 and the two actions.
 class SetupPage extends StatelessWidget {
   const SetupPage({
     super.key,
     required this.setup,
-    required this.onBuild,
-    this.onFlashDirect,
+    required this.onFlashDirect,
   });
 
   final SetupState setup;
-  final VoidCallback onBuild;
 
-  /// Opens the Flash page for a non-Super selection without a package build.
+  /// Opens the Flash page for the OTA-direct package.
   final VoidCallback? onFlashDirect;
 
   @override
@@ -51,11 +49,7 @@ class SetupPage extends StatelessWidget {
                 _AblCard(setup: setup),
               ],
               const SizedBox(height: 16),
-              _OutputBar(
-                setup: setup,
-                onBuild: onBuild,
-                onFlashDirect: onFlashDirect,
-              ),
+              _ActionsCard(setup: setup, onFlashDirect: onFlashDirect),
             ],
           );
           return SingleChildScrollView(
@@ -217,7 +211,7 @@ class _BloatCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final store = setup.bloatStore;
-    final pending = setup.pendingFolderName(StoreTarget.bloat);
+    final pending = setup.pendingBloatFolderName;
     final progress = setup.bloatProgress;
     return SectionCard(
       number: '02',
@@ -264,13 +258,6 @@ class _BloatCard extends StatelessWidget {
             style: theme.textTheme.bodySmall,
             overflow: TextOverflow.ellipsis,
           ),
-          if (setup.hostedBuild) ...[
-            const SizedBox(height: 6),
-            HintText(
-              'The hosted builder uses its own verified bloat cache. This '
-              'local copy is only needed for local builds.',
-            ),
-          ],
           const SizedBox(height: 6),
           Wrap(
             spacing: 8,
@@ -281,7 +268,7 @@ class _BloatCard extends StatelessWidget {
                 OutlinedButton.icon(
                   key: const ValueKey('chooseBloatFolder'),
                   onPressed: setup.canChangeStores
-                      ? () => setup.chooseFolder(StoreTarget.bloat)
+                      ? setup.chooseBloatFolder
                       : null,
                   icon: const Icon(Icons.folder_open, size: 18),
                   label: Text(
@@ -291,14 +278,14 @@ class _BloatCard extends StatelessWidget {
                 if (pending != null && !store.isFolder)
                   TextButton(
                     key: const ValueKey('reconnectBloatFolder'),
-                    onPressed: () => setup.reconnectFolder(StoreTarget.bloat),
+                    onPressed: setup.reconnectBloatFolder,
                     child: Text('Reconnect $pending'),
                   ),
                 if (store.isFolder)
                   TextButton(
                     key: const ValueKey('browseBloatBrowser'),
                     onPressed: setup.canChangeStores
-                        ? () => setup.useBrowserStorage(StoreTarget.bloat)
+                        ? setup.useBrowserStorage
                         : null,
                     child: const Text('Use browser storage'),
                   ),
@@ -402,61 +389,6 @@ class _OtaCard extends StatelessWidget {
             _LocalOtaPanel(setup: setup)
           else
             _CatalogOtaPanel(setup: setup),
-          const SizedBox(height: 10),
-          Container(
-            key: const ValueKey('hostedBuildPanel'),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: theme.colorScheme.outlineVariant),
-              color: setup.hostedBuild
-                  ? theme.colorScheme.primaryContainer.withValues(alpha: 0.3)
-                  : null,
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  setup.hostedBuild
-                      ? Icons.cloud_done_outlined
-                      : Icons.cloud_outlined,
-                  size: 18,
-                  color: setup.hostedAvailable
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Build on the hosted server',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      Text(
-                        setup.hostedAvailable
-                            ? 'Catalog OTA only · the server uses the release '
-                                  'ID, never a local file or custom URL.'
-                            : 'Switch to Version catalog to use a hosted build.',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Switch(
-                  key: const ValueKey('hostedBuildSwitch'),
-                  value: setup.hostedBuild,
-                  onChanged: setup.hostedAvailable
-                      ? setup.setHostedBuild
-                      : null,
-                ),
-              ],
-            ),
-          ),
           const SizedBox(height: 10),
           HintText(setup.sourceHint),
           const SizedBox(height: 8),
@@ -886,176 +818,100 @@ class _AblCard extends StatelessWidget {
   }
 }
 
-class _OutputBar extends StatelessWidget {
-  const _OutputBar({
-    required this.setup,
-    required this.onBuild,
-    this.onFlashDirect,
-  });
+class _ActionsCard extends StatelessWidget {
+  const _ActionsCard({required this.setup, this.onFlashDirect});
 
   final SetupState setup;
-  final VoidCallback onBuild;
   final VoidCallback? onFlashDirect;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final store = setup.outputStore;
-    final pending = setup.pendingFolderName(StoreTarget.output);
-    final error = setup.buildRequirementsError;
+    final exports = setup.exports;
     final directError = setup.directFlashRequirementsError;
-    return SectionCard(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final compact = constraints.maxWidth < 760;
-          final storage = setup.hostedBuild
-              ? _HostedOutputInfo(setup: setup)
-              : Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              FieldLabel('SAVE PACKAGE TO'),
-              const SizedBox(height: 5),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    store.isFolder ? Icons.folder : Icons.cloud_outlined,
-                    size: 18,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      store.name,
-                      key: const ValueKey('outputStore'),
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ),
-                ],
+    final exportError = setup.exportRequirementsError;
+    final result = exports.result;
+    return AnimatedBuilder(
+      animation: exports,
+      builder: (context, _) {
+        final actions = Wrap(
+          spacing: 10,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Tooltip(
+              key: const ValueKey('directFlashHint'),
+              message: directError.isEmpty ? setup.directFlashHint : directError,
+              child: FilledButton.icon(
+                key: const ValueKey('flashDirectButton'),
+                onPressed: setup.canFlashDirect && onFlashDirect != null
+                    ? onFlashDirect
+                    : null,
+                icon: const Icon(Icons.flash_on, size: 18),
+                label: const Text('Flash directly'),
               ),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 6,
-                children: [
-                  if (setup.pickerAvailable)
-                    TextButton(
-                      key: const ValueKey('chooseOutputFolder'),
-                      onPressed: () => setup.chooseFolder(StoreTarget.output),
-                      child: Text(
-                        store.isFolder ? 'Change folder' : 'Choose folder',
-                      ),
-                    ),
-                  if (pending != null && !store.isFolder)
-                    TextButton(
-                      key: const ValueKey('reconnectOutputFolder'),
-                      onPressed: () =>
-                          setup.reconnectFolder(StoreTarget.output),
-                      child: Text('Reconnect $pending'),
-                    ),
-                  if (store.isFolder)
-                    TextButton(
-                      key: const ValueKey('outputBrowser'),
-                      onPressed: () =>
-                          setup.useBrowserStorage(StoreTarget.output),
-                      child: const Text('Use browser storage'),
-                    ),
-                ],
+            ),
+            Tooltip(
+              key: const ValueKey('exportZipHint'),
+              message: exportError.isEmpty
+                  ? 'Save the same package as a ZIP file.'
+                  : exportError,
+              child: FilledButton.tonalIcon(
+                key: const ValueKey('exportZipButton'),
+                onPressed: setup.canExportZip && !exports.exporting
+                    ? () => _export(context)
+                    : null,
+                icon: const Icon(Icons.save_alt, size: 18),
+                label: Text(exports.exporting ? 'Exporting…' : 'Export ZIP'),
               ),
-              if (!store.isFolder)
-                Text(
-                  'The ZIP downloads from browser storage when the build '
-                  'finishes.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-            ],
-          );
-          final actions = Wrap(
-            spacing: 10,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              if (!setup.hostedBuild)
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Checkbox(
-                      key: const ValueKey('zipBuild'),
-                      value: setup.zipOutput,
-                      onChanged: (value) => setup.setZipOutput(value ?? true),
-                    ),
-                    const Text('ZIP build'),
-                  ],
-                ),
-              Tooltip(
-                message: error.isEmpty ? 'Build the package' : error,
-                child: setup.directFlashSupported
-                    ? FilledButton.tonalIcon(
-                        key: const ValueKey('buildButton'),
-                        onPressed: setup.canBuild ? onBuild : null,
-                        icon: const Icon(Icons.arrow_forward, size: 18),
-                        label: Text(
-                          setup.hostedBuild
-                              ? 'Build on server'
-                              : 'Build package',
-                        ),
-                      )
-                    : FilledButton.icon(
-                        key: const ValueKey('buildButton'),
-                        onPressed: setup.canBuild ? onBuild : null,
-                        icon: const Icon(Icons.arrow_forward, size: 18),
-                        label: Text(
-                          setup.hostedBuild
-                              ? 'Build on server'
-                              : 'Build package',
-                        ),
-                      ),
-              ),
-              if (setup.directFlashSupported)
-                Tooltip(
-                  key: const ValueKey('directFlashHint'),
-                  message: directError.isEmpty
-                      ? setup.directFlashHint
-                      : directError,
-                  child: FilledButton.icon(
-                    key: const ValueKey('flashDirectButton'),
-                    onPressed: setup.canFlashDirect && onFlashDirect != null
-                        ? onFlashDirect
-                        : null,
-                    icon: const Icon(Icons.flash_on, size: 18),
-                    label: const Text('Flash directly'),
-                  ),
-                ),
-            ],
-          );
-          return Column(
+            ),
+          ],
+        );
+        return SectionCard(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (compact) ...[
-                storage,
-                const SizedBox(height: 12),
-                Align(alignment: Alignment.centerRight, child: actions),
-              ] else
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    Expanded(child: storage),
-                    const SizedBox(width: 16),
-                    actions,
-                  ],
-                ),
-              if (error.isNotEmpty) ...[
-                const SizedBox(height: 6),
-                Text(
-                  error,
-                  key: const ValueKey('gatingError'),
-                  textAlign: TextAlign.end,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.error,
-                  ),
+              LayoutBuilder(
+                builder: (context, constraints) => constraints.maxWidth < 760
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            'The OTA and the verified bloat images are read in '
+                            'place. Flash the phone over fastboot or save the '
+                            'same package as a ZIP.',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Align(alignment: Alignment.centerRight, child: actions),
+                        ],
+                      )
+                    : Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'The OTA and the verified bloat images are read '
+                              'in place. Flash the phone over fastboot or save '
+                              'the same package as a ZIP.',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          actions,
+                        ],
+                      ),
+              ),
+              if (!setup.canSaveZip) ...[
+                const SizedBox(height: 8),
+                HintText(
+                  exportError,
+                  key: const ValueKey('exportUnavailable'),
+                  error: true,
                 ),
               ],
               if (setup.directFlashSupported && directError.isNotEmpty) ...[
@@ -1080,76 +936,86 @@ class _OutputBar extends StatelessWidget {
                   ),
                 ),
               ],
+              if (exports.exporting) ...[
+                const SizedBox(height: 10),
+                const LinearProgressIndicator(minHeight: 5),
+                for (final entry in exports.progress.entries)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: ByteProgress(
+                      label: entry.key,
+                      done: entry.value.done,
+                      total: entry.value.total,
+                    ),
+                  ),
+                if (exports.log.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      exports.log.last,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+              ],
+              if (result != null) ...[
+                const SizedBox(height: 10),
+                Container(
+                  key: const ValueKey('exportResult'),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primaryContainer.withValues(
+                      alpha: 0.25,
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      LabeledValue(
+                        label: 'Job',
+                        value: '${result['job'] ?? ''}',
+                        monospace: true,
+                      ),
+                      LabeledValue(
+                        label: 'SHA-256',
+                        value: '${result['sha256'] ?? ''}',
+                        monospace: true,
+                      ),
+                      LabeledValue(
+                        label: 'Bytes',
+                        value: '${result['bytes'] ?? ''}',
+                      ),
+                      LabeledValue(
+                        label: 'Entries',
+                        value: '${result['entries'] ?? ''}',
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              if (exports.error != null) ...[
+                const SizedBox(height: 6),
+                HintText(
+                  exports.error!,
+                  key: const ValueKey('exportError'),
+                  error: true,
+                ),
+              ],
             ],
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
-}
 
-class _HostedOutputInfo extends StatelessWidget {
-  const _HostedOutputInfo({required this.setup});
-
-  final SetupState setup;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final version = setup.selectedVersion;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const FieldLabel('BUILD LOCATION'),
-        const SizedBox(height: 5),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.cloud_outlined,
-              size: 18,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                'Hosted server',
-                key: const ValueKey('hostedOutput'),
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Text(
-          version == null
-              ? 'Catalog release · ZIP only · no local output store is used.'
-              : '$version · ZIP only · the finished artifact stays on the '
-                    'server.',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'The ZIP can be downloaded or range-flashed from the same origin.',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'Identical requests may reuse a cached build. The operator retains '
-          'catalog OTAs and ZIPs for its configured period (default 150 days '
-          'since last use).',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-        ),
-      ],
-    );
+  Future<void> _export(BuildContext context) async {
+    final message = await setup.exportZip();
+    if (!context.mounted || message == null) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
@@ -1164,8 +1030,6 @@ class _PackageSummary extends StatelessWidget {
     final storage = setup.environment.storage;
     final free = storage.quota - storage.usage;
     final summary = setup.packageSummary;
-    final outputIsFolder = setup.outputStore.isFolder;
-    final usesBrowserStorage = !outputIsFolder || !setup.bloatStore.isFolder;
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1187,24 +1051,21 @@ class _PackageSummary extends StatelessWidget {
           LabeledValue(label: 'Version', value: summary['version']! as String),
           const Divider(height: 24),
           HintText(
-            outputIsFolder
-                ? 'Output uses the selected folder. The browser cannot report '
-                      'its free disk space.'
-                : storage.quota > 0
+            storage.quota > 0
                 ? '${formatBytes(free)} available in browser storage\n'
-                      '${free < 40 * 1024 * 1024 * 1024 ? 'Choose a folder for large full builds.' : 'Browser quota is not physical disk free space.'}'
+                      '${free < 40 * 1024 * 1024 * 1024 ? 'Choose a bloat folder for large downloads.' : 'Browser quota is not physical disk free space.'}'
                 : 'Browser storage quota is not reported.',
           ),
-          if (outputIsFolder && !setup.bloatStore.isFolder) ...[
+          if (!setup.bloatStore.isFolder) ...[
             const SizedBox(height: 6),
             HintText(
               storage.quota > 0
-                  ? 'Bloat cache still uses browser storage: '
+                  ? 'Bloat cache and OTAs use browser storage: '
                         '${formatBytes(free)} available.'
-                  : 'Bloat cache still uses browser storage.',
+                  : 'Bloat cache and OTAs use browser storage.',
             ),
           ],
-          if (usesBrowserStorage && !storage.persisted) ...[
+          if (!storage.persisted) ...[
             const SizedBox(height: 6),
             HintText(
               'Storage is not persistent yet; request it from Environment.',

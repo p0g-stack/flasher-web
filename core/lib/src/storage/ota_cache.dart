@@ -43,8 +43,7 @@ class OtaCacheException implements Exception {
 /// excluded, every other catalog field participates.
 ///
 /// This is the cache key, so it must never change for the same catalog entry
-/// and must change when the entry does. It matches the hosted service's
-/// `releaseDigest`.
+/// and must change when the entry does.
 String otaEntryDigest(Map<String, dynamic> entry) {
   final stable = <String, Object?>{};
   for (final item in entry.entries) {

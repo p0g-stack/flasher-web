@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flasher_web/api/flasher_api.dart';
 import 'package:flasher_web/api/platform_bridge.dart';
-import 'package:flasher_web/build/hosted_api.dart';
 import 'package:flasher_web/preferences.dart';
 import 'package:flasher_web/runtime.dart';
 import 'package:flasher_web/shell.dart';
@@ -38,7 +37,6 @@ final class FakeFlasherApi implements FlasherApi {
 
   Map<String, dynamic> catalog = const {'api_version': '1', 'releases': []};
 
-  List<Map<String, Object?>> historyItems = const [];
   List<Map<String, Object?>> fastbootDeviceItems = const [
     {'serial': 'SERIAL123', 'label': 'Realme NEO8', 'transport': 'usb'},
   ];
@@ -46,8 +44,6 @@ final class FakeFlasherApi implements FlasherApi {
   /// Overrides the whole `{devices, error}` response when set.
   Map<String, Object?>? fastbootDevicesResponse;
 
-  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
-  buildStream;
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   bloatStream;
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
@@ -57,7 +53,6 @@ final class FakeFlasherApi implements FlasherApi {
   prepareFlashResult;
 
   Map<String, Object?>? lastBloatRequest;
-  Map<String, Object?>? lastBuildRequest;
   Map<String, Object?>? lastPrepareRequest;
   Map<String, Object?>? lastFlashRequest;
   Map<String, Object?>? lastStorageBudgetRequest;
@@ -68,7 +63,6 @@ final class FakeFlasherApi implements FlasherApi {
   int prepareCalls = 0;
   int flashCalls = 0;
   int evictCalls = 0;
-  bool buildCanceled = false;
 
   Map<String, Object?> storageBudgetResult = const {
     'cap': 10 * 1024 * 1024 * 1024,
@@ -105,17 +99,6 @@ final class FakeFlasherApi implements FlasherApi {
     if (result == null) throw StateError('No inspectOta result scripted.');
     return result;
   }
-
-  @override
-  Stream<Map<String, Object?>> build(Map<String, Object?> request) {
-    lastBuildRequest = request;
-    return buildStream?.call(request) ?? const Stream.empty();
-  }
-
-  @override
-  Future<List<Map<String, Object?>>> history(
-    Map<String, Object?> request,
-  ) async => historyItems;
 
   @override
   Future<Map<String, Object?>> fastbootDevices() async =>
@@ -480,7 +463,6 @@ final class Harness {
     FakePlatformBridge? bridge,
     UpstreamTables? tables,
     EnvironmentInfo? environment,
-    this.hosted,
   }) : bridge = bridge ?? FakePlatformBridge(),
        tables = tables ?? testTables(),
        environment = environment ?? testEnvironment();
@@ -489,7 +471,6 @@ final class Harness {
   final FakePlatformBridge bridge;
   final UpstreamTables tables;
   final EnvironmentInfo environment;
-  final HostedApiClient? hosted;
   final preferences = const SetupPreferences();
 
   AppRuntime get runtime => AppRuntime(
@@ -514,7 +495,6 @@ Future<Harness> pumpApp(WidgetTester tester, {Harness? harness}) async {
         tables: h.tables,
         environment: h.environment,
         preferences: h.preferences,
-        hosted: h.hosted,
       ),
     ),
   );
@@ -537,12 +517,12 @@ Future<void> chooseKind(WidgetTester tester, String kind) async {
 }
 
 String gating(WidgetTester tester) =>
-    tester.widget<Text>(find.byKey(const ValueKey('gatingError'))).data!;
+    tester.widget<Text>(find.byKey(const ValueKey('directFlashError'))).data!;
 
 String tooltip(WidgetTester tester) => tester
     .widget<Tooltip>(
       find.ancestor(
-        of: find.byKey(const ValueKey('buildButton')),
+        of: find.byKey(const ValueKey('flashDirectButton')),
         matching: find.byType(Tooltip),
       ),
     )

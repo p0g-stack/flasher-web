@@ -4,6 +4,7 @@ import 'package:flasher_web/api/platform_bridge.dart';
 import 'package:flasher_web/flash/flash_controller.dart';
 import 'package:flasher_web/flash/flash_page.dart';
 import 'package:flasher_web/flash/flash_target.dart';
+import 'package:flasher_web/setup/export_controller.dart';
 import 'package:flasher_web/setup/setup_state.dart';
 import 'package:flasher_web/theme.dart';
 import 'package:flutter/material.dart';
@@ -44,7 +45,7 @@ FlashTarget _virtualTarget(
   Object otaFile, {
   Map<String, Object?>? base,
   Map<String, Object?>? bloat,
-}) => FlashTarget.virtual(
+}) => FlashTarget(
   ota: {'kind': 'file', 'file': otaFile},
   base: base,
   bloat: bloat ?? const {'kind': 'opfs'},
@@ -108,15 +109,13 @@ Future<FlashController> _pumpVirtualFlash(
 void main() {
   test('a virtual target names no output or hosted source', () {
     final target = _virtualTarget(Object());
-    expect(target.isVirtual, isTrue);
-    expect(target.isHosted, isFalse);
-    expect(target.job, isEmpty);
-    expect(target.store, isEmpty);
+    expect(target.virtualOta['kind'], 'file');
+    expect(target.virtualBloat, {'kind': 'opfs'});
     expect(target.virtualRequest, {
-      'ota': {'kind': 'file', 'file': target.virtualOta?['file']},
+      'ota': {'kind': 'file', 'file': target.virtualOta['file']},
       'bloat': {'kind': 'opfs'},
     });
-    expect(target.virtualRequest?.containsKey('base'), isFalse);
+    expect(target.virtualRequest.containsKey('base'), isFalse);
   });
 
   test('a virtual conversion target carries its BASE OTA', () {
@@ -477,7 +476,7 @@ void main() {
     final harness = Harness();
     harness.api.prepareFlashResult = (_) => _virtualPrepare();
     final ota = <String, Object?>{'kind': 'file', 'file': Object()};
-    final target = FlashTarget.virtual(
+    final target = FlashTarget(
       ota: ota,
       bloat: const {'kind': 'opfs'},
       selection: const {
@@ -589,23 +588,35 @@ void main() {
       {'type': 'progress', 'label': 'ZIP', 'done': 1, 'total': 2},
       {'type': 'result', 'job': _virtualJob, 'sha256': 'abc123', 'bytes': 10},
     ]);
-    final handle = Object();
-    final target = _virtualTarget(handle);
-    final controller = FlashController(
+    final controller = ExportController(
       api: harness.api,
       bridge: harness.bridge,
-      environment: harness.environment,
-      target: target,
       upstreamBase: 'upstream/',
     );
     addTearDown(controller.dispose);
+    final handle = Object();
 
-    final message = await controller.exportZip();
+    final message = await controller.export(
+      virtual: {
+        'ota': {'kind': 'file', 'file': handle},
+        'bloat': {'kind': 'opfs'},
+      },
+      selection: const {
+        'device': 'Oneplus 13',
+        'kind': 'Regional Flasher',
+        'region': 'GLO',
+      },
+      label: 'Oneplus 13 Regional Flasher Global',
+    );
 
     expect(message, isNull);
     expect(harness.bridge.pickSaveFileCalls, 1);
     final request = harness.api.lastExportRequest!;
-    expect(request['selection'], target.selection);
+    expect(request['selection'], {
+      'device': 'Oneplus 13',
+      'kind': 'Regional Flasher',
+      'region': 'GLO',
+    });
     expect(request['upstreamBase'], 'upstream/');
     expect(
       identical(request['destination'], harness.bridge.saveFileResult),
@@ -615,7 +626,7 @@ void main() {
     expect(identical((virtual['ota']! as Map)['file'], handle), isTrue);
     expect(virtual['bloat'], {'kind': 'opfs'});
     expect(virtual.containsKey('base'), isFalse);
-    expect(controller.exportResult?['sha256'], 'abc123');
+    expect(controller.result?['sha256'], 'abc123');
     expect(controller.exporting, isFalse);
   });
 
@@ -624,26 +635,36 @@ void main() {
     harness.api.exportVirtualStream = (_) => Stream.fromIterable([
       {'type': 'result', 'job': _virtualJob, 'sha256': 'abc123', 'bytes': 10},
     ]);
-    final handle = Object();
-    final baseHandle = Object();
-    final target = _virtualTarget(
-      handle,
-      base: {'kind': 'file', 'file': baseHandle},
-    );
-    final controller = FlashController(
+    final controller = ExportController(
       api: harness.api,
       bridge: harness.bridge,
-      environment: harness.environment,
-      target: target,
       upstreamBase: 'upstream/',
     );
     addTearDown(controller.dispose);
+    final handle = Object();
+    final baseHandle = Object();
 
-    final message = await controller.exportZip();
+    final message = await controller.export(
+      virtual: {
+        'ota': {'kind': 'file', 'file': handle},
+        'base': {'kind': 'file', 'file': baseHandle},
+        'bloat': {'kind': 'opfs'},
+      },
+      selection: const {
+        'device': 'Oneplus Ace 6',
+        'kind': 'SuperHybrid Flasher',
+        'region': 'IN',
+      },
+      label: 'OnePlus Ace 6 SuperHybrid Flasher India',
+    );
 
     expect(message, isNull);
     final request = harness.api.lastExportRequest!;
-    expect(request['selection'], target.selection);
+    expect(request['selection'], {
+      'device': 'Oneplus Ace 6',
+      'kind': 'SuperHybrid Flasher',
+      'region': 'IN',
+    });
     final virtual = Map<String, Object?>.from(request['virtual']! as Map);
     expect(virtual['ota'], {'kind': 'file', 'file': handle});
     expect(virtual['base'], {'kind': 'file', 'file': baseHandle});

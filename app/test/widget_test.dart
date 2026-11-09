@@ -44,11 +44,12 @@ void main() {
 
     expect(
       gating(tester),
-      'Required bloat files must be downloaded and verified before building.',
+      'Required bloat files must be downloaded and verified before '
+      'flashing directly.',
     );
     expect(tooltip(tester), gating(tester));
     final button = tester.widget<FilledButton>(
-      find.byKey(const ValueKey('buildButton')),
+      find.byKey(const ValueKey('flashDirectButton')),
     );
     expect(button.onPressed, isNull);
     expect(find.text('Not downloaded'), findsOneWidget);
@@ -85,7 +86,7 @@ void main() {
 
     expect(
       gating(tester),
-      'Select a full TARGET OTA ZIP, download URL or catalog version.',
+      'Select a full TARGET OTA ZIP before flashing directly.',
     );
     expect(tooltip(tester), gating(tester));
   });
@@ -97,7 +98,8 @@ void main() {
     expect(find.text('Vulnerable ABL'), findsOneWidget);
     expect(
       gating(tester),
-      'Step 4: choose Yes or No for vulnerable ABL before building.',
+      'Step 4: choose Yes or No for vulnerable ABL before flashing '
+      'directly.',
     );
 
     await tester.tap(find.byKey(const ValueKey('ablYes')));
@@ -105,7 +107,7 @@ void main() {
     expect(find.text('ABL 16.0.6 will be packed.'), findsOneWidget);
     expect(
       gating(tester),
-      'Select a full TARGET OTA ZIP, download URL or catalog version.',
+      'Select a full TARGET OTA ZIP before flashing directly.',
     );
 
     await tester.tap(find.byKey(const ValueKey('ablNo')));

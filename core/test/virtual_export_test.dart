@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -85,14 +86,34 @@ Future<Map<String, ({Uint8List bytes, int mode})>> zipEntriesOf(
   }
 }
 
+/// Every byte [package] serves for [path].
+Future<Uint8List> packageBytes(FlashPackage package, String path) async {
+  final source = await package.open(path);
+  try {
+    final builder = BytesBuilder(copy: false);
+    var offset = 0;
+    while (offset < source.length) {
+      final chunk = await source.read(
+        offset,
+        math.min(1 << 20, source.length - offset),
+      );
+      builder.add(chunk);
+      offset += chunk.length;
+    }
+    return builder.takeBytes();
+  } finally {
+    await source.close();
+  }
+}
+
 void main() {
   setUpAll(() async {
     expect(await loadNative(), isTrue);
   });
 
   test(
-    'the exported ZIP equals the ZIP the normal build packages, entry for '
-    'entry',
+    'the exported ZIP carries the template, Platform-Tools and every package '
+    'image, entry for entry',
     () async {
       final fixture = await VirtualFixture.create(
         partitions: [...fixtureBoot, ...fixtureLogicalFromOta],
@@ -105,18 +126,17 @@ void main() {
       );
       addTearDown(fixture.dispose);
 
-      // The normal build path: stage the template, Platform-Tools and images,
-      // then package the same tree a folder build would contain.
-      final output = await Directory('${fixture.root.path}/output').create();
-      final built = await _build(fixture, output);
-      final job = built['job']! as String;
-      final artifact = built['artifact']! as String;
-      expect(built['format'], 'zip');
-      final outputWorkspace = IoWorkspace(output);
-      final reference = await zipEntriesOf(outputWorkspace, '$job/$artifact');
-      expect(reference, isNotEmpty);
-
       final package = await fixture.open(fixtureSelection);
+      // The tree the export must assemble: the selected template subtree,
+      // Platform-Tools over the template copy, and the package's own entries.
+      const prefix = 'oos/regional/';
+      final expectedNames = <String>{
+        for (final name in fixtureTemplate13().keys)
+          if (name.startsWith(prefix)) name.substring(prefix.length),
+        for (final name in fixturePlatformTools().keys) 'Platform-Tools/$name',
+        ...package.index.entries,
+      };
+
       final exportWorkspace = IoWorkspace(
         await Directory('${fixture.root.path}/export').create(),
       );
@@ -132,7 +152,6 @@ void main() {
         }
       } finally {
         await sink.close();
-        await package.close();
       }
 
       final result = events.last;
@@ -148,38 +167,29 @@ void main() {
       expect(result['bytes'], archiveBytes.length);
       expect(result['sha256'], sha256.convert(archiveBytes).toString());
       expect(result['job'], package.job);
-      expect(result['entries'], reference.length);
+      expect(result['entries'], expectedNames.length);
       expect(
         events.where((event) => event['type'] == 'progress'),
         isEmpty,
         reason: 'every fixture entry is far below the 64 MiB report step',
       );
 
-      // Same names, modes and bytes as the packaged build, including the
-      // CRLF-normalized scripts and the Platform-Tools override.
-      expect(exported.keys.toList()..sort(), reference.keys.toList()..sort());
-      for (final entry in reference.entries) {
-        expect(exported[entry.key], isNotNull, reason: entry.key);
+      // Exactly the template subtree, Platform-Tools and the package entries.
+      expect(exported.keys.toSet(), expectedNames);
+      expect(exported, isNot(contains('oos/regional/notes.txt')));
+      expect(exported, isNot(contains('oos/super/updater-script')));
+      expect(exported, isNot(contains('build.json')));
+
+      // Every image is the byte range the package serves under that path.
+      for (final path in package.index.entries) {
         expect(
-          exported[entry.key]!.mode,
-          entry.value.mode,
-          reason: '${entry.key} mode',
-        );
-        expect(
-          exported[entry.key]!.bytes,
-          entry.value.bytes,
-          reason: '${entry.key} bytes',
+          exported[path]!.bytes,
+          await packageBytes(package, path),
+          reason: '$path equals the package image',
         );
       }
 
-      // The tree itself is unchanged; the template subtree, not the whole
-      // device package, is what the build stages.
-      expect(exported, contains('OOS_FILES_HERE/boot.img'));
-      expect(exported, contains('Platform-Tools/fastboot.txt'));
-      expect(exported, contains('updater-script'));
-      expect(exported, contains('META-INF/com/google/android/update-binary'));
-      expect(exported, isNot(contains('oos/super/updater-script')));
-      expect(exported, isNot(contains('build.json')));
+      // The template and Platform-Tools bytes, with line endings normalized.
       expect(
         utf8.decode(exported['updater-script']!.bytes),
         '#!/sbin/sh\nui_print "hello"\n',
@@ -200,34 +210,24 @@ void main() {
         0x81ed,
         reason: 'an ELF entry is executable',
       );
-      expect(
-        exported['OOS_FILES_HERE/boot.img']!.mode,
-        0x81a4,
-        reason: 'images are never probed for an ELF header',
-      );
+      for (final entry in fixturePlatformTools().entries) {
+        expect(
+          exported['Platform-Tools/${entry.key}']!.bytes,
+          entry.value,
+          reason: entry.key,
+        );
+      }
+
+      // Images use the mode of a plain file and never probe for an ELF header.
+      for (final path in package.index.entries) {
+        expect(exported[path]!.mode, 0x81a4, reason: '$path mode');
+      }
+      expect(exported, contains('OOS_FILES_HERE/boot.img'));
 
       // No temporary files: the export writes only the destination.
       expect(await exportWorkspace.list('', recursive: true), ['virtual.zip']);
+
+      await package.close();
     },
   );
-}
-
-Future<Map<String, Object?>> _build(
-  VirtualFixture fixture,
-  Directory output,
-) async {
-  final events = await buildFlasher({
-    'selection': {
-      'device': 'Oneplus 13',
-      'kind': 'RegionalHybrid Flasher',
-      'region': 'GLO',
-    },
-    'ota': {'kind': 'file', 'file': '${fixture.root.path}/ota/ota.zip'},
-    'zip': true,
-    'bloat': {'kind': 'path', 'path': '${fixture.root.path}/bloat'},
-    'output': {'kind': 'path', 'path': output.path},
-    'apiBase': '',
-    'upstreamBase': fixture.upstreamPath,
-  }).toList();
-  return events.lastWhere((event) => event['type'] == 'result');
 }

@@ -3,22 +3,18 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flasher_web_core/flasher_web_core.dart';
 
-import 'build/build_controller.dart';
-import 'build/hosted_api.dart';
-import 'build/output_page.dart';
 import 'docs/docs_page.dart';
 import 'environment/environment_page.dart';
 import 'flash/flash_controller.dart';
 import 'flash/flash_page.dart';
 import 'flash/flash_target.dart';
-import 'history/history_page.dart';
 import 'preferences.dart';
 import 'runtime.dart';
 import 'setup/setup_page.dart';
 import 'setup/setup_state.dart';
 
 /// The destinations of the desktop app, browser-only.
-enum AppPage { setup, output, flash, history, environment, documentation }
+enum AppPage { setup, flash, environment, documentation }
 
 /// The sidebar, page header and the pages themselves.
 class AppShell extends StatefulWidget {
@@ -28,17 +24,12 @@ class AppShell extends StatefulWidget {
     required this.tables,
     required this.environment,
     required this.preferences,
-    this.hosted,
   });
 
   final AppRuntime runtime;
   final UpstreamTables tables;
   final EnvironmentInfo environment;
   final SetupPreferences preferences;
-
-  /// Test seam for the hosted job client; production uses its same-origin
-  /// default. Hosted requests never fall back to the local build worker.
-  final HostedApiClient? hosted;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -51,65 +42,45 @@ class _AppShellState extends State<AppShell> {
     environment: widget.environment,
     preferences: widget.preferences,
   );
-  late final BuildController _build = BuildController(
-    api: widget.runtime.service,
-    bridge: widget.runtime.bridge,
-    hosted: widget.hosted,
-  );
 
   AppPage _page = AppPage.setup;
-  bool _hasOutput = false;
   FlashController? _flash;
   FlashTarget? _flashTarget;
-  AppPage _flashBack = AppPage.setup;
 
   static const _titles = {
     AppPage.setup: (
-      'New package',
-      'Turn a full OTA into a ready-to-use flasher package.',
-    ),
-    AppPage.output: (
-      'Build output',
-      'Progress, results and logs for your latest task.',
+      'Flash or export',
+      'Read a full OTA in place, then flash it or save the package.',
     ),
     AppPage.flash: (
       'Flash device',
       'Answer the plan, confirm the exact phone, then write.',
     ),
-    AppPage.history: (
-      'Build history',
-      'Your packages, checksums and build records in one place.',
-    ),
     AppPage.environment: (
       'Environment',
-      'Check your local engine and verify the build pipeline.',
+      'Check your local engine and verify the storage and device support.',
     ),
     AppPage.documentation: (
       'Documentation',
-      'Guides and reference for building your flasher package.',
+      'Guides and reference for flashing your phone.',
     ),
   };
 
   static const _icons = {
-    AppPage.setup: Icons.build_outlined,
-    AppPage.output: Icons.terminal,
+    AppPage.setup: Icons.flash_on_outlined,
     AppPage.flash: Icons.flash_on,
-    AppPage.history: Icons.history,
     AppPage.environment: Icons.settings_outlined,
     AppPage.documentation: Icons.help_outline,
   };
 
   List<AppPage> get _destinations => [
     AppPage.setup,
-    if (_hasOutput) AppPage.output,
     if (_flashTarget != null) AppPage.flash,
-    AppPage.history,
     AppPage.environment,
     AppPage.documentation,
   ];
 
   void _navigate(AppPage page) {
-    if (page == AppPage.output && !_hasOutput) return;
     if (page == AppPage.flash && _flashTarget == null) return;
     if (_flash?.running == true && page != AppPage.flash) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -125,7 +96,7 @@ class _AppShellState extends State<AppShell> {
     setState(() => _page = page);
   }
 
-  void _openFlash(FlashTarget target, {required AppPage back}) {
+  void _openFlash(FlashTarget target) {
     final current = _flash;
     if (current != null && current.running) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -149,79 +120,9 @@ class _AppShellState extends State<AppShell> {
     setState(() {
       _flash = controller;
       _flashTarget = target;
-      _flashBack = back;
       _page = AppPage.flash;
     });
     unawaited(controller.start());
-  }
-
-  void _flashBuiltPackage() {
-    final result = _build.result;
-    final request = _build.request;
-    final selection = request?['selection'];
-    final job = result?['job'];
-    if (result == null ||
-        job is! String ||
-        job.isEmpty ||
-        selection is! Map) {
-      return;
-    }
-    final summary = _build.summary;
-    final device = '${selection['device'] ?? ''}';
-    final kind = '${selection['kind'] ?? ''}';
-    final label = summary == null
-        ? '$device / $kind'
-        : '${summary['device'] ?? device} / ${summary['kind'] ?? kind}';
-    final selectionMap = Map<String, Object?>.from(selection);
-    if (result['hosted'] == true) {
-      final sha256 = result['sha256'];
-      final bytes = result['bytes'];
-      if (sha256 is! String || bytes is! num) return;
-      _openFlash(
-        FlashTarget.hosted(
-          jobId: job,
-          sha256: sha256,
-          bytes: bytes.toInt(),
-          selection: selectionMap,
-          label: label,
-        ),
-        back: AppPage.output,
-      );
-      return;
-    }
-    final output = request?['output'];
-    if (output is! Map) return;
-    _openFlash(
-      FlashTarget(
-        job: job,
-        store: Map<String, Object?>.from(output),
-        selection: selectionMap,
-        label: label,
-      ),
-      back: AppPage.output,
-    );
-  }
-
-  String? get _flashUnavailable {
-    if (_build.result == null) return 'Build a package before flashing it.';
-    if (_build.request?['selection'] is! Map) {
-      return 'The build request has no selection to reopen.';
-    }
-    if (_build.result?['hosted'] == true) {
-      final sha256 = _build.result?['sha256'];
-      final bytes = _build.result?['bytes'];
-      if (sha256 is! String || bytes is! num) {
-        return 'The hosted result has no digest and length to flash.';
-      }
-    } else if (_build.request?['output'] is! Map) {
-      return 'The build request has no store to reopen.';
-    }
-    if (!widget.environment.has('usb.web')) {
-      return 'This browser context reports no WebUSB support (usb.web). '
-          'Open the app in a current Chromium browser over HTTPS or '
-          'localhost.';
-    }
-    return null;
   }
 
   void _flashDirect() {
@@ -231,33 +132,19 @@ class _AppShellState extends State<AppShell> {
     if (ota == null || selection == null) return;
     if (_setup.needsBase && base == null) return;
     _openFlash(
-      FlashTarget.virtual(
+      FlashTarget(
         ota: ota,
         base: base,
         bloat: _setup.directFlashBloat,
         selection: Map<String, Object?>.from(selection),
         label: '${_setup.deviceDisplay} / ${_setup.kind}',
       ),
-      back: AppPage.setup,
     );
-  }
-
-  void _startBuild() {
-    final request = _setup.buildRequest();
-    if (request == null) return;
-    final summary = Map<String, Object?>.from(_setup.packageSummary);
-    final zip = _setup.zipOutput;
-    setState(() {
-      _hasOutput = true;
-      _page = AppPage.output;
-    });
-    unawaited(_build.start(request: request, summary: summary, zip: zip));
   }
 
   @override
   void dispose() {
     _setup.dispose();
-    _build.dispose();
     _flash?.dispose();
     super.dispose();
   }
@@ -396,26 +283,11 @@ class _AppShellState extends State<AppShell> {
     return switch (_page) {
       AppPage.setup => SetupPage(
         setup: _setup,
-        onBuild: _startBuild,
         onFlashDirect: _flashDirect,
-      ),
-      AppPage.output => AnimatedBuilder(
-        animation: _build,
-        builder: (context, _) => BuildOutputPage(
-          controller: _build,
-          onBack: () => _navigate(AppPage.setup),
-          onFlash: _flashUnavailable == null ? _flashBuiltPackage : null,
-          flashUnavailable: _flashUnavailable,
-        ),
       ),
       AppPage.flash => FlashPage(
         controller: _flash!,
-        onBack: () => _navigate(_flashBack),
-      ),
-      AppPage.history => HistoryPage(
-        runtime: widget.runtime,
-        setup: _setup,
-        onFlash: (target) => _openFlash(target, back: AppPage.history),
+        onBack: () => _navigate(AppPage.setup),
       ),
       AppPage.environment => EnvironmentPage(
         runtime: widget.runtime,
@@ -428,10 +300,8 @@ class _AppShellState extends State<AppShell> {
   }
 
   String _shortLabel(AppPage page) => switch (page) {
-    AppPage.setup => 'New package',
-    AppPage.output => 'Build output',
+    AppPage.setup => 'Flash or export',
     AppPage.flash => 'Flash',
-    AppPage.history => 'History',
     AppPage.environment => 'Environment',
     AppPage.documentation => 'Documentation',
   };

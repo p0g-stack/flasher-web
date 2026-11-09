@@ -24,14 +24,6 @@ final class SquadronFlasherApi implements FlasherApi {
       _worker.inspectOta(request);
 
   @override
-  Stream<Map<String, Object?>> build(Map<String, Object?> request) =>
-      _worker.build(request);
-
-  @override
-  Future<List<Map<String, Object?>>> history(Map<String, Object?> request) =>
-      _worker.history(request);
-
-  @override
   Future<Map<String, Object?>> fastbootDevices() => _worker.fastbootDevices();
 
   @override

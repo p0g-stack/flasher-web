@@ -7,14 +7,12 @@ import '../api/platform_bridge.dart';
 import '../format.dart';
 import '../preferences.dart';
 import '../runtime.dart';
+import 'export_controller.dart';
 
 /// Which OTA source step 3 shows.
 enum OtaMode { localFile, catalog }
 
-/// Which of the two stores a page-side button changes.
-enum StoreTarget { bloat, output }
-
-/// A store the pipeline can open, chosen from facts plus a page-side pick.
+/// A store the service can open, chosen from facts plus a page-side pick.
 final class StoreChoice {
   const StoreChoice.browser() : directory = null;
 
@@ -31,10 +29,10 @@ final class StoreChoice {
       : {'kind': 'directory', 'handle': directory!.handle};
 }
 
-/// The New package form: selection, bloat, OTA, ABL, output and gating.
+/// The Flash or export form: selection, bloat, OTA, ABL and gating.
 ///
-/// Gating texts are ports of upstream `build_requirements_error`,
-/// `update_summary` and `odm_catalog_error`.
+/// Gating texts are ports of upstream `build_requirements_error` and
+/// `update_summary`.
 final class SetupState extends ChangeNotifier {
   static final _log = Logger('ui.setup');
 
@@ -43,11 +41,14 @@ final class SetupState extends ChangeNotifier {
     required this.tables,
     required this.environment,
     required this.preferences,
-  }) {
+  }) : exports = ExportController(
+         api: runtime.service,
+         bridge: runtime.bridge,
+         upstreamBase: runtime.upstreamBase,
+       ) {
     _device = _initialDevice();
     _kind = _initialKind();
     _region = _initialRegion();
-    _zipOutput = preferences.zipOutput;
     _dropSubscription = runtime.bridge.droppedFiles.listen((file) {
       unawaited(setLocalFile('ota', file));
     });
@@ -67,18 +68,18 @@ final class SetupState extends ChangeNotifier {
   final EnvironmentInfo environment;
   final SetupPreferences preferences;
 
+  /// Streams the same package to a save-picker file.
+  final ExportController exports;
+
   late String _device;
   late String _kind;
   late String _region;
-  late bool _zipOutput;
   bool? _vulnerableAbl;
 
   OtaMode _otaMode = OtaMode.localFile;
-  bool _hostedBuild = false;
 
   StoreChoice _bloatStore = const StoreChoice.browser();
-  StoreChoice _outputStore = const StoreChoice.browser();
-  final _pendingFolder = <StoreTarget, String>{};
+  String? _pendingBloatFolder;
   String? _storeError;
 
   final _localFiles = <String, PickedFile>{};
@@ -125,22 +126,9 @@ final class SetupState extends ChangeNotifier {
   String get device => _device;
   String get kind => _kind;
   String get region => _region;
-  bool get zipOutput => _zipOutput;
   bool? get vulnerableAbl => _vulnerableAbl;
   OtaMode get otaMode => _otaMode;
-  bool get hostedBuild => _hostedBuild;
-
-  /// Hosted builds exist only for catalog sources with mapped releases.
-  bool get hostedAvailable {
-    if (_otaMode != OtaMode.catalog || !selectionValid) return false;
-    try {
-      return otaCatalogTargets(_device, _kind, _region).isNotEmpty;
-    } on CatalogException {
-      return false;
-    }
-  }
   StoreChoice get bloatStore => _bloatStore;
-  StoreChoice get outputStore => _outputStore;
   bool get pickerAvailable =>
       runtime.bridge.canPickDirectory && environment.storage.handle;
   bool get opfsAvailable => environment.storage.opfs;
@@ -180,8 +168,8 @@ final class SetupState extends ChangeNotifier {
   String get regionDisplay => _region == 'GLO' ? 'Global' : _region;
 
   String get workflowHint => isX9U
-      ? 'CONFIGURE → BLOAT FILES → OTA → ABL → BUILD'
-      : 'CONFIGURE → BLOAT FILES → OTA → BUILD';
+      ? 'CONFIGURE → BLOAT FILES → OTA → ABL → FLASH OR EXPORT'
+      : 'CONFIGURE → BLOAT FILES → OTA → FLASH OR EXPORT';
 
   /// Step 2's one-line summary under the fields.
   String get selectionInfo {
@@ -205,16 +193,12 @@ final class SetupState extends ChangeNotifier {
   }
 
   String get sourceHint {
-    if (_hostedBuild) {
-      return 'The server builds from these catalog release IDs. No local file '
-          'or custom URL is uploaded.';
-    }
     if (needsMatchedOdm) {
       return 'Only odm.img is streamed; the donor must have the same '
           'security patch.';
     }
     if (_otaMode == OtaMode.catalog) {
-      return 'Choose a version to download or build. Temporary links are '
+      return 'Choose a version to stream directly. Temporary links are '
           'refreshed automatically.';
     }
     return 'Use a full OTA package. Incremental updates are not supported.';
@@ -274,46 +258,17 @@ final class SetupState extends ChangeNotifier {
     _notify();
   }
 
-  void setZipOutput(bool value) {
-    if (_zipOutput == value) return;
-    _zipOutput = value;
-    _savePreferences();
-    _notify();
-  }
-
   void setOtaMode(OtaMode mode) {
     if (_otaMode == mode) return;
     _otaMode = mode;
-    if (mode != OtaMode.catalog) _hostedBuild = false;
     _notify();
     if (mode == OtaMode.catalog && _catalogData == null && !_catalogLoading) {
       unawaited(fetchCatalog());
     }
   }
 
-  /// Selects server-side building for catalog releases only.
-  ///
-  /// A local file or URL source can never turn this on; switching back to a
-  /// local file clears it so no stale hosted choice survives.
-  void setHostedBuild(bool value) {
-    if (value) {
-      if (!hostedAvailable) return;
-      if (_hostedBuild) return;
-      _hostedBuild = true;
-      _notify();
-      if (_catalogData == null && !_catalogLoading) {
-        unawaited(fetchCatalog());
-      }
-      return;
-    }
-    if (!_hostedBuild) return;
-    _hostedBuild = false;
-    _notify();
-  }
-
   void _afterSelectionChange() {
     _populateCatalog();
-    if (_hostedBuild && !hostedAvailable) _hostedBuild = false;
     _notify();
     _savePreferences();
     unawaited(refreshBloat());
@@ -540,7 +495,6 @@ final class SetupState extends ChangeNotifier {
     if (_otaMode != OtaMode.localFile) {
       _otaMode = OtaMode.localFile;
     }
-    _hostedBuild = false;
     _notify();
     await _inspect(role);
   }
@@ -794,199 +748,76 @@ final class SetupState extends ChangeNotifier {
     'kind': _kind,
     'os': osName,
     'region': regionDisplay,
-    'format': _hostedBuild
-        ? 'Hosted ZIP + SHA-256'
-        : (_zipOutput ? 'ZIP + SHA-256' : 'Flasher folder'),
-    'engine': _hostedBuild
-        ? 'Hosted builder'
-        : (environment.native ? 'Rust / WebAssembly' : 'Dart worker'),
+    'format': 'Direct flash or ZIP export',
+    'engine': environment.native ? 'Rust / WebAssembly' : 'Dart worker',
     'version': selectedVersion ?? '—',
   };
 
-  // ------------------------------------------------------------------ output
+  // ------------------------------------------------------------- bloat store
 
   bool get canChangeStores => !_bloatDownloading;
 
-  String? pendingFolderName(StoreTarget target) => _pendingFolder[target];
+  /// The name of a remembered bloat folder whose permission must be renewed.
+  String? get pendingBloatFolderName => _pendingBloatFolder;
 
   String? get storeError => _storeError;
 
-  Future<void> chooseFolder(StoreTarget target) async {
-    final key = target == StoreTarget.bloat ? 'bloat' : 'output';
-    final label = target == StoreTarget.bloat
-        ? 'Choose bloat download folder'
-        : 'Build output folder';
+  Future<void> chooseBloatFolder() async {
     try {
-      final ref = await runtime.bridge.pickDirectory(key, label: label);
+      final ref = await runtime.bridge.pickDirectory(
+        'bloat',
+        label: 'Choose bloat download folder',
+      );
       if (ref == null) return;
-      _pendingFolder.remove(target);
+      _pendingBloatFolder = null;
       _storeError = null;
-      _setStore(target, StoreChoice.folder(ref));
+      _setBloatStore(StoreChoice.folder(ref));
     } on Object catch (error) {
       _storeError = '$error';
       _notify();
     }
   }
 
-  Future<void> reconnectFolder(StoreTarget target) async {
-    final key = target == StoreTarget.bloat ? 'bloat' : 'output';
+  Future<void> reconnectBloatFolder() async {
     try {
-      final ref = await runtime.bridge.requestRememberedDirectory(key);
+      final ref = await runtime.bridge.requestRememberedDirectory('bloat');
       if (ref == null) return;
-      _pendingFolder.remove(target);
-      _setStore(target, StoreChoice.folder(ref));
+      _pendingBloatFolder = null;
+      _setBloatStore(StoreChoice.folder(ref));
     } on Object catch (error) {
       _bloatError = '$error';
       _notify();
     }
   }
 
-  void useBrowserStorage(StoreTarget target) {
-    _pendingFolder.remove(target);
-    _setStore(target, const StoreChoice.browser());
+  void useBrowserStorage() {
+    _pendingBloatFolder = null;
+    _setBloatStore(const StoreChoice.browser());
   }
 
-  void _setStore(StoreTarget target, StoreChoice choice) {
-    if (target == StoreTarget.bloat) {
-      _bloatStore = choice;
-      unawaited(refreshBloat());
-      unawaited(refreshBudget());
-    } else {
-      _outputStore = choice;
-    }
+  void _setBloatStore(StoreChoice choice) {
+    _bloatStore = choice;
+    unawaited(refreshBloat());
+    unawaited(refreshBudget());
     _notify();
   }
 
   Future<void> _restoreStores() async {
     if (!pickerAvailable) return;
-    for (final target in StoreTarget.values) {
-      final key = target == StoreTarget.bloat ? 'bloat' : 'output';
-      try {
-        final ref = await runtime.bridge.rememberedDirectory(key);
-        if (_disposed) return;
-        if (ref != null) {
-          _setStore(target, StoreChoice.folder(ref));
-          continue;
-        }
-        final name = await runtime.bridge.rememberedDirectoryName(key);
-        if (_disposed) return;
-        if (name != null) _pendingFolder[target] = name;
-      } on Object {
-        // A missing or unreadable handle simply leaves the default store.
+    try {
+      final ref = await runtime.bridge.rememberedDirectory('bloat');
+      if (_disposed) return;
+      if (ref != null) {
+        _setBloatStore(StoreChoice.folder(ref));
+        return;
       }
+      final name = await runtime.bridge.rememberedDirectoryName('bloat');
+      if (_disposed) return;
+      if (name != null) _pendingBloatFolder = name;
+    } on Object {
+      // A missing or unreadable handle simply leaves the default store.
     }
     _notify();
-  }
-
-  // ------------------------------------------------------------------ gating
-
-  /// Port of upstream `build_requirements_error`, plus the hosted rules.
-  String get buildRequirementsError {
-    if (!selectionValid) {
-      return 'Choose a supported device, flasher type and region.';
-    }
-    if (isX9U && _vulnerableAbl == null) {
-      return 'Step 4: choose Yes or No for vulnerable ABL before building.';
-    }
-    if (_hostedBuild) {
-      if (_otaMode != OtaMode.catalog) {
-        return 'Hosted builds require Version catalog as the OTA source.';
-      }
-      final roles = _targets.keys.toList();
-      if (roles.isEmpty) {
-        return 'This device has no catalog target for a hosted build.';
-      }
-      for (final role in roles) {
-        final entry = _selectedReleases[role];
-        final id = entry?['id'];
-        if (id is! String || id.isEmpty) {
-          final title = role == 'ota' ? 'TARGET' : 'BASE';
-          return 'Select a full $title OTA catalog version for the hosted '
-              'build.';
-        }
-      }
-      if (needsMatchedOdm) {
-        if (_selectedReleases['ota'] == null) {
-          return 'Select a target OTA with a matching Ace 6T security patch.';
-        }
-        if (_odmError != null) return _odmError!;
-      }
-      return '';
-    }
-    if (!bloatReady) {
-      return 'Required bloat files must be downloaded and verified before '
-          'building.';
-    }
-    final roles = _targets.keys.toList();
-    for (final role in roles) {
-      final title = role == 'ota' ? 'TARGET' : 'BASE';
-      if (_otaMode == OtaMode.catalog) {
-        if (_selectedReleases[role] == null) {
-          return 'Select a full $title OTA ZIP, download URL or catalog '
-              'version.';
-        }
-      } else if (_localFiles[role] == null) {
-        return 'Select a full $title OTA ZIP, download URL or catalog version.';
-      }
-    }
-    if (_otaMode == OtaMode.catalog && needsMatchedOdm) {
-      if (_selectedReleases['ota'] == null) {
-        return 'Select a target OTA with a matching Ace 6T security patch.';
-      }
-      if (_odmError != null) return _odmError!;
-    }
-    if (_outputStore.isFolder && _outputStore.directory == null) {
-      return 'Choose an output folder.';
-    }
-    return '';
-  }
-
-  bool get canBuild =>
-      buildRequirementsError.isEmpty &&
-      (_hostedBuild || !_bloatDownloading) &&
-      !catalogLoading;
-
-  /// The catalog-only request sent to the hosted builder.
-  ///
-  /// Null unless hosted mode is valid; unknown fields, local files and URLs
-  /// are never included.
-  Map<String, Object?>? hostedBuildRequest() {
-    if (!_hostedBuild || !canBuild) return null;
-    final target = _selectedReleases['ota'];
-    final catalogId = target?['id'];
-    if (catalogId is! String || catalogId.isEmpty) return null;
-    String? baseCatalogId;
-    if (needsBase) {
-      final baseId = _selectedReleases['base']?['id'];
-      if (baseId is! String || baseId.isEmpty) return null;
-      baseCatalogId = baseId;
-    }
-    return {
-      'hosted': true,
-      'selection': selectionMap!,
-      'catalogId': catalogId,
-      'baseCatalogId': ?baseCatalogId,
-      if (isX9U && _vulnerableAbl != null) 'vulnerableAbl': _vulnerableAbl,
-    };
-  }
-
-  Map<String, Object?>? buildRequest() {
-    if (!canBuild) return null;
-    if (_hostedBuild) return hostedBuildRequest();
-    final ota = otaInput('ota');
-    if (ota == null) return null;
-    final base = needsBase ? otaInput('base') : null;
-    return {
-      'selection': selectionMap!,
-      'ota': ota,
-      'base': ?base,
-      if (isX9U && _vulnerableAbl != null) 'vulnerableAbl': _vulnerableAbl,
-      'zip': _zipOutput,
-      'bloat': _bloatStore.toService(),
-      'output': _outputStore.toService(),
-      'apiBase': runtime.apiBase,
-      'upstreamBase': runtime.upstreamBase,
-    };
   }
 
   // ----------------------------------------------------------- direct flash
@@ -1007,43 +838,50 @@ final class SetupState extends ChangeNotifier {
   bool get directFlashSupported =>
       selectionValid && _directFlashKinds.contains(_kind);
 
-  /// Why Flash directly is not offered for this selection.
+  /// Why the OTA-direct actions are not offered for this selection.
   String get directFlashUnavailable {
     if (!selectionValid) {
       return 'Choose a supported device, flasher type and region.';
     }
     if (directFlashSupported) return '';
-    return '$_kind has no direct flash path. Flash directly is offered for '
-        'Regional, RegionalHybrid, Super and SuperHybrid flasher selections.';
+    return '$_kind has no OTA-direct path. Flashing and exporting are offered '
+        'for Regional, RegionalHybrid, Super and SuperHybrid flasher '
+        'selections.';
   }
 
   /// The explanation under an enabled Flash directly button.
   String get directFlashHint {
     if (!isSuperKind) {
-      return 'Flash the OTA directly without building a package.';
+      return 'Flash the OTA directly without creating a ZIP.';
     }
-    return 'Flash the OTA directly without building a package. Super '
-        'preparation decodes the whole super image once (this can take '
-        'several minutes) before the device is touched.';
+    return 'Flash the OTA directly without creating a ZIP. Super preparation '
+        'decodes the whole super image once (this can take several minutes) '
+        'before the device is touched.';
   }
 
   /// Port of the direct-flash prerequisites: verified bloat, one TARGET OTA
   /// and the BASE OTA an Ace 6 conversion needs.
-  String get directFlashRequirementsError {
+  String get directFlashRequirementsError =>
+      _requirementsError('flashing directly');
+
+  /// The same inputs feed Export ZIP, so only the wording differs.
+  String _requirementsError(String action) {
     if (!directFlashSupported) return directFlashUnavailable;
+    if (isX9U && _vulnerableAbl == null) {
+      return 'Step 4: choose Yes or No for vulnerable ABL before $action.';
+    }
     if (!bloatReady) {
       return 'Required bloat files must be downloaded and verified before '
-          'flashing directly.';
+          '$action.';
     }
     for (final role in ['ota', if (needsBase) 'base']) {
       final title = role == 'ota' ? 'TARGET' : 'BASE';
       if (_otaMode == OtaMode.catalog) {
         if (_selectedReleases[role] == null) {
-          return 'Select a full $title OTA catalog version before flashing '
-              'directly.';
+          return 'Select a full $title OTA catalog version before $action.';
         }
       } else if (_localFiles[role] == null) {
-        return 'Select a full $title OTA ZIP before flashing directly.';
+        return 'Select a full $title OTA ZIP before $action.';
       }
     }
     // The catalog ODM patch match is the only donor input: the service picks
@@ -1073,6 +911,44 @@ final class SetupState extends ChangeNotifier {
 
   /// The verified bloat store a direct flash reads from.
   Map<String, Object?> get directFlashBloat => _bloatStore.toService();
+
+  // ------------------------------------------------------------------ export
+
+  /// Whether this page can show a save-file picker at all.
+  bool get canSaveZip => exports.available;
+
+  /// Why Export ZIP is not offered, or empty when it is.
+  String get exportRequirementsError {
+    if (!canSaveZip) {
+      return 'This browser has no save-file picker. Open the app in a '
+          'current Chromium browser over HTTPS or localhost.';
+    }
+    return _requirementsError('exporting the package');
+  }
+
+  bool get canExportZip =>
+      exportRequirementsError.isEmpty &&
+      !_bloatDownloading &&
+      !catalogLoading;
+
+  /// Streams the package a direct flash would write into a save-picker file.
+  Future<String?> exportZip() async {
+    if (!canExportZip || selectionMap == null) {
+      return 'The package inputs are not ready yet.';
+    }
+    final ota = otaInput('ota');
+    if (ota == null) return 'Choose the TARGET OTA first.';
+    final base = needsBase ? otaInput('base') : null;
+    return exports.export(
+      virtual: {
+        'ota': ota,
+        'base': ?base,
+        'bloat': directFlashBloat,
+      },
+      selection: Map<String, Object?>.from(selectionMap!),
+      label: '$deviceDisplay $_kind $regionDisplay',
+    );
+  }
 
   // ------------------------------------------------------- storage budget
 
@@ -1249,7 +1125,6 @@ final class SetupState extends ChangeNotifier {
           device: _device,
           kind: _kind,
           region: _region,
-          zipOutput: _zipOutput,
           vulnerableAbl: _vulnerableAbl,
         )
         .toJson();
@@ -1271,6 +1146,7 @@ final class SetupState extends ChangeNotifier {
     _launchSubscription?.cancel();
     _bloatSubscription?.cancel();
     _cacheSubscription?.cancel();
+    exports.dispose();
     if (_bloatAwake) {
       _bloatAwake = false;
       unawaited(runtime.bridge.endKeepAwake());

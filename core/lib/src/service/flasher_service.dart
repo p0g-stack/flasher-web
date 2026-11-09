@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -15,10 +14,8 @@ import '../catalog/http_transport.dart';
 import '../catalog/ota_catalog.dart';
 import '../facts/facts.dart';
 import '../flash/executor.dart';
-import '../flash/hosted.dart';
 import '../flash/identity.dart';
 import '../flash/model.dart' as flash_model;
-import '../flash/package_source.dart';
 import '../flash/prepare.dart' as flash_prepare;
 import '../flash/store_identity.dart';
 import '../flash/strategy.dart';
@@ -28,7 +25,6 @@ import '../link/native_fastboot.dart';
 import '../log.dart';
 import '../native/native.dart';
 import '../pipeline/assets.dart';
-import '../pipeline/build.dart';
 import '../pipeline/errors.dart';
 import '../pipeline/local_source.dart';
 import '../pipeline/ota.dart';
@@ -393,42 +389,6 @@ base class FlasherService {
     }
   }
 
-  /// Builds a flasher: step, log and progress events, then one result.
-  @squadronMethod
-  Stream<Map<String, Object?>> build(Map<String, Object?> req) =>
-      buildFlasher(req);
-
-  /// `build.json` of every finished job in [output], newest first.
-  @squadronMethod
-  Future<List<Map<String, Object?>>> history(Map<String, Object?> req) async {
-    final workspace = await _openStoreWorkspace(req['output']);
-    final paths = await workspace.list('', recursive: true);
-    final jobs = <(String, Map<String, Object?>)>[];
-    for (final path in paths) {
-      final parts = path.split('/');
-      if (parts.length != 2 || parts.last != 'build.json') continue;
-      try {
-        final source = await workspace.open(path);
-        final bytes = await source.read(0, source.length);
-        await closeByteSource(source);
-        final decoded = jsonDecode(utf8.decode(bytes));
-        if (decoded is Map<String, dynamic>) {
-          jobs.add((parts.first, Map<String, Object?>.from(decoded)));
-        }
-      } on Object catch (error) {
-        _log.fine('skipping unreadable build.json in ${parts.first}: $error');
-      }
-    }
-    jobs.sort((a, b) {
-      final left = '${a.$2['created'] ?? a.$1}';
-      final right = '${b.$2['created'] ?? b.$1}';
-      return right.compareTo(left);
-    });
-    return [
-      for (final (job, manifest) in jobs) {...manifest, 'job': job},
-    ];
-  }
-
   /// Granted fastboot devices. Never opens a browser chooser.
   @squadronMethod
   Future<Map<String, Object?>> fastbootDevices() async {
@@ -442,8 +402,9 @@ base class FlasherService {
     }
   }
 
-  /// Read-only preparation. Returns the plan, prompts and a token that binds
-  /// the device, the exact request, and the inspected package.
+  /// Read-only preparation of the OTA-direct package. Returns the plan,
+  /// prompts and a token that binds the device, the exact request, and the
+  /// inspected package.
   @squadronMethod
   Future<Map<String, Object?>> prepareFlash(Map<String, Object?> req) async {
     try {
@@ -454,103 +415,66 @@ base class FlasherService {
         _stringArg(selectionMap, 'kind', 'selection'),
         _stringArg(selectionMap, 'region', 'selection'),
       );
-      final hosted = _hostedArg(req);
       final virtual = _virtualArg(req);
-      final output = req['output'];
+      if (virtual == null) {
+        throw const BuildException(
+          'A virtual OTA source is required to prepare a flash.',
+        );
+      }
       final serial = req['serial'];
       if (serial is! String || serial.trim().isEmpty) {
         throw const BuildException('Choose a fastboot device serial.');
       }
       final answers = _flashAnswers(req['answers']);
-      if (virtual != null) {
-        final required = await _productRequired(selection, answers, serial, _fastbootTransport());
-        if (required != null) return required;
-      }
-      late final FlashPackage package;
-      HostedFlashSession? hostedSession;
-      VirtualFlashPackage? virtualPackage;
-      final String job;
-      final String storeKey;
-      if (hosted != null) {
-        job = hosted.jobId;
-        storeKey = _hostedStoreKey(hosted);
-      } else if (virtual != null) {
-        virtualPackage = await _openVirtualPackage(req, selection);
-        package = virtualPackage;
-        job = virtualPackage.job;
-        storeKey = 'virtual|${_storeKey(virtual['bloat'])}';
-        if (req['job'] != null && req['job'] != job) {
-          await virtualPackage.close();
-          throw const flash_model.FlashException('The virtual OTA identity changed. Prepare again.');
-        }
-      } else {
-        if (output is! Map) {
-          throw const BuildException('Missing output store.');
-        }
-        final rawJob = req['job'];
-        if (rawJob is! String || rawJob.isEmpty) {
-          throw const BuildException('Missing job directory.');
-        }
-        job = normalizeWorkspacePath(rawJob);
-        storeKey = _storeKey(output);
+      final required = await _productRequired(
+        selection,
+        answers,
+        serial,
+        _fastbootTransport(),
+      );
+      if (required != null) return required;
+      final virtualPackage = await _openVirtualPackage(req, selection);
+      final job = virtualPackage.job;
+      final storeKey = 'virtual|${_storeKey(virtual['bloat'])}';
+      if (req['job'] != null && req['job'] != job) {
+        await virtualPackage.close();
+        throw const flash_model.FlashException(
+          'The virtual OTA identity changed. Prepare again.',
+        );
       }
       final lockKey = '$storeKey|$job';
       if (_jobLocks.containsKey(lockKey)) {
-        await virtualPackage?.close();
+        await virtualPackage.close();
         throw const flash_model.FlashException('This job is being flashed.');
       }
-      if (hosted != null) {
-        hostedSession = await HostedFlashSession.open(artifact: hosted);
-        package = hostedSession.package;
-      }
       try {
-        // A hosted preparation also needs the lease guard: every getvar and
-        // partition read below happens only while the server-side job is
-        // pinned, and a lost lease aborts before the next command.
-        final transport = hostedSession != null
-            ? hostedSession.guardedTransport(_fastbootTransport())
-            : _fastbootTransport();
-        if (virtual == null) {
-          final required = await _productRequired(selection, answers, serial, transport);
-          if (required != null) return required;
-        }
-        if (hosted == null && virtual == null) {
-          final workspace = await _openStoreWorkspace(output);
-          final buildJson = await readJobManifest(workspace, job);
-          package = await openFlashPackage(workspace, job, buildJson);
-        }
         final token = _newToken();
         final prepared = await flash_prepare.prepareFlash(
-          package: package,
+          package: virtualPackage,
           selection: selection,
           answers: answers,
           serial: serial,
-          transport: transport,
+          transport: _fastbootTransport(),
           job: job,
           upstreamBase: req['upstreamBase'] as String? ?? '',
           storeKey: storeKey,
           token: token,
         );
         if (prepared.resolved) {
-          _prepared.removeWhere((_, entry) => entry.lockKey == lockKey || (virtual != null && entry.virtual));
+          // One direct-flash confirmation is outstanding at a time: a new
+          // preparation replaces every earlier token.
+          _prepared.clear();
           _prepared[token] = _PreparedEntry(
             prepared,
             lockKey,
-            virtual != null
-                ? Map<String, Object?>.unmodifiable(Map<String, Object?>.from(virtual['bloat']! as Map))
-                : hosted == null
-                    ? Map<String, Object?>.unmodifiable(
-                        Map<String, Object?>.from(output! as Map),
-                      )
-                    : null,
-            hosted,
-            virtual != null,
+            Map<String, Object?>.unmodifiable(
+              Map<String, Object?>.from(virtual['bloat']! as Map),
+            ),
           );
         }
         return prepared.toMap();
       } finally {
-        await hostedSession?.close();
-        await virtualPackage?.close();
+        await virtualPackage.close();
       }
     } on LinkFailure catch (error) {
       return {'error': error.toMap()};
@@ -575,12 +499,10 @@ base class FlasherService {
 }
 
 final class _PreparedEntry {
-  const _PreparedEntry(this.prepared, this.lockKey, this.store, this.hosted, this.virtual);
+  const _PreparedEntry(this.prepared, this.lockKey, this.store);
   final flash_prepare.PreparedFlash prepared;
   final String lockKey;
   final Map<String, Object?>? store;
-  final HostedArtifact? hosted;
-  final bool virtual;
 }
 
 final class _FlashRun {
@@ -605,8 +527,6 @@ final class _FlashRun {
     if (_cancelled) {
       cancellation.cancel('cancelled before preparation completed');
     }
-    HostedArtifact? hosted;
-    HostedFlashSession? session;
     VirtualFlashPackage? virtualPackage;
     try {
       final token = _req['confirmationToken'];
@@ -622,31 +542,15 @@ final class _FlashRun {
           'Prepare again.',
         );
       }
-      hosted = _hostedArg(_req);
       final virtual = _virtualArg(_req);
-      if (entry.virtual != (virtual != null)) {
-        throw const flash_model.FlashException('The confirmed package source changed. Prepare again.');
-      }
-      if (entry.hosted != null &&
-          (hosted == null || !entry.hosted!.sameIdentity(hosted))) {
+      if (virtual == null) {
         throw const flash_model.FlashException(
-          'The flash request names a different hosted artifact than the '
-          'confirmed plan. Prepare again.',
+          'The flash request names no virtual OTA source. Prepare again.',
         );
       }
-      if (entry.hosted == null && hosted != null) {
-        throw const flash_model.FlashException(
-          'The confirmed plan is a local job, not a hosted artifact. '
-          'Prepare again.',
-        );
-      }
-      final storeKey = virtual != null
-          ? 'virtual|${_storeKey(virtual['bloat'])}'
-          : hosted != null ? _hostedStoreKey(hosted) : _storeKey(_req['output']);
+      final storeKey = 'virtual|${_storeKey(virtual['bloat'])}';
       final rawJob = _req['job'];
-      final job = hosted != null
-          ? hosted.jobId
-          : (rawJob is String ? normalizeWorkspacePath(rawJob) : '');
+      final job = rawJob is String ? normalizeWorkspacePath(rawJob) : '';
       final bound = <String, Object?>{..._req, 'job': job};
       if (!entry.prepared.binding.matches(bound, storeKey: storeKey)) {
         throw const flash_model.FlashException(
@@ -654,54 +558,35 @@ final class _FlashRun {
           'Prepare again.',
         );
       }
-      Workspace? workspace;
-      final FlashPackage currentPackage;
-      if (hosted != null) {
-        if (_req['output'] != null) {
-          throw const flash_model.FlashException(
-            'A hosted flash cannot name a local output store.',
-          );
-        }
-        session = await HostedFlashSession.open(artifact: hosted);
-        currentPackage = session.package;
-      } else if (virtual != null) {
-        if (entry.store == null || !await sameFlashStore(
-            entry.store!, Map<String, Object?>.from(virtual['bloat']! as Map))) {
-          throw const flash_model.FlashException('The virtual bloat store changed. Prepare again.');
-        }
-        virtualPackage = await _openVirtualPackage(_req, entry.prepared.selection,
-          preparedPackage: entry.prepared.package as VirtualFlashPackage);
-        currentPackage = virtualPackage;
-      } else {
-        final output = _req['output'];
-        if (output is! Map) throw const BuildException('Missing output store.');
-        final store = entry.store;
-        if (store == null ||
-            !await sameFlashStore(store, Map<String, Object?>.from(output))) {
-          throw const flash_model.FlashException(
-            'The output folder changed. Prepare again.',
-          );
-        }
-        workspace = await _openStoreWorkspace(output);
-        final manifest = await readJobManifest(workspace, job);
-        currentPackage = await openFlashPackage(workspace, job, manifest);
+      if (entry.store == null ||
+          !await sameFlashStore(
+            entry.store!,
+            Map<String, Object?>.from(virtual['bloat']! as Map),
+          )) {
+        throw const flash_model.FlashException(
+          'The virtual bloat store changed. Prepare again.',
+        );
       }
+      virtualPackage = await _openVirtualPackage(
+        _req,
+        entry.prepared.selection,
+        preparedPackage: entry.prepared.package as VirtualFlashPackage,
+      );
+      final currentPackage = virtualPackage;
       try {
         final digest = await flash_prepare.packageDigest(currentPackage);
         if (digest != entry.prepared.binding.packageDigest) {
           throw const flash_model.FlashException(
-            'The job or its images changed after preparation. Prepare again.',
+            'The OTA or bloat images changed after preparation. Prepare again.',
           );
         }
-        // Every byte the plan will write is read and hashed through the
-        // pinned hosted source before the first device command.
+        // Every byte the plan will write is hash-verified from the OTA and
+        // the bloat store before the first device command.
         await flash_prepare.verifyPreparedImages(
           entry.prepared,
           package: currentPackage,
         );
-        final runPrepared = hosted != null || virtual != null
-            ? entry.prepared.withPackage(currentPackage)
-            : entry.prepared;
+        final runPrepared = entry.prepared.withPackage(currentPackage);
         if (_service._jobLocks.containsKey(entry.lockKey)) {
           throw const flash_model.FlashException(
             'This job is already being flashed.',
@@ -712,44 +597,24 @@ final class _FlashRun {
         if (_cancelled) {
           cancellation.cancel('cancelled while checking the package');
         }
-        final flashTransport = session != null
-            ? session.guardedTransport(_service._fastbootTransport())
-            : _service._fastbootTransport();
         final receipt = await applyConfirmedFlash(
           runPrepared,
-          flashTransport,
+          _service._fastbootTransport(),
           await PlaceInfo.current(),
           emit: _emit,
           cancellation: cancellation,
         );
-        if (virtual != null) {
-          receipt['virtual'] = await virtualPackage!.snapshot();
-          receipt['persistenceWarnings'] = <String>[];
-        } else if (hosted != null) {
-          // A hosted job has no local directory to persist into. The receipt
-          // is returned in full; the page downloads it.
-          receipt['hosted'] = hosted.toMap();
-          receipt['persistenceWarnings'] = <String>[];
-          if (session!.leaseLost) {
-            receipt['persistenceWarnings'] = [
-              'The hosted retention lease was lost while flashing. The '
-                  'returned receipt is the only copy.',
-            ];
-          }
-        } else {
-          receipt['persistenceWarnings'] = await _persistReceipt(
-            workspace!,
-            entry.prepared.job,
-            receipt,
-          );
-        }
+        // A virtual flash has no local job directory to persist into: the
+        // receipt is returned in full and the page downloads it.
+        receipt['virtual'] = await virtualPackage.snapshot();
+        receipt['persistenceWarnings'] = <String>[];
         _emit({
           'type': 'result',
           'status': receipt['status'],
           'receipt': receipt,
         });
       } finally {
-        await session?.close();
+        await virtualPackage.close();
       }
     } on LinkFailure catch (error) {
       _emit({
@@ -760,7 +625,6 @@ final class _FlashRun {
           'status': 'failed',
           'serial': _req['serial'],
           'job': _req['job'],
-          if (hosted != null) 'hosted': hosted.toMap(),
           'writes': <Map<String, Object?>>[],
           'steps': <Map<String, Object?>>[],
           'verification': {'status': 'not-run'},
@@ -799,48 +663,6 @@ final class _FlashRun {
   }
 }
 
-Future<List<String>> _persistReceipt(
-  Workspace workspace,
-  String job,
-  Map<String, Object?> receipt,
-) async {
-  final warnings = <String>[];
-  try {
-    final path = '$job/flash-receipt.json';
-    final bytes = utf8.encode(
-      '${const JsonEncoder.withIndent('  ').convert(receipt)}\n',
-    );
-    final sink = await workspace.create('$path.part');
-    try {
-      await sink.write(bytes, 0);
-    } finally {
-      await sink.close();
-    }
-    await workspace.move('$path.part', path);
-  } on Object catch (error) {
-    _log.warning('could not persist $job/flash-receipt.json: $error');
-    warnings.add('Could not save flash-receipt.json: $error');
-  }
-  try {
-    final manifest = await readJobManifest(workspace, job);
-    manifest['flash'] = receipt;
-    final bytes = utf8.encode(
-      '${const JsonEncoder.withIndent('  ').convert(manifest)}\n',
-    );
-    final sink = await workspace.create('$job/build.json.part');
-    try {
-      await sink.write(bytes, 0);
-    } finally {
-      await sink.close();
-    }
-    await workspace.move('$job/build.json.part', '$job/build.json');
-  } on Object catch (error) {
-    _log.warning('could not record the flash receipt in build.json: $error');
-    warnings.add('Could not save the receipt in build.json: $error');
-  }
-  return warnings;
-}
-
 String _storeKey(Object? value) {
   if (value is! Map) return 'missing';
   final kind = '${value['kind']}';
@@ -852,21 +674,6 @@ String _storeKey(Object? value) {
   if (value['handle'] != null) return '$kind|handle';
   return kind;
 }
-
-/// A hosted request names exactly one immutable artifact; a local store and
-/// a hosted artifact cannot be mixed.
-HostedArtifact? _hostedArg(Map<String, Object?> req) {
-  final hosted = HostedArtifact.tryParse(req['hosted']);
-  if (hosted != null && req['output'] != null) {
-    throw const flash_model.FlashException(
-      'A hosted flash cannot name a local output store.',
-    );
-  }
-  return hosted;
-}
-
-String _hostedStoreKey(HostedArtifact artifact) =>
-    'hosted|${artifact.jobId}|${artifact.sha256}|${artifact.bytes}';
 
 Map<String, Object?>? _virtualArg(Map<String, Object?> req) {
   final value = req['virtual'];

@@ -6,12 +6,6 @@ Future<Map<String, Object?>> storageStatistics() async {
   return {'persisted': free != null, 'quota': free ?? 0, 'usage': 0};
 }
 
-Future<int?> availableStoreBytes(Map<String, Object?> store) async {
-  final path = store['path'];
-  if (store['kind'] != 'path' || path is! String || path.isEmpty) return null;
-  return _diskFreeBytes(path);
-}
-
 Future<int?> _diskFreeBytes(String path) async {
   try {
     // A new output directory uses the volume of its nearest existing parent.

@@ -25,7 +25,7 @@ final class HttpRangeSource implements ByteSource {
 
   /// Probes [uri] and returns a source whose [length] is the remote length.
   ///
-  /// A hosted artifact passes its immutable `expectedLength` and
+  /// A pinned artifact passes its immutable `expectedLength` and
   /// `expectedEtag`; the probe and every later read must match both, so a
   /// server that swaps the artifact cannot feed a flash.
   static Future<HttpRangeSource> open(

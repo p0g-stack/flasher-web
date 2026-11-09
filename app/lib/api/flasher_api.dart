@@ -7,10 +7,10 @@ library;
 
 import 'package:squadron/squadron.dart';
 
-/// One event from a `build` or `downloadBloat` stream.
+/// One event from a `downloadBloat`, `flash` or export stream.
 typedef FlasherEvent = Map<String, Object?>;
 
-/// The six methods of `docs/service.md`, unchanged.
+/// The service's map protocol, as the UI uses it.
 abstract interface class FlasherApi {
   /// Facts, Rust availability and storage space in the place the service runs.
   Future<Map<String, Object?>> environment();
@@ -21,14 +21,8 @@ abstract interface class FlasherApi {
   /// Downloads and verifies bloat images; the last event is a result.
   Stream<Map<String, Object?>> downloadBloat(Map<String, Object?> request);
 
-  /// Validates a full AB OTA and reports what a build would use.
+  /// Validates a full AB OTA and reports what a flash would use.
   Future<Map<String, Object?>> inspectOta(Map<String, Object?> request);
-
-  /// Builds a flasher; step, log and progress events, then one result.
-  Stream<Map<String, Object?>> build(Map<String, Object?> request);
-
-  /// `build.json` of every finished job in the output store, newest first.
-  Future<List<Map<String, Object?>>> history(Map<String, Object?> request);
 
   /// Granted fastboot devices in the place the service runs.
   ///
@@ -39,7 +33,7 @@ abstract interface class FlasherApi {
   /// already granted.
   Future<Map<String, Object?>> fastbootDevices();
 
-  /// Read-only flash preparation: inspects the job and device and returns a
+  /// Read-only flash preparation: inspects the package and device and returns a
   /// token, the ordered plan and any prompts that still need an answer.
   ///
   /// Link failures come back as `{error: LinkFailure.toMap()}` and are not a

@@ -84,10 +84,6 @@ class _FlashPageState extends State<FlashPage> {
               _StatusCard(controller: controller),
               const SizedBox(height: 16),
               _TargetCard(controller: controller),
-              if (controller.canExportZip) ...[
-                const SizedBox(height: 16),
-                _ExportCard(controller: controller),
-              ],
               const SizedBox(height: 16),
               _DeviceCard(controller: controller, onChoose: _openDeviceSheet),
               if (controller.serial != null) ...[
@@ -122,9 +118,7 @@ class _FlashPageState extends State<FlashPage> {
                 key: const ValueKey('backFromFlash'),
                 onPressed: widget.onBack,
                 icon: const Icon(Icons.arrow_back, size: 18),
-                label: Text(
-                  controller.target.isVirtual ? 'Back to setup' : 'Back to build',
-                ),
+                label: const Text('Back to setup'),
               ),
             ],
           ),
@@ -270,89 +264,13 @@ class _TargetCard extends StatelessWidget {
           ),
           LabeledValue(
             label: 'Store',
-            value: target.isHosted
-                ? 'Hosted ZIP'
-                : target.isVirtual
-                ? 'OTA read in place · bloat store '
-                      '${target.virtualBloat?['kind'] ?? 'unknown'}'
-                : '${target.store['kind'] ?? 'unknown'}',
+            value:
+                'OTA read in place · bloat store '
+                '${target.virtualBloat['kind'] ?? 'unknown'}',
           ),
         ],
       ),
     );
-  }
-}
-
-class _ExportCard extends StatelessWidget {
-  const _ExportCard({required this.controller});
-
-  final FlashController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final result = controller.exportResult;
-    return SectionCard(
-      title: 'Portable package',
-      trailing: const Icon(Icons.inventory_2_outlined, size: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            'Saves a ZIP of this OTA and the verified bloat images without '
-            'building it in browser storage. The write goes straight into the '
-            'file you choose.',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: FilledButton.icon(
-              key: const ValueKey('exportVirtualZip'),
-              onPressed: controller.exporting ? null : () => _export(context),
-              icon: const Icon(Icons.save_alt, size: 18),
-              label: Text(controller.exporting ? 'Exporting…' : 'Export ZIP'),
-            ),
-          ),
-          for (final entry in controller.exportProgress.entries)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: ByteProgress(
-                label: entry.key,
-                done: entry.value.done,
-                total: entry.value.total,
-              ),
-            ),
-          if (result != null) ...[
-            const SizedBox(height: 8),
-            LabeledValue(
-              label: 'SHA-256',
-              value: '${result['sha256'] ?? ''}',
-              monospace: true,
-            ),
-            LabeledValue(label: 'Bytes', value: '${result['bytes'] ?? ''}'),
-          ],
-          if (controller.exportError != null) ...[
-            const SizedBox(height: 6),
-            HintText(
-              controller.exportError!,
-              key: const ValueKey('exportError'),
-              error: true,
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Future<void> _export(BuildContext context) async {
-    final message = await controller.exportZip();
-    if (!context.mounted || message == null) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
@@ -1113,16 +1031,9 @@ class _ResultCard extends StatelessWidget {
           ],
           const SizedBox(height: 8),
           HintText(
-            controller.target.isHosted
-                ? 'The hosted build has no local job. Download the receipt '
-                      'after flashing; it is not written into a local folder.'
-                : controller.target.isVirtual
-                ? 'The OTA is read in place and no local job exists, so the '
-                      'service returns the receipt to this page. Download it '
-                      'after flashing; it is not written into a local folder.'
-                : 'The service persists the receipt at '
-                      '${controller.receiptPath} and merges its status into '
-                      'build.json, so history shows it after a reload.',
+            'The OTA is read in place and no local job exists, so the service '
+            'returns the receipt to this page. Download it after flashing; it '
+            'is not written into a local folder.',
           ),
         ],
       ),

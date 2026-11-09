@@ -15,7 +15,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'model.dart';
-import 'package_source.dart';
+import 'package.dart';
 
 const int sparseMagic = 0xed26ff3a;
 const int sparseRaw = 0xcac1;

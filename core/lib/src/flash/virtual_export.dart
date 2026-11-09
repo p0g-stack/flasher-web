@@ -8,9 +8,9 @@
 /// written.
 ///
 /// The output is a streaming ZIP64, written once from offset 0 with increasing
-/// offsets, using the same Rust `ZipWriter` (deflate level 3, data descriptors,
-/// Unix modes) as `packageFlasher`. Like a build ZIP, it contains no
-/// `build.json` and no checksum file: both are returned to the caller instead.
+/// offsets, using the Rust `ZipWriter` (deflate level 3, data descriptors,
+/// Unix modes). It contains no `build.json` and no checksum file: both are
+/// returned to the caller instead.
 library;
 
 import 'dart:async';
@@ -19,7 +19,6 @@ import 'dart:typed_data';
 
 import '../native/native.dart';
 import '../pipeline/assets.dart';
-import '../pipeline/extract.dart' show superScrapFiles;
 import '../pipeline/errors.dart';
 import '../rust/api/payload.dart' show Sha256Hasher;
 import '../rust/api/zip.dart' as rust_zip;
@@ -27,6 +26,7 @@ import '../rust/api/zip_write.dart';
 import '../storage/paths.dart' show baseWorkspacePath;
 import '../storage/storage.dart';
 import 'virtual.dart';
+import 'virtual_super.dart' show superScrapFiles;
 
 /// Writes [package]'s package tree into [sink] as a ZIP.
 ///

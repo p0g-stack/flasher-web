@@ -1,117 +1,50 @@
-/// One finished job selected for flashing.
+/// The OTA-direct package one flash attempt writes.
 ///
-/// The job stays in the output store; a ZIP build is read through the same
-/// store and job pair, never through a temporary stage path.
+/// The service reads the OTA in place and the verified bloat images from the
+/// bloat store; no built job, ZIP or output folder exists.
 final class FlashTarget {
   const FlashTarget({
-    required this.job,
-    required this.store,
-    required this.selection,
-    required this.label,
-  }) : hostedSha256 = null,
-       hostedBytes = null,
-       virtualOta = null,
-       virtualBase = null,
-       virtualBloat = null;
-
-  /// A local-first flash with no built package: the service reads the OTA in
-  /// place and the verified bloat images from the bloat store.
-  ///
-  /// [base] is the Ace 6 ColorOS BASE full OTA an OxygenOS conversion needs;
-  /// an Ace 6T catalog ODM donor is never supplied here because the service
-  /// picks it by security patch.
-  ///
-  /// [job] stays empty until `prepareFlash` assigns the derived virtual job
-  /// id; the controller echoes it back when executing.
-  const FlashTarget.virtual({
     required Map<String, Object?> ota,
     Map<String, Object?>? base,
     required Map<String, Object?> bloat,
     required this.selection,
     required this.label,
-  }) : job = '',
-       store = const {},
-       hostedSha256 = null,
-       hostedBytes = null,
-       virtualOta = ota,
+  }) : virtualOta = ota,
        virtualBase = base,
        virtualBloat = bloat;
 
-  /// A hosted, catalog-owned build. The service fetches the ZIP through
-  /// same-origin ranges; [store] stays empty and nothing is written locally.
-  const FlashTarget.hosted({
-    required String jobId,
-    required String sha256,
-    required int bytes,
-    required this.selection,
-    required this.label,
-  }) : job = jobId,
-       store = const {},
-       hostedSha256 = sha256,
-       hostedBytes = bytes,
-       virtualOta = null,
-       virtualBase = null,
-       virtualBloat = null;
-
-  final String job;
-
-  /// The service store map: `{kind: opfs}` or a directory handle.
-  final Map<String, Object?> store;
-
-  /// The exact table selection `{device, kind, region}` the job was built for.
+  /// The exact table selection `{device, kind, region}` the flash is for.
   final Map<String, Object?> selection;
 
   /// A human label for the package row.
   final String label;
 
-  /// The immutable artifact digest, for a hosted build.
-  final String? hostedSha256;
-
-  /// The exact ZIP length, for a hosted build.
-  final int? hostedBytes;
-
-  /// The OTA input `{kind: file|url|catalog, ...}`, for a virtual flash.
-  final Map<String, Object?>? virtualOta;
+  /// The OTA input `{kind: file|url|catalog, ...}`.
+  final Map<String, Object?> virtualOta;
 
   /// The BASE OTA input an Ace 6 conversion reads, or null for every other
   /// selection. The ODM donor is never a target field: the service matches it
   /// in the catalog.
   final Map<String, Object?>? virtualBase;
 
-  /// The bloat store `{kind: opfs}` or a directory handle, for a virtual flash.
-  final Map<String, Object?>? virtualBloat;
-
-  bool get isHosted => hostedSha256 != null;
-
-  bool get isVirtual => virtualOta != null && virtualBloat != null;
+  /// The bloat store `{kind: opfs}` or a directory handle.
+  final Map<String, Object?> virtualBloat;
 
   /// The only virtual input the service accepts: the OTA source, the optional
   /// BASE OTA and the verified bloat store. No output store and no built job
   /// are named.
-  Map<String, Object?>? get virtualRequest {
-    if (!isVirtual) return null;
-    return {
-      'ota': virtualOta,
-      if (virtualBase != null) 'base': virtualBase,
-      'bloat': virtualBloat,
-    };
-  }
-
-  /// The only hosted input the service accepts: a capability id and the
-  /// immutable digest and length. No URL or upload is ever sent.
-  Map<String, Object?>? get hostedRequest {
-    final sha256 = hostedSha256;
-    final bytes = hostedBytes;
-    if (sha256 == null || bytes == null) return null;
-    return {'jobId': job, 'sha256': sha256, 'bytes': bytes};
-  }
+  Map<String, Object?> get virtualRequest => {
+    'ota': virtualOta,
+    if (virtualBase != null) 'base': virtualBase,
+    'bloat': virtualBloat,
+  };
 
   String get device => '${selection['device'] ?? ''}';
   String get kind => '${selection['kind'] ?? ''}';
   String get region => '${selection['region'] ?? ''}';
 
   @override
-  String toString() => '$label · $job';
+  String toString() => label;
 }
 
 /// One prompt the plan still needs an explicit answer for.

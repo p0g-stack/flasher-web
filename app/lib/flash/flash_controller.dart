@@ -20,12 +20,12 @@ enum FlashPhase {
   cancelled,
 }
 
-/// Prepares and executes one flash from a finished job.
+/// Prepares and executes one OTA-direct flash.
 ///
 /// Preparation is read-only and returns a token that binds the exact device,
-/// job, answers and inspected images. Any change clears both that token and
-/// the user's confirmation; execution sends the token from the latest
-/// preparation only.
+/// OTA, bloat store, answers and inspected images. Any change clears both that
+/// token and the user's confirmation; execution sends the token from the
+/// latest preparation only.
 final class FlashController extends ChangeNotifier {
   FlashController({
     required this.api,
@@ -79,13 +79,6 @@ final class FlashController extends ChangeNotifier {
   bool _regranting = false;
   String? _regrantMessage;
 
-  bool _exporting = false;
-  String? _exportError;
-  Map<String, Object?>? _exportResult;
-  StreamSubscription<Map<String, Object?>>? _exportSubscription;
-  final _exportLog = <String>[];
-  final _exportProgress = <String, ({int done, int total})>{};
-
   FlashPhase get phase => _phase;
   List<Map<String, Object?>> get devices => List.unmodifiable(_devices);
   bool get devicesLoading => _devicesLoading;
@@ -130,19 +123,15 @@ final class FlashController extends ChangeNotifier {
   String? get regrantMessage => _regrantMessage;
   String get logText => _log.join('\n');
 
-  /// The job the service will flash. A virtual job id is derived by the
-  /// service from the OTA identity, so it appears after preparation.
+  /// The job the service derives from the OTA identity. It appears after
+  /// preparation.
   String get jobId {
-    if (!target.isVirtual) return target.job;
     final job = _prepared?.job ?? _derivedJob;
     return job == null || job.isEmpty ? 'assigned by the service' : job;
   }
 
-  String get receiptPath => target.isHosted
-      ? 'this browser download (hosted job ${target.job})'
-      : target.isVirtual
-      ? 'this browser download (virtual job $jobId; no local job exists)'
-      : '${target.job}/flash-receipt.json';
+  String get receiptPath =>
+      'this browser download (virtual job $jobId; no local job exists)';
 
   bool get answersComplete {
     final prepared = _prepared;
@@ -356,38 +345,26 @@ final class FlashController extends ChangeNotifier {
   }
 
   Map<String, Object?> _request({String? token, String? job}) {
-    final request = <String, Object?>{
+    // Preparation omits the job: the service derives it from the OTA
+    // identity and returns it. Execution echoes the returned id, which is
+    // what the confirmed plan is bound to.
+    final jobId = job ?? _prepared?.job ?? _derivedJob;
+    return {
       'selection': target.selection,
       'upstreamBase': upstreamBase,
       if (_serial != null) 'serial': _serial,
       'answers': Map<String, String>.from(_answers),
       'confirmationToken': ?token,
+      'virtual': _virtualSnapshot(),
+      if (jobId != null && jobId.isNotEmpty) 'job': jobId,
     };
-    if (target.isHosted) {
-      request['job'] = target.job;
-      request['hosted'] = target.hostedRequest;
-      return request;
-    }
-    if (target.isVirtual) {
-      // Preparation omits the job: the service derives it from the OTA
-      // identity and returns it. Execution echoes the returned id, which is
-      // what the confirmed plan is bound to.
-      final jobId = job ?? _prepared?.job ?? target.job;
-      if (jobId.isNotEmpty) request['job'] = jobId;
-      request['virtual'] = _virtualSnapshot();
-      return request;
-    }
-    request['job'] = target.job;
-    request['output'] = target.store;
-    return request;
   }
 
   /// A copy of the virtual identity, so the prepared request cannot change
   /// when the caller's map changes. The file object itself stays the same
   /// reference: that is the identity the service compares too.
-  Map<String, Object?>? _virtualSnapshot() {
+  Map<String, Object?> _virtualSnapshot() {
     final virtual = target.virtualRequest;
-    if (virtual == null) return null;
     return {
       'ota': _otaSnapshot(virtual['ota']),
       if (virtual['base'] != null) 'base': _otaSnapshot(virtual['base']),
@@ -574,17 +551,10 @@ final class FlashController extends ChangeNotifier {
     }
     if (!_sameMap(request['selection'], prepared['selection'])) return false;
     if (!_sameMap(request['answers'], prepared['answers'])) return false;
-    if (target.isVirtual) {
-      // The job is derived from the OTA identity, so the identity itself is
-      // what must still match: the same file object or catalog entry and the
-      // same bloat store. A changed identity needs a new preparation.
-      return _sameVirtual(request['virtual'], prepared['virtual']);
-    }
-    if (request['job'] != prepared['job']) return false;
-    if (target.isHosted) {
-      return _sameMap(request['hosted'], prepared['hosted']);
-    }
-    return _sameStore(request['output'], prepared['output']);
+    // The job is derived from the OTA identity, so the identity itself is
+    // what must still match: the same file object or catalog entry and the
+    // same bloat store. A changed identity needs a new preparation.
+    return _sameVirtual(request['virtual'], prepared['virtual']);
   }
 
   /// The virtual identity: the OTA source, the optional BASE OTA and the bloat
@@ -692,24 +662,10 @@ final class FlashController extends ChangeNotifier {
               'not retry automatically. Reconnect it in fastboot and check '
               'the affected partitions before preparing a new flash.';
         } else if (_phase == FlashPhase.succeeded) {
-          final persistence = _receipt?['persistenceWarnings'];
-          _guidance = target.isHosted
-              ? (persistence is List && persistence.isNotEmpty
-                    ? 'Flashing finished, but the hosted receipt warning is: '
-                          '${persistence.join('; ')} Download the receipt now.'
-                    : 'The hosted build has no local job, so download the '
-                          'receipt now; it is not written into a local folder. '
-                          'Wiping and rooting stay manual on the phone.')
-              : target.isVirtual
-              ? 'The OTA was flashed in place from its own bytes and no local '
-                    'job exists, so download the receipt now. Wiping and '
-                    'rooting stay manual on the phone.'
-              : (persistence is List && persistence.isNotEmpty
-                    ? 'Flashing finished, but the receipt could not be fully '
-                          'saved. Download it now. '
-                          '${persistence.join('; ')}'
-                    : 'The service saved the receipt at $receiptPath. Wiping '
-                          'and rooting stay manual on the phone.');
+          _guidance =
+              'The OTA was flashed in place from its own bytes and no local '
+              'job exists, so download the receipt now. Wiping and rooting '
+              'stay manual on the phone.';
         }
         _finish(cancelSubscription: false);
       default:
@@ -806,7 +762,8 @@ final class FlashController extends ChangeNotifier {
         'Cancelled. No rollback was performed. Commands already sent stay '
         'applied, and a write in flight may have left the phone partially '
         'written. Reconnect it in fastboot and inspect it before flashing '
-        'again. ${target.isHosted ? 'Download the receipt from this page; a hosted job has no local folder.' : 'The service may still persist a receipt at $receiptPath.'}';
+        'again. Download the receipt from this page; a direct flash has no '
+        'local folder.';
     _guidance =
         'This is not a rollback. Do not retry automatically; reconnect the '
         'phone and inspect its state.';
@@ -884,127 +841,7 @@ final class FlashController extends ChangeNotifier {
     return null;
   }
 
-  String get _jobSlug => target.isVirtual
-      ? jobId.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_')
-      : target.job;
-
-  // ---------------------------------------------------------------- export
-
-  bool get canExportZip => target.isVirtual;
-
-  bool get exporting => _exporting;
-  String? get exportError => _exportError;
-  Map<String, Object?>? get exportResult => _exportResult;
-  List<String> get exportLog => List.unmodifiable(_exportLog);
-  Map<String, ({int done, int total})> get exportProgress =>
-      Map.unmodifiable(_exportProgress);
-
-  /// Writes a portable ZIP of this virtual package into a save-picker file.
-  ///
-  /// The service reads the OTA, the optional BASE OTA and verified bloat
-  /// exactly as a flash does and streams the archive into the chosen
-  /// `FileSystemFileHandle`; nothing is staged in browser storage. Returns
-  /// null on success or cancellation and an explanation otherwise.
-  Future<String?> exportZip() async {
-    final virtual = _virtualSnapshot();
-    if (virtual == null) {
-      return 'Only the OTA-backed direct flash can export a package.';
-    }
-    if (_exporting) return 'An export is already running.';
-    final Object? destination;
-    try {
-      // The picker must run inside the click task, before any await.
-      destination = await bridge.pickSaveFile(
-        suggestedName: 'flasher-${_safeName(target.label)}.zip',
-      );
-    } on Object catch (error) {
-      return '$error';
-    }
-    if (destination == null) return null;
-    _exporting = true;
-    _exportError = null;
-    _exportResult = null;
-    _exportLog.clear();
-    _exportProgress.clear();
-    _notify();
-    final completer = Completer<String?>();
-    final request = <String, Object?>{
-      'virtual': virtual,
-      'selection': target.selection,
-      'upstreamBase': upstreamBase,
-      'destination': destination,
-    };
-    void finish() {
-      _exporting = false;
-      if (!completer.isCompleted) {
-        completer.complete(_exportError);
-      }
-      _notify();
-    }
-
-    try {
-      _exportSubscription = api
-          .exportVirtual(request)
-          .listen(
-            (event) {
-              switch (event['type']) {
-                case 'step':
-                  final title = event['title'];
-                  if (title is String && title.isNotEmpty) {
-                    _exportLog.add(title);
-                  }
-                case 'log':
-                  final text = event['text'];
-                  if (text is String) {
-                    for (final line in text.split('\n')) {
-                      if (line.trim().isNotEmpty) _exportLog.add(line);
-                    }
-                  }
-                case 'progress':
-                  final label = event['label'];
-                  final done = event['done'];
-                  final total = event['total'];
-                  if (label is String && done is num && total is num) {
-                    _exportProgress[label] = (
-                      done: done.toInt(),
-                      total: total.toInt(),
-                    );
-                  }
-                case 'result':
-                  _exportResult = Map<String, Object?>.from(event);
-                  _exportLog.add(
-                    'Exported ${event['bytes']} bytes · SHA-256 '
-                    '${event['sha256']}',
-                  );
-                default:
-                  break;
-              }
-              _notify();
-            },
-            onError: (Object error) {
-              _exportError = 'The export failed: $error';
-              _exportLog.add('ERROR: $error');
-              finish();
-            },
-            onDone: () {
-              if (_exportResult == null && _exportError == null) {
-                _exportError = 'The export ended without a result.';
-              }
-              finish();
-            },
-            cancelOnError: false,
-          );
-    } on Object catch (error) {
-      _exportError = 'The export failed: $error';
-      _exportLog.add('ERROR: $error');
-      finish();
-    }
-    return completer.future;
-  }
-
-  String _safeName(String value) => value
-      .replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '-')
-      .replaceAll(RegExp(r'^-+|-+$'), '');
+  String get _jobSlug => jobId.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
 
   void _resetPreparation() {
     _debounce?.cancel();
@@ -1044,9 +881,6 @@ final class FlashController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _debounce?.cancel();
-    final export = _exportSubscription;
-    _exportSubscription = null;
-    if (export != null) unawaited(export.cancel());
     final subscription = _subscription;
     _subscription = null;
     if (subscription != null) {

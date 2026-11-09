@@ -8,7 +8,6 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import '../bloat/manifest.dart';
-import '../pipeline/extract.dart';
 import '../pipeline/ota.dart';
 import '../rust/api/avb.dart';
 import '../rust/api/payload.dart';
@@ -18,8 +17,26 @@ import '../upstream/tables.dart';
 import 'model.dart';
 import 'ota_source.dart';
 import 'package_index.dart';
-import 'package_source.dart';
+import 'package.dart';
 import 'virtual_super.dart';
+
+/// Partitions the Ace 6 conversion extracts from the target OTA.
+const List<String> targetParts = [
+  'my_bigball',
+  'my_carrier',
+  'my_engineering',
+  'my_heytap',
+  'my_manifest',
+  'my_product',
+  'my_region',
+  'my_stock',
+  'system',
+  'system_ext',
+  'product',
+];
+
+/// Partitions the Ace 6 conversion takes from the BASE OTA.
+const List<String> baseParts = ['odm', 'system_dlkm', 'vendor', 'vendor_dlkm'];
 
 String virtualJobId(OtaArchive ota, Selection selection, Map<String, Object?> sourceIdentity) {
   final identity = {
