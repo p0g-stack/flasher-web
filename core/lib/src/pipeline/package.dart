@@ -396,6 +396,40 @@ Future<PackageResult> _packageFolder(
 // ---------------------------------------------------------------------------
 // super.img
 
+/// The normal and virtual packers share this exact LP producer contract.
+SuperLayout flasherSuperLayout(Map<String, int> images, int size) {
+  if (size <= 4 * 1024 * 1024 || size % 4096 != 0) {
+    throw const BuildException('Invalid physical super partition size.');
+  }
+  for (final name in const ['system', 'vendor', 'product']) {
+    if ((images[name] ?? 0) <= 0) {
+      throw BuildException('Required partition missing: $name.img');
+    }
+  }
+  final included = [for (final name in superParts) if (images.containsKey(name)) name];
+  try {
+    return superLayout(spec: SuperSpec(
+      deviceSize: BigInt.from(size), superName: 'super',
+      metadataSize: 65536, metadataSlots: 3, virtualAb: true,
+      logicalBlockSize: 4096, alignment: 1 << 20,
+      groups: [
+        for (final slot in const ['a', 'b'])
+          SuperGroup(name: 'qti_dynamic_partitions_$slot', size: BigInt.from(size - 4 * 1024 * 1024)),
+      ],
+      partitions: [
+        for (final name in included)
+          SuperPartition(name: '${name}_a', size: BigInt.from(images[name]!),
+            group: 'qti_dynamic_partitions_a', readonly: true, hasImage: true),
+        for (final name in included)
+          SuperPartition(name: '${name}_b', size: BigInt.zero,
+            group: 'qti_dynamic_partitions_b', readonly: true, hasImage: false),
+      ],
+    ));
+  } on Object catch (error) {
+    throw BuildException('$error');
+  }
+}
+
 final class _SuperPlan {
   _SuperPlan({
     required this.header,
@@ -491,61 +525,10 @@ Future<_SuperPlan> _planSuper(
       }
     }
 
-    final partitions = <SuperPartition>[];
-    final included = <String>[];
-    for (final name in superParts) {
-      final image = images[name];
-      if (image == null) continue;
-      partitions.add(
-        SuperPartition(
-          name: '${name}_a',
-          size: BigInt.from(image.expanded),
-          group: 'qti_dynamic_partitions_a',
-          readonly: true,
-          hasImage: true,
-        ),
-      );
-      included.add(name);
-    }
-    for (final name in included) {
-      partitions.add(
-        SuperPartition(
-          name: '${name}_b',
-          size: BigInt.zero,
-          group: 'qti_dynamic_partitions_b',
-          readonly: true,
-          hasImage: false,
-        ),
-      );
-    }
-
-    final SuperLayout layout;
-    try {
-      layout = superLayout(
-        spec: SuperSpec(
-          deviceSize: BigInt.from(size),
-          superName: 'super',
-          metadataSize: 65536,
-          metadataSlots: 3,
-          virtualAb: true,
-          logicalBlockSize: 4096,
-          alignment: 1 << 20,
-          groups: [
-            SuperGroup(
-              name: 'qti_dynamic_partitions_a',
-              size: BigInt.from(groupSize),
-            ),
-            SuperGroup(
-              name: 'qti_dynamic_partitions_b',
-              size: BigInt.from(groupSize),
-            ),
-          ],
-          partitions: partitions,
-        ),
-      );
-    } on Object catch (error) {
-      throw BuildException('$error');
-    }
+    final layout = flasherSuperLayout(
+      {for (final entry in images.entries) entry.key: entry.value.expanded},
+      size,
+    );
 
     if (layout.head.length % _sparseBlockSize != 0) {
       throw const BuildException('Invalid super layout.');

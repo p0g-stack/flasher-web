@@ -13,6 +13,11 @@ import '../upstream/tables.dart';
 import 'errors.dart';
 import 'ota.dart';
 
+/// Root template files removed after every Super build.
+const Set<String> superScrapFiles = {
+  'dtbo.img', 'dtbo_patched.img', 'dtbo_patcher.sh', 'dtbo_patcher.py', 'dtbo_patcher',
+};
+
 /// Partitions `pack_super` may put in `super.img`, in `lpmake` order.
 const List<String> superParts = [
   'my_bigball',

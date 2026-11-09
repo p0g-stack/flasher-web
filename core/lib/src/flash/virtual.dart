@@ -1,4 +1,4 @@
-/// A flash package backed by a full OTA and verified local bloat, not output files.
+/// A flash package backed by full OTAs and verified local bloat, not output files.
 library;
 
 import 'dart:convert';
@@ -8,7 +8,9 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import '../bloat/manifest.dart';
+import '../pipeline/extract.dart';
 import '../pipeline/ota.dart';
+import '../rust/api/avb.dart';
 import '../rust/api/payload.dart';
 import '../storage/storage.dart';
 import '../upstream/bloat_selection.dart';
@@ -17,17 +19,12 @@ import 'model.dart';
 import 'ota_source.dart';
 import 'package_index.dart';
 import 'package_source.dart';
+import 'virtual_super.dart';
 
-/// Pure, deterministic job identity. [sourceIdentity] is JSON-like and stable
-/// across opens (file metadata, URL, or the complete catalog release entry).
 String virtualJobId(OtaArchive ota, Selection selection, Map<String, Object?> sourceIdentity) {
   final identity = {
-    'source': sourceIdentity,
-    'manifest': ota.manifestSha256,
-    'bytes': ota.length,
-    'device': selection.device,
-    'kind': selection.kind,
-    'region': selection.region,
+    'source': sourceIdentity, 'manifest': ota.manifestSha256, 'bytes': ota.length,
+    'device': selection.device, 'kind': selection.kind, 'region': selection.region,
   };
   return 'virtual-${sha256.convert(utf8.encode(jsonEncode(_canonical(identity)))).toString().substring(0, 16)}';
 }
@@ -46,11 +43,16 @@ final class _BloatImage {
   final String sourcePath;
   final BloatAsset asset;
 }
+final class _OtaImage {
+  const _OtaImage(this.archive, this.part);
+  final OtaArchive archive;
+  final PartitionInfo part;
+}
 
-/// Owns its OTA handle; callers must close it after preparation/execution.
+/// Owns every OTA handle and the super input handles; close after the attempt.
 final class VirtualFlashPackage implements FlashPackage {
   VirtualFlashPackage._(this.ota, this.selection, this.bloat, this.sourceIdentity,
-      this._parts, this._bloatImages, this._selectedBloat, this.buildJson, this.job);
+    this._archives, this._selectedBloat, this.cache, this.job);
 
   static Future<VirtualFlashPackage> load({
     required OtaArchive ota,
@@ -58,20 +60,35 @@ final class VirtualFlashPackage implements FlashPackage {
     required Workspace bloat,
     required BloatManifest bloatManifest,
     required Map<String, Object?> sourceIdentity,
+    OtaArchive? base,
+    Map<String, Object?>? baseIdentity,
+    OtaArchive? donor,
+    Map<String, Object?>? donorIdentity,
+    VirtualFlashPackage? preparedPackage,
+    int? superSize,
   }) async {
-    if (selection.kind.contains('Super') ||
-        !(selection.kind == 'Regional Flasher' || selection.kind == 'RegionalHybrid Flasher')) {
-      throw const FlashException('Virtual flashing supports only Regional and RegionalHybrid non-Super selections.');
+    const kinds = {'Regional Flasher', 'RegionalHybrid Flasher', 'Super Flasher', 'SuperHybrid Flasher'};
+    if (!kinds.contains(selection.kind)) throw const FlashException('This flasher kind cannot be represented virtually.');
+    final isSuper = selection.kind.contains('Super');
+    final conversion = selection.builder == 'BUILD_ACE6_OOS.sh';
+    final needsDonor = isSuper && selection.dev == 'Ace6T' && (selection.region == 'IN' || selection.region == 'GLO');
+    if (conversion && (!isSuper || base == null || baseIdentity == null)) {
+      throw const FlashException('Ace 6 OxygenOS needs virtual.base (Ace 6 ColorOS BASE full OTA).');
     }
+    if (!conversion && base != null) throw const FlashException('This selection does not consume a BASE OTA.');
+    if (needsDonor && (donor == null || donorIdentity == null)) {
+      throw const FlashException('This selection requires a catalog patch-matched Ace 6T ODM donor.');
+    }
+    if (!needsDonor && donor != null) throw const FlashException('This selection does not consume an ODM donor.');
+    if (isSuper && (superSize == null || superSize <= 0)) throw const FlashException('Missing physical super size.');
+    final archives = <String, OtaArchive>{'ota': ota, 'base': ?base, 'donor': ?donor};
     try {
-      ota.verifyVirtualReads();
+      for (final archive in archives.values) { archive.verifyVirtualReads(); }
     } on Object catch (error) {
       throw FlashException('This OTA cannot be flashed in place (a full OTA with hashed operations is required): $error');
     }
     final paths = selectedPaths(bloatManifest.source, selection);
-    if (paths.isEmpty) {
-      throw const FlashException('The bloat manifest has no images for this selection.');
-    }
+    if (paths.isEmpty) throw const FlashException('The bloat manifest has no images for this selection.');
     final selectedBloat = <String, BloatAsset>{};
     for (final relative in paths) {
       final asset = bloatManifest.assets[bloatManifest.files[relative]];
@@ -79,137 +96,194 @@ final class VirtualFlashPackage implements FlashPackage {
       await _verifyBloat(bloat, relative.substring('bloat/'.length), asset);
       selectedBloat[relative] = asset;
     }
-    final main = bloatFolder(selection.dev, selection.kind, selection.region);
-    final images = <String, _BloatImage>{};
-    for (final relative in paths) {
-      final path = relative.split('/');
-      if (path.length != 4) throw FlashException('Invalid bloat image path: $relative');
-      final folder = path[2];
-      final file = path[3];
-      if (selection.dev == 'X9U' && file == 'abl-16.0.6.img') continue;
-      final destination = folder == main ? selection.imageFolder
-          : folder == 'GLO_BLOAT' && selection.region == 'CN' ? 'OOS_FILES_HERE' : 'COS_FILES_HERE';
-      images['$destination/$file'] = _BloatImage(relative.substring('bloat/'.length), selectedBloat[relative]!);
-    }
-    final parts = <String, PartitionInfo>{};
-    for (final part in ota.manifest.partitions()) {
-      if (!RegExp(r'^[A-Za-z0-9_]+$').hasMatch(part.name)) {
-        throw FlashException('Invalid OTA partition name: ${part.name}');
+    Map<String, Object?> archiveIdentity(OtaArchive archive, Map<String, Object?> identity) => {
+      'source': identity, 'manifestSha256': archive.manifestSha256, 'bytes': archive.length,
+    };
+    final identities = <String, Object?>{
+      ...sourceIdentity,
+      if (base != null) 'base': archiveIdentity(base, baseIdentity!),
+      if (donor != null) 'donor': archiveIdentity(donor, donorIdentity!),
+    };
+    final stableIdentity = Map<String, Object?>.unmodifiable(Map<String, Object?>.from(jsonDecode(jsonEncode(identities)) as Map));
+    final result = VirtualFlashPackage._(ota, selection, bloat, stableIdentity,
+      Map.unmodifiable(archives), Map.unmodifiable(selectedBloat), OtaOperationCache(), virtualJobId(ota, selection, stableIdentity));
+    try {
+      if (preparedPackage != null &&
+          (result.job != preparedPackage.job || (isSuper && preparedPackage._super == null))) {
+        throw const FlashException('The confirmed OTA identity or super representation changed. Prepare again.');
       }
-      final path = '${selection.imageFolder}/${part.name}.img';
-      if (selection.dev == 'X9U' && images.containsKey(path)) continue;
-      images.remove(path); // Normal extraction overwrites staged bloat.
-      parts[path] = part;
+      final main = bloatFolder(selection.dev, selection.kind, selection.region);
+      for (final relative in paths) {
+        final path = relative.split('/');
+        if (path.length != 4) throw FlashException('Invalid bloat image path: $relative');
+        final folder = path[2];
+        final file = path[3];
+        if (selection.dev == 'X9U' && file == 'abl-16.0.6.img') continue;
+        final destination = folder == main ? (isSuper ? 'Super' : selection.imageFolder)
+          : folder == 'GLO_BLOAT' && selection.region == 'CN' ? 'OOS_FILES_HERE' : 'COS_FILES_HERE';
+        result._bloatImages['$destination/$file'] = _BloatImage(relative.substring('bloat/'.length), selectedBloat[relative]!);
+      }
+      void add(OtaArchive archive, PartitionInfo part, String folder, {bool keepBloat = false}) {
+        if (!RegExp(r'^[A-Za-z0-9_]+$').hasMatch(part.name)) throw FlashException('Invalid OTA partition name: ${part.name}');
+        final path = '$folder/${part.name}.img';
+        if (keepBloat && result._bloatImages.containsKey(path)) return;
+        result._bloatImages.remove(path);
+        result._parts[path] = _OtaImage(archive, part);
+      }
+      if (conversion) {
+        final target = {for (final p in ota.manifest.partitions()) p.name: p};
+        for (final name in targetParts) {
+          final part = target[name];
+          if (part == null) throw FlashException('The TARGET OTA does not contain $name.');
+          add(ota, part, 'Super');
+        }
+        final basePartsByName = {for (final p in base!.manifest.partitions()) p.name: p};
+        for (final part in basePartsByName.values) {
+          if (baseParts.contains(part.name)) { add(base, part, 'Super'); }
+          else if (!targetParts.contains(part.name) && !const ['vbmeta', 'vbmeta_system', 'vbmeta_vendor'].contains(part.name)) {
+            add(base, part, selection.imageFolder);
+          }
+        }
+        for (final name in const ['vbmeta', 'vbmeta_system', 'vbmeta_vendor']) {
+          final part = basePartsByName[name];
+          if (part == null || part.size.toInt() > 1 << 20) throw FlashException('Missing or oversized BASE $name.img.');
+          final source = OtaPartitionSource(ota: base, partition: part, cache: result.cache);
+          try {
+            final patched = makeVbmeta(includeDescriptorsFrom: [await source.read(0, source.length)], flags: 3, rollbackIndex: BigInt.zero);
+            final path = '${selection.imageFolder}/$name.img';
+            result._parts.remove(path);
+            result._bloatImages.remove(path);
+            result._bytes[path] = patched;
+          } finally { await source.close(); }
+        }
+      } else {
+        var extractedBoot = false;
+        for (final part in ota.manifest.partitions()) {
+          if (isSuper && (selection.dev == 'Ace5' || selection.dev == 'Ace6T') && selection.region != 'CN' && part.name == 'odm') continue;
+          final packed = isSuper && (selection.dev == 'X9U' ? superParts : extractToSuper).contains(part.name);
+          final folder = packed ? 'Super' : selection.imageFolder;
+          final replaced = selection.dev == 'X9U' && result._bloatImages.containsKey('$folder/${part.name}.img');
+          if (part.name == 'boot' && !replaced) extractedBoot = true;
+          add(ota, part, folder, keepBloat: selection.dev == 'X9U');
+        }
+        if (isSuper && !extractedBoot) throw const FlashException('Full OTA boot.img missing after normal extraction rules.');
+      }
+      if (needsDonor) {
+        final parts = donor!.manifest.partitions().where((p) => p.name == 'odm').toList();
+        if (parts.length != 1 || parts.single.size <= BigInt.zero) throw const FlashException('The matched donor has no non-empty odm partition.');
+        add(donor, parts.single, 'Super');
+      }
+      for (final image in result._parts.values) {
+        await OtaPartitionSource(ota: image.archive, partition: image.part, cache: result.cache).close();
+      }
+      if (isSuper) {
+        final sources = <String, FlashSource>{};
+        var transferred = false;
+        try {
+          for (final name in superParts) {
+            final path = 'Super/$name.img';
+            if (result._parts.containsKey(path) || result._bloatImages.containsKey(path)) sources[name] = await result.open(path);
+          }
+          transferred = true;
+          result._super = await VirtualSuperImage.create(sources, superSize!,
+            prepared: preparedPackage?._super, expectedHashes: {
+              for (final name in sources.keys)
+                if (result.imageHash('Super/$name.img')?.isNotEmpty ?? false)
+                  name: result.imageHash('Super/$name.img')!,
+            });
+        } on Object {
+          if (!transferred) {
+            for (final source in sources.values) { await source.close(); }
+          }
+          rethrow;
+        }
+        result._parts.removeWhere((path, _) => path.startsWith('Super/'));
+        result._bloatImages.removeWhere((path, _) => path.startsWith('Super/'));
+        if (selection.dev == 'X9U') result._bytes['META-INF/com/google/android/super-size'] = Uint8List.fromList(ascii.encode('$superSize\n'));
+      }
+      final hashes = <String, String>{
+        for (final e in result._bloatImages.entries) e.key: e.value.asset.rawSha256,
+        for (final e in result._parts.entries) if (e.value.part.sha256?.isNotEmpty ?? false) e.key: e.value.part.sha256!,
+        for (final e in result._bytes.entries) if (e.key.endsWith('.img')) e.key: sha256.convert(e.value).toString(),
+      };
+      final imageCount = result._parts.length + result._bloatImages.length + result._bytes.keys.where((p) => p.endsWith('.img')).length + (isSuper ? 1 : 0);
+      result.buildJson = Map.unmodifiable({
+        'device': selection.device, 'dev': selection.dev, 'flasher_type': selection.kind,
+        'region': selection.region, 'version': ota.version, 'output_format': 'virtual',
+        hashes.length == imageCount ? 'image_sha256' : 'available_image_sha256': Map<String, String>.unmodifiable(hashes),
+      });
+      return result;
+    } on Object {
+      await result._super?.close();
+      await result.cache.close();
+      rethrow;
     }
-    final hashes = <String, String>{
-      for (final entry in images.entries) entry.key: entry.value.asset.rawSha256,
-      for (final entry in parts.entries)
-        if (entry.value.sha256 != null && entry.value.sha256!.isNotEmpty) entry.key: entry.value.sha256!,
-    };
-    final manifest = <String, Object?>{
-      'device': selection.device,
-      'dev': selection.dev,
-      'flasher_type': selection.kind,
-      'region': selection.region,
-      'version': ota.version,
-      'output_format': 'virtual',
-      if (hashes.length == parts.length + images.length)
-        'image_sha256': Map<String, String>.unmodifiable(hashes)
-      else
-        'available_image_sha256': Map<String, String>.unmodifiable(hashes),
-    };
-    final stableIdentity = Map<String, Object?>.unmodifiable(
-      Map<String, Object?>.from(jsonDecode(jsonEncode(sourceIdentity)) as Map));
-    final package = VirtualFlashPackage._(ota, selection, bloat, stableIdentity,
-        Map.unmodifiable(parts), Map.unmodifiable(images), Map.unmodifiable(selectedBloat), Map.unmodifiable(manifest),
-        virtualJobId(ota, selection, stableIdentity));
-    // Validate every extent index before probing a device.
-    for (final part in parts.values) {
-      await OtaPartitionSource(ota: ota, partition: part, cache: package.cache).close();
-    }
-    return package;
   }
 
   final OtaArchive ota;
   final Selection selection;
   final Workspace bloat;
   final Map<String, Object?> sourceIdentity;
-  final Map<String, PartitionInfo> _parts;
-  final Map<String, _BloatImage> _bloatImages;
+  final Map<String, OtaArchive> _archives;
   final Map<String, BloatAsset> _selectedBloat;
-  final OtaOperationCache cache = OtaOperationCache();
+  final Map<String, _OtaImage> _parts = {};
+  final Map<String, _BloatImage> _bloatImages = {};
+  final Map<String, Uint8List> _bytes = {};
+  final OtaOperationCache cache;
+  VirtualSuperImage? _super;
   final String job;
-  @override
-  final Map<String, Object?> buildJson;
-  @override
-  String get format => 'virtual';
-  @override
-  late final PackageIndex index = PackageIndex.fromEntries([
-    ..._parts.keys, ..._bloatImages.keys,
+  @override late final Map<String, Object?> buildJson;
+  @override String get format => 'virtual';
+  @override late final PackageIndex index = PackageIndex.fromEntries([
+    ..._parts.keys, ..._bloatImages.keys, ..._bytes.keys, if (_super != null) 'super.img',
   ], buildJson: buildJson);
-
   bool isOtaImage(String path) => _parts.containsKey(path);
-  String? imageHash(String path) => _parts[path]?.sha256 ??
-      _bloatImages[path]?.asset.rawSha256;
-
-  @override
-  Future<int> size(String path) async => _parts[path]?.size.toInt() ??
-      _bloatImages[path]?.asset.rawBytes ?? (throw FlashException('The virtual package is missing $path.'));
-
-  @override
-  Future<FlashSource> open(String path) async {
+  String? imageHash(String path) => path == 'super.img' ? _super?.preparedDigest : _parts[path]?.part.sha256 ??
+    _bloatImages[path]?.asset.rawSha256 ?? (_bytes.containsKey(path) ? sha256.convert(_bytes[path]!).toString() : null);
+  @override Future<int> size(String path) async {
+    if (path == 'super.img' && _super != null) {
+      await _super!.prepare();
+      return _super!.length;
+    }
+    return _parts[path]?.part.size.toInt() ?? _bloatImages[path]?.asset.rawBytes ??
+      _bytes[path]?.length ?? (throw FlashException('The virtual package is missing $path.'));
+  }
+  @override Future<FlashSource> open(String path) async {
+    if (path == 'super.img' && _super != null) return _super!.open();
     final part = _parts[path];
-    if (part != null) return OtaPartitionSource(ota: ota, partition: part, cache: cache);
+    if (part != null) return OtaPartitionSource(ota: part.archive, partition: part.part, cache: cache);
+    if (_bytes.containsKey(path)) return _BytesImage(_bytes[path]!);
     final image = _bloatImages[path];
     if (image == null) throw FlashException('The virtual package is missing $path.');
     return _LocalImage(await bloat.open(image.sourcePath));
   }
-
-  @override
-  Future<Map<String, Object?>> snapshot() async => {
-    'format': format,
-    'job': job,
-    'source': sourceIdentity,
-    'otaBytes': ota.length,
-    'manifestSha256': ota.manifestSha256,
-    'payloadDataOffset': ota.payloadDataOffset,
-    'dataStart': ota.dataStart,
-    'partitions': {
-      for (final part in ota.manifest.partitions()) part.name: {
-        'bytes': part.size.toInt(), 'sha256': part.sha256,
-      },
-    },
-    'selectedBloat': {
-      for (final entry in _selectedBloat.entries) entry.key: {
-        'bytes': entry.value.rawBytes, 'sha256': entry.value.rawSha256,
-      },
-    },
-    'bloat': {
-      for (final entry in _bloatImages.entries) entry.key: {
-        'source': entry.value.sourcePath,
-        'bytes': entry.value.asset.rawBytes,
-        'sha256': entry.value.asset.rawSha256,
-      },
-    },
+  Future<FlashSource> openExpandedSuper() async => _super?.open(sparse: false) ?? (throw const FlashException('This package has no super image.'));
+  @override Future<Map<String, Object?>> snapshot() async => {
+    'format': format, 'job': job, 'source': sourceIdentity,
+    if (_super != null) 'superSize': _super!.expandedLength,
+    if (_super != null) 'superLayoutSha256': _super!.layoutHeadSha256,
+    'otas': {for (final e in _archives.entries) e.key: {
+      'otaBytes': e.value.length, 'manifestSha256': e.value.manifestSha256,
+      'payloadDataOffset': e.value.payloadDataOffset, 'dataStart': e.value.dataStart,
+      'partitions': {for (final part in e.value.manifest.partitions()) part.name: {'bytes': part.size.toInt(), 'sha256': part.sha256}},
+    }},
+    'selectedBloat': {for (final e in _selectedBloat.entries) e.key: {'bytes': e.value.rawBytes, 'sha256': e.value.rawSha256}},
+    'bloat': {for (final e in _bloatImages.entries) e.key: {'source': e.value.sourcePath, 'bytes': e.value.asset.rawBytes, 'sha256': e.value.asset.rawSha256}},
     'buildJson': buildJson,
   };
-
   Future<void> close() async {
+    await _super?.close();
     await cache.close();
-    await closeByteSource(ota.source);
+    for (final archive in _archives.values) { await archive.close(); }
   }
 }
 
 Future<void> _verifyBloat(Workspace workspace, String path, BloatAsset asset) async {
   try {
-    if (!await workspace.exists(path)) {
-      throw FlashException('Missing local bloat image: $path');
-    }
+    if (!await workspace.exists(path)) throw FlashException('Missing local bloat image: $path');
     final source = await workspace.open(path);
     try {
-      if (source.length != asset.rawBytes) {
-        throw FlashException('Bloat $path changed size (${source.length} != ${asset.rawBytes}).');
-      }
+      if (source.length != asset.rawBytes) throw FlashException('Bloat $path changed size (${source.length} != ${asset.rawBytes}).');
       final hasher = Sha256Hasher();
       for (var offset = 0; offset < source.length; offset += 4 << 20) {
         final count = math.min(4 << 20, source.length - offset);
@@ -218,35 +292,31 @@ Future<void> _verifyBloat(Workspace workspace, String path, BloatAsset asset) as
         hasher.update(bytes: bytes);
       }
       final digest = hasher.finishHex();
-      if (digest != asset.rawSha256) {
-        throw FlashException('Bloat $path SHA-256 mismatch: $digest != ${asset.rawSha256}.');
-      }
-    } finally {
-      await closeByteSource(source);
-    }
-  } on FlashException {
-    rethrow;
-  } on Object catch (error) {
-    throw FlashException('Cannot read local bloat $path: $error');
-  }
+      if (digest != asset.rawSha256) throw FlashException('Bloat $path SHA-256 mismatch: $digest != ${asset.rawSha256}.');
+    } finally { await closeByteSource(source); }
+  } on FlashException { rethrow; } on Object catch (error) { throw FlashException('Cannot read local bloat $path: $error'); }
 }
 
 final class _LocalImage implements FlashSource {
   _LocalImage(this.source);
   final ByteSource source;
-  @override
-  int get length => source.length;
-  @override
-  Future<Uint8List> read(int offset, int length) => source.read(offset, length);
-  @override
-  Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
+  @override int get length => source.length;
+  @override Future<Uint8List> read(int offset, int length) => source.read(offset, length);
+  @override Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
     if (chunkSize <= 0) throw ArgumentError.value(chunkSize);
-    for (var offset = 0; offset < length; offset += chunkSize) {
-      yield await read(offset, math.min(chunkSize, length - offset));
-    }
+    for (var offset = 0; offset < length; offset += chunkSize) { yield await read(offset, math.min(chunkSize, length - offset)); }
   }
-  @override
-  Future<FlashCursor> cursor() async => RandomFlashCursor(this);
-  @override
-  Future<void> close() => closeByteSource(source);
+  @override Future<FlashCursor> cursor() async => RandomFlashCursor(this);
+  @override Future<void> close() => closeByteSource(source);
+}
+final class _BytesImage implements FlashSource {
+  _BytesImage(this.bytes);
+  final Uint8List bytes;
+  @override int get length => bytes.length;
+  @override Future<Uint8List> read(int offset, int length) async => Uint8List.sublistView(bytes, offset, offset + length);
+  @override Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
+    for (var p = 0; p < length; p += chunkSize) { yield await read(p, math.min(chunkSize, length - p)); }
+  }
+  @override Future<FlashCursor> cursor() async => RandomFlashCursor(this);
+  @override Future<void> close() async {}
 }

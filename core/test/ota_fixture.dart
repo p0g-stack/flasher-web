@@ -108,11 +108,15 @@ final class OtaFixture {
     this.partitions, {
     this.versionName = 'TEST_1.2.3.4',
     this.preDevice = 'TEST-ONLY',
+    this.fields = const {},
   });
 
   final List<FixturePartition> partitions;
   final String versionName;
   final String preDevice;
+
+  /// Additional `META-INF/com/android/metadata` keys, in insertion order.
+  final Map<String, String> fields;
 
   /// `payload.bin` as [build] writes it.
   Uint8List payload = _noBytes;
@@ -187,7 +191,10 @@ final class OtaFixture {
       utf8.encode(
         'ota-type=AB\n'
         'pre-device=$preDevice\n'
-        'version_name=$versionName\n',
+        'version_name=$versionName\n'
+        '${[
+          for (final entry in fields.entries) '${entry.key}=${entry.value}',
+        ].join('\n')}${fields.isEmpty ? '' : '\n'}',
       ),
     );
     payloadZipOffset = 30 + utf8.encode('payload.bin').length;

@@ -991,42 +991,69 @@ final class SetupState extends ChangeNotifier {
 
   // ----------------------------------------------------------- direct flash
 
-  /// Super kinds build a super partition image set and cannot be flashed from
-  /// the OTA bytes alone.
+  /// Every flasher kind the service can represent as a virtual package. Super
+  /// kinds pack the same sparse super image the normal build writes.
+  static const _directFlashKinds = {
+    'Regional Flasher',
+    'RegionalHybrid Flasher',
+    'Super Flasher',
+    'SuperHybrid Flasher',
+  };
+
+  /// Super kinds pack a super partition image; preparation decodes every
+  /// logical image once instead of reusing staged files.
   bool get isSuperKind => _kind.contains('Super');
 
   bool get directFlashSupported =>
-      selectionValid &&
-      (_kind == 'Regional Flasher' || _kind == 'RegionalHybrid Flasher');
+      selectionValid && _directFlashKinds.contains(_kind);
 
   /// Why Flash directly is not offered for this selection.
   String get directFlashUnavailable {
     if (!selectionValid) {
       return 'Choose a supported device, flasher type and region.';
     }
-    if (isSuperKind) {
-      return '$_kind needs a built package: Super kinds fold the OTA into a '
-          'super partition image set. Flash directly is offered for Regional '
-          'Flasher and RegionalHybrid Flasher selections.';
-    }
+    if (directFlashSupported) return '';
     return '$_kind has no direct flash path. Flash directly is offered for '
-        'Regional Flasher and RegionalHybrid Flasher selections.';
+        'Regional, RegionalHybrid, Super and SuperHybrid flasher selections.';
   }
 
-  /// Port of the direct-flash prerequisites: verified bloat and one OTA.
+  /// The explanation under an enabled Flash directly button.
+  String get directFlashHint {
+    if (!isSuperKind) {
+      return 'Flash the OTA directly without building a package.';
+    }
+    return 'Flash the OTA directly without building a package. Super '
+        'preparation decodes the whole super image once (this can take '
+        'several minutes) before the device is touched.';
+  }
+
+  /// Port of the direct-flash prerequisites: verified bloat, one TARGET OTA
+  /// and the BASE OTA an Ace 6 conversion needs.
   String get directFlashRequirementsError {
     if (!directFlashSupported) return directFlashUnavailable;
     if (!bloatReady) {
       return 'Required bloat files must be downloaded and verified before '
           'flashing directly.';
     }
-    if (_otaMode == OtaMode.catalog) {
-      if (_selectedReleases['ota'] == null) {
-        return 'Select a full TARGET OTA catalog version before flashing '
-            'directly.';
+    for (final role in ['ota', if (needsBase) 'base']) {
+      final title = role == 'ota' ? 'TARGET' : 'BASE';
+      if (_otaMode == OtaMode.catalog) {
+        if (_selectedReleases[role] == null) {
+          return 'Select a full $title OTA catalog version before flashing '
+              'directly.';
+        }
+      } else if (_localFiles[role] == null) {
+        return 'Select a full $title OTA ZIP before flashing directly.';
       }
-    } else if (_localFiles['ota'] == null) {
-      return 'Select a full TARGET OTA ZIP before flashing directly.';
+    }
+    // The catalog ODM patch match is the only donor input: the service picks
+    // the Ace 6T CN donor itself, and a local or downloaded target is matched
+    // from its own security patch.
+    if (_otaMode == OtaMode.catalog && needsMatchedOdm) {
+      if (_selectedReleases['ota'] == null) {
+        return 'Select a target OTA with a matching Ace 6T security patch.';
+      }
+      if (_odmError != null) return _odmError!;
     }
     return '';
   }
@@ -1039,6 +1066,10 @@ final class SetupState extends ChangeNotifier {
   /// The OTA input a direct flash reads in place, or null when it cannot.
   Map<String, Object?>? get directFlashOta =>
       directFlashSupported ? otaInput('ota') : null;
+
+  /// The BASE OTA input an Ace 6 conversion reads in place, or null.
+  Map<String, Object?>? get directFlashBase =>
+      directFlashSupported && needsBase ? otaInput('base') : null;
 
   /// The verified bloat store a direct flash reads from.
   Map<String, Object?> get directFlashBloat => _bloatStore.toService();

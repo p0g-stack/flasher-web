@@ -69,9 +69,10 @@ abstract interface class FlasherApi {
 
   /// Writes a portable ZIP of a virtual package into a save-picker handle.
   ///
-  /// Request: `{virtual: {ota, bloat}, selection, upstreamBase, destination}`.
-  /// Events: `step`, `log`, `progress`, then one `result` carrying `job`,
-  /// `sha256` and `bytes`.
+  /// Request: `{virtual: {ota, base?, bloat}, selection, upstreamBase,
+  /// destination}`. `base` is the Ace 6 ColorOS BASE full OTA and appears only
+  /// for that conversion. Events: `step`, `log`, `progress`, then one `result`
+  /// carrying `job`, `sha256` and `bytes`.
   Stream<Map<String, Object?>> exportVirtual(Map<String, Object?> request);
 
   /// Releases the worker behind this API, if any.

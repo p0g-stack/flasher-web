@@ -56,13 +56,6 @@ const int _gib = 1024 * 1024 * 1024;
 const int _chunk = 4 * 1024 * 1024;
 const String _x9uAblSha256 =
     '4ad7f1db0c92f0a358e28bf18170a20533011299827d8d9a25cffd2218f1415d';
-const Set<String> _scrapFiles = {
-  'dtbo.img',
-  'dtbo_patched.img',
-  'dtbo_patcher.sh',
-  'dtbo_patcher.py',
-  'dtbo_patcher',
-};
 
 final class _BuildRun {
   _BuildRun(this._req, this._controller);
@@ -875,7 +868,7 @@ final class _BuildRun {
         check();
         await _copyFile(_output, odmPath, '$superDir/odm.img', check);
       }
-      for (final name in _scrapFiles) {
+      for (final name in superScrapFiles) {
         await _output.delete('$result/$name');
       }
     }

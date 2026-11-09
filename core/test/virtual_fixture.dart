@@ -15,19 +15,33 @@ import 'ota_fixture.dart' show FixtureExtent, FixtureOp, FixturePartition, OtaFi
 /// The human device names the fixture tables list.
 const Map<String, String> fixtureDevices = {
   'Oneplus 13': '13',
+  'Oneplus Ace 5': 'Ace5',
+  'Oneplus Ace 6': 'Ace6',
+  'Oneplus Ace 6T': 'Ace6T',
   'OPPO Find X9 Ultra': 'X9U',
 };
+
+/// The physical super size every fixture device reports, per region group.
+const int fixtureSuperSize = 1 << 34;
 
 /// One workflow row: `["<kind>", "<dev>", "<region>", "<builder>"]`.
 typedef FixtureBuilder = (String kind, String dev, String region, String script);
 
 /// The `tables.json` a fixture snapshot serves.
-String tablesJson(List<FixtureBuilder> builders) => jsonEncode({
+///
+/// [regionSizes] overrides the `[cn, other]` super sizes of a device id.
+String tablesJson(
+  List<FixtureBuilder> builders, {
+  Map<String, (int, int)> regionSizes = const {},
+}) => jsonEncode({
   'commit': 'fixture',
   'devices': fixtureDevices,
   'region_sizes': {
     for (final dev in fixtureDevices.values)
-      dev: [1 << 34, 1 << 34],
+      dev: switch (regionSizes[dev]) {
+        (final cn, final other) => [cn, other],
+        null => [fixtureSuperSize, fixtureSuperSize],
+      },
   },
   'builders': [
     for (final row in builders) [row.$1, row.$2, row.$3, row.$4],
@@ -73,8 +87,13 @@ Future<String> writeUpstream(
   required Map<String, Map<String, Uint8List>> templates,
   Map<String, Uint8List> platformTools = const {},
   Map<String, Uint8List> bloatFiles = const {},
+  Map<String, (int, int)> regionSizes = const {},
 }) async {
-  await _writeFile(directory, 'tables.json', utf8.encode(tablesJson(builders)));
+  await _writeFile(
+    directory,
+    'tables.json',
+    utf8.encode(tablesJson(builders, regionSizes: regionSizes)),
+  );
   await _writeFile(
     directory,
     'bloat-manifest.json',
@@ -138,11 +157,18 @@ final class VirtualFixture {
     this.upstreamPath,
     this.bloatManifest,
     this.images,
+    this.baseImages,
+    this.donorImages,
     this.bloatFiles,
+    this.regionSizes,
   );
 
   /// Creates a deterministic OTA over [partitions] (one REPLACE block each),
   /// a bloat store holding [bloatFiles] and an upstream snapshot.
+  ///
+  /// [basePartitions] and [donorPartitions] add `base.zip` and `donor.zip` to
+  /// the OTA workspace, for the Ace 6 conversion and the Ace 6T ODM donor;
+  /// their partition images appear in [baseImages] and [donorImages].
   static Future<VirtualFixture> create({
     required List<String> partitions,
     required Map<String, Uint8List> bloatFiles,
@@ -150,33 +176,84 @@ final class VirtualFixture {
     List<FixtureBuilder> builders = const [
       ('RegionalHybrid Flasher', '13', 'GLO', 'BUILD_REGIONAL.sh'),
     ],
+    List<String> basePartitions = const [],
+    List<String> donorPartitions = const [],
+    Map<String, String> otaFields = const {},
+    Map<String, String> baseFields = const {},
+    Map<String, String> donorFields = const {},
+    Map<String, (int, int)> regionSizes = const {},
+    Map<String, Uint8List> otaBytes = const {},
+    Map<String, Uint8List> baseBytes = const {},
+    Map<String, Uint8List> donorBytes = const {},
+    Map<String, int> otaBlocks = const {},
+    Map<String, int> baseBlocks = const {},
+    Map<String, int> donorBlocks = const {},
   }) async {
     final root = await Directory.systemTemp.createTemp('virtual_fixture_');
     final otaWorkspace = IoWorkspace(Directory('${root.path}/ota'));
     final bloatWorkspace = IoWorkspace(Directory('${root.path}/bloat'));
     final upstream = Directory('${root.path}/upstream');
 
-    final images = <String, Uint8List>{};
-    final ops = <FixturePartition>[];
-    for (var index = 0; index < partitions.length; index++) {
-      final name = partitions[index];
-      final data = pattern(fixtureBlock, seed: index + 1);
-      images[name] = data;
-      ops.add(
-        FixturePartition(
-          name: name,
-          ops: [
-            FixtureOp.replace([
-              const FixtureExtent(0, 1),
-            ], data),
-          ],
-        ),
-      );
+    Future<Map<String, Uint8List>> writeOta(
+      String file,
+      List<String> names, {
+      required int seed,
+      Map<String, String> fields = const {},
+      Map<String, Uint8List> overrides = const {},
+      Map<String, int> blocks = const {},
+    }) async {
+      final images = <String, Uint8List>{};
+      final ops = <FixturePartition>[];
+      for (var index = 0; index < names.length; index++) {
+        final name = names[index];
+        final count = blocks[name] ?? 1;
+        final data = overrides[name] ??
+            pattern(count * fixtureBlock, seed: seed + index);
+        images[name] = data;
+        ops.add(
+          FixturePartition(
+            name: name,
+            ops: [
+              FixtureOp.replace([FixtureExtent(0, count)], data),
+            ],
+          ),
+        );
+      }
+      final ota = OtaFixture(ops, fields: fields);
+      final sink = await otaWorkspace.create(file);
+      await sink.write(ota.build(), 0);
+      await sink.close();
+      return images;
     }
-    final ota = OtaFixture(ops);
-    final sink = await otaWorkspace.create('ota.zip');
-    await sink.write(ota.build(), 0);
-    await sink.close();
+
+    final images = await writeOta(
+      'ota.zip',
+      partitions,
+      seed: 1,
+      fields: otaFields,
+      overrides: otaBytes,
+      blocks: otaBlocks,
+    );
+    final baseImages = basePartitions.isEmpty
+        ? const <String, Uint8List>{}
+        : await writeOta(
+            'base.zip',
+            basePartitions,
+            seed: 1001,
+            fields: baseFields,
+            overrides: baseBytes,
+            blocks: baseBlocks,
+          );
+    final donorImages = donorPartitions.isEmpty
+        ? const <String, Uint8List>{}
+        : await writeOta(
+            'donor.zip',
+            donorPartitions,
+            seed: 2001,
+            fields: donorFields,
+            overrides: donorBytes,
+            blocks: donorBlocks,
+          );
 
     await writeBloatStore(bloatWorkspace, bloatFiles);
     final upstreamPath = await writeUpstream(
@@ -185,6 +262,7 @@ final class VirtualFixture {
       templates: templates,
       platformTools: fixturePlatformTools(),
       bloatFiles: bloatFiles,
+      regionSizes: regionSizes,
     );
     final manifest = BloatManifest.decode(
       utf8.decode(await File('$upstreamPath/bloat-manifest.json').readAsBytes()),
@@ -196,7 +274,10 @@ final class VirtualFixture {
       upstreamPath,
       manifest,
       images,
+      baseImages,
+      donorImages,
       bloatFiles,
+      regionSizes,
     );
   }
 
@@ -209,29 +290,70 @@ final class VirtualFixture {
   /// Partition name to the image its operations decode to.
   final Map<String, Uint8List> images;
 
+  /// The same for `base.zip`, when the fixture has one.
+  final Map<String, Uint8List> baseImages;
+
+  /// The same for `donor.zip`, when the fixture has one.
+  final Map<String, Uint8List> donorImages;
+
   /// Bloat manifest path to the bytes the store holds.
   final Map<String, Uint8List> bloatFiles;
 
+  /// `dev` to `[cn, other]` super sizes, as `tables.json` records them.
+  final Map<String, (int, int)> regionSizes;
+
   UpstreamAssets get upstream => UpstreamAssets(upstreamPath);
 
+  /// The physical super size this fixture's tables report for [dev]/[region].
+  int superSize(String dev, String region) {
+    final sizes = regionSizes[dev];
+    if (sizes == null) return fixtureSuperSize;
+    return region == 'CN' ? sizes.$1 : sizes.$2;
+  }
+
   /// The OTA input identity `localOtaIdentity` would produce.
-  Map<String, Object?> get identity => {
+  Map<String, Object?> get identity => identityOf('ota.zip');
+
+  Map<String, Object?> identityOf(String name) => {
     'kind': 'file',
-    'name': 'ota.zip',
+    'name': name,
     'size': 0,
     'lastModified': 0,
   };
 
+  /// Opens `ota.zip`, `base.zip` or `donor.zip` from the OTA workspace.
+  ///
+  /// [workspace] replaces the OTA workspace, so a test can count payload reads
+  /// through a [CountingWorkspace].
+  Future<OtaArchive> openOta(String name, {Workspace? workspace}) async {
+    final source = await (workspace ?? otaWorkspace).open(name);
+    try {
+      return await OtaArchive.open(source);
+    } on Object {
+      await closeByteSource(source);
+      rethrow;
+    }
+  }
+
   /// Opens a virtual package over this fixture.
   ///
   /// [bloat] overrides the workspace the package verifies and reads; a test
-  /// passes a [CountingWorkspace] to observe how often bloat is read.
+  /// passes a [CountingWorkspace] to observe how often bloat is read. [ota]
+  /// does the same for the OTA workspace, which is how a test counts payload
+  /// reads. [superSize] is required for a `Super` kind.
   Future<VirtualFlashPackage> open(
     Selection selection, {
     Map<String, Object?>? sourceIdentity,
     Workspace? bloat,
+    Workspace? ota,
+    OtaArchive? base,
+    OtaArchive? donor,
+    Map<String, Object?>? baseIdentity,
+    Map<String, Object?>? donorIdentity,
+    int? superSize,
+    VirtualFlashPackage? preparedPackage,
   }) async {
-    final source = await otaWorkspace.open('ota.zip');
+    final source = await (ota ?? otaWorkspace).open('ota.zip');
     final archive = await OtaArchive.open(source);
     try {
       return await VirtualFlashPackage.load(
@@ -240,6 +362,12 @@ final class VirtualFixture {
         bloat: bloat ?? bloatWorkspace,
         bloatManifest: bloatManifest,
         sourceIdentity: sourceIdentity ?? identity,
+        base: base,
+        baseIdentity: baseIdentity,
+        donor: donor,
+        donorIdentity: donorIdentity,
+        superSize: superSize,
+        preparedPackage: preparedPackage,
       );
     } on Object {
       await archive.close();
@@ -325,6 +453,25 @@ Map<String, Uint8List> fixturePlatformTools() => {
   ]),
 };
 
+/// One 4096-byte image a BASE OTA can carry as `vbmeta*.img`.
+///
+/// `make_vbmeta` needs a real vbmeta header to copy descriptors from: `AVB0`,
+/// version 1.0, no authentication block and no descriptors. The reserved tail
+/// is zero, so the parser sees an empty descriptor blob.
+Uint8List fixtureVbmeta() {
+  final bytes = Uint8List(4096);
+  final data = ByteData.sublistView(bytes);
+  bytes.setRange(0, 4, 'AVB0'.codeUnits);
+  data.setUint32(4, 1, Endian.big); // version major
+  data.setUint32(8, 0, Endian.big); // version minor
+  data.setUint64(12, 0, Endian.big); // authentication block size
+  data.setUint64(20, 0, Endian.big); // auxiliary block size
+  data.setUint32(28, 0, Endian.big); // algorithm NONE
+  data.setUint64(96, 0, Endian.big); // descriptors offset
+  data.setUint64(104, 0, Endian.big); // descriptors size
+  return bytes;
+}
+
 /// The `oos/regional` template of device 13, with CRLF files, an executable
 /// script, a file outside the selected subtree and a file Platform-Tools also
 /// ships.
@@ -350,7 +497,11 @@ Map<String, Uint8List> fixtureTemplate13() => {
 
 /// A device the fixture transport answers for.
 final class FixtureDevice {
-  FixtureDevice({this.serial = 'SERIAL-A', this.product = 'sun'});
+  FixtureDevice({
+    this.serial = 'SERIAL-A',
+    this.product = 'sun',
+    this.maxDownloadSize = '0x4000',
+  });
 
   final String serial;
   final String product;
@@ -361,6 +512,9 @@ final class FixtureDevice {
   /// Reported `partition-size:<name>`, when a test sets one.
   int? partitionBytes;
 
+  /// Reported `max-download-size`, as the getvar payload.
+  String maxDownloadSize;
+
   /// A partition whose `flash:` command fails.
   String? failFlash;
 
@@ -369,6 +523,10 @@ final class FixtureDevice {
 
   /// What each partition received through the download commands.
   final delivered = <String, Uint8List>{};
+
+  /// Every `flash:` payload for a partition, in order; a split image arrives
+  /// as several parts.
+  final parts = <String, List<Uint8List>>{};
 
   BytesBuilder? _download;
 
@@ -441,7 +599,7 @@ final class _FixtureSession implements FastbootSession {
     if (command == 'getvar:is-userspace') {
       return device.fastbootd ? 'yes' : 'no';
     }
-    if (command == 'getvar:max-download-size') return '0x4000';
+    if (command == 'getvar:max-download-size') return device.maxDownloadSize;
     if (command.startsWith('getvar:partition-size:') &&
         device.partitionBytes != null) {
       return '0x${device.partitionBytes!.toRadixString(16)}';
@@ -458,7 +616,10 @@ final class _FixtureSession implements FastbootSession {
       final partition = command.substring('flash:'.length);
       device.flashCommands.add(partition);
       final bytes = device.take();
-      if (bytes != null) device.delivered[partition] = bytes;
+      if (bytes != null) {
+        device.delivered[partition] = bytes;
+        (device.parts[partition] ??= <Uint8List>[]).add(bytes);
+      }
       if (device.failFlash == partition) {
         throw const LinkFailure(
           blame: 'device',

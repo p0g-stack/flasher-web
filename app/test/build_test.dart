@@ -63,6 +63,7 @@ void main() {
     expect(find.textContaining('index 3'), findsOneWidget);
     expect(find.byKey(const ValueKey('gatingError')), findsNothing);
 
+    await tester.ensureVisible(find.byKey(const ValueKey('buildButton')));
     await tester.tap(find.byKey(const ValueKey('buildButton')));
     await tester.pumpAndSettle();
 
@@ -178,6 +179,7 @@ void main() {
     await pumpApp(tester, harness: harness);
     await pickOta(tester, harness);
 
+    await tester.ensureVisible(find.byKey(const ValueKey('buildButton')));
     await tester.tap(find.byKey(const ValueKey('buildButton')));
     await tester.pump();
     expect(harness.bridge.keepAwake, 1);

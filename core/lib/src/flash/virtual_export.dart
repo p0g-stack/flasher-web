@@ -1,7 +1,7 @@
 /// Streams a virtual package as the flasher ZIP a folder build would produce.
 ///
-/// The tree is the one `native_pipeline.stage` assembles for a non-Super
-/// selection: the selected template subtree, `Platform-Tools/` and the images,
+/// The tree is the one `native_pipeline.stage` assembles: the selected
+/// template subtree, `Platform-Tools/` and the images,
 /// with `updater-script` and `*.sh` line endings normalized to LF. Images come
 /// from [VirtualFlashPackage] (OTA operations decoded on demand, verified
 /// bloat), so nothing is staged in a workspace and no temporary file is
@@ -19,6 +19,7 @@ import 'dart:typed_data';
 
 import '../native/native.dart';
 import '../pipeline/assets.dart';
+import '../pipeline/extract.dart' show superScrapFiles;
 import '../pipeline/errors.dart';
 import '../rust/api/payload.dart' show Sha256Hasher;
 import '../rust/api/zip.dart' as rust_zip;
@@ -187,7 +188,14 @@ final class _ExportRun {
     }
 
     for (final path in _package.index.entries) {
+      if (selection.kind.contains('Super') &&
+          (superScrapFiles.contains(path) || path.startsWith('Super/'))) {
+        continue;
+      }
       files[path] = _TreeFile.image(path);
+    }
+    if (selection.kind.contains('Super')) {
+      files.removeWhere((path, _) => superScrapFiles.contains(path) || path.startsWith('Super/'));
     }
     return files;
   }

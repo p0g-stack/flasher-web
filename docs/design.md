@@ -202,16 +202,35 @@ execution never buffer a whole image.
 plus the verified bloat store, so `planFlash`, `prepareFlash` and
 `executePreparedFlash` run unchanged and nothing is extracted:
 
-- `VirtualFlashPackage.load` refuses a `Super` kind and an OTA whose manifest
-  is not a full payload (Rust `verify_virtual`), verifies every selected bloat
-  image against `bloat-manifest.json` (size and raw SHA-256), and builds the
-  entry set `native_pipeline.stage` would produce: the bloat images in their
+- `VirtualFlashPackage.load` supports all four flasher kinds and an OTA whose
+  manifest is a full payload (Rust `verify_virtual`), verifies every selected
+  bloat image against `bloat-manifest.json` (size and raw SHA-256), and builds
+  the entry set `native_pipeline.stage` would produce: the bloat images in their
   folders, then the OTA's partitions as `<imageFolder>/<name>.img`. A decoded
   OTA image replaces a staged bloat copy at the same path; X9U keeps its bloat
   image and drops the OTA copy. For CN, `GLO_BLOAT` goes to `OOS_FILES_HERE`
   and every other non-main folder to `COS_FILES_HERE`. The `build.json`-shaped
   map (`output_format: "virtual"`) carries device, dev, kind, region, version
-  and the per-path digests it knows (`image_sha256` only when all are known).
+  and the per-path digests it knows (`image_sha256` only when all are known; a
+  super's digest is lazy, so a super package reports
+  `available_image_sha256` without it).
+- A Super kind is represented by one root `super.img` produced by
+  `core/lib/src/flash/virtual_super.dart`: `flasherSuperLayout` fixes the LP
+  geometry, sparse inputs are expanded lazily, holes and partition padding are
+  DONT_CARE/FILL, and `SparseWriter` emits the same bytes the normal folder and
+  ZIP packers write. The Ace 6 conversion stages `targetParts` from TARGET and
+  `baseParts` from BASE, regenerates the three `vbmeta` images from BASE with
+  `make_vbmeta`, and requires `virtual.base`; the Ace 6T IN/GLO donor comes from
+  the catalog (patched-matched ACE 6T CN `odm`; a caller donor is refused). X9U
+  also packages `META-INF/com/google/android/super-size`. Preparation records
+  five bytes per populated 4096-byte block plus rank checkpoints (32 MiB cap,
+  262144 input chunks) and one sparse digest; the completed index is bound to
+  the ticket and reused at flash, so no second decode or scan happens.
+  Execution validates each generated block's RAW/FILL type and FILL value
+  against that index. OTA partition images are raw payload destinations and are
+  never probed for the sparse magic at load time; only bloat inputs expand
+  sparse files, and an OTA partition that is sparse-encoded fails the first
+  super pass with an explicit error instead of being silently expanded.
 - `virtualJobId` derives the job from the OTA source identity, manifest digest,
   OTA length and selection, and `snapshot()` exposes the same data, so
   `packageDigest` binds a confirmation token to the exact OTA and bloat bytes.

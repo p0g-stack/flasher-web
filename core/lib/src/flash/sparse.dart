@@ -49,16 +49,25 @@ final class SparseScan {
     required this.totalBlocks,
     required this.chunks,
     required this.digest,
+    this.splitter,
   });
 
   final int blockSize;
   final int totalBlocks;
   final List<SparseChunk> chunks;
+  /// Compact producers may keep chunk and split descriptors lazy.
+  final List<SparsePart> Function(int limit)? splitter;
 
   /// Lowercase SHA-256 of the whole source image.
   final String digest;
 
   int get expandedBytes => blockSize * totalBlocks;
+}
+
+/// A freshly reconstructed source can supply its already validated first pass.
+/// Implementations must return null after handing the scan out once.
+abstract interface class PreScannedFlashSource implements FlashSource {
+  SparseScan? takeSparseScan();
 }
 
 /// Whether [source] starts with the sparse magic.
@@ -73,6 +82,10 @@ Future<bool> isSparseSource(FlashSource source) async {
 /// bounded pieces; a truncated image, an unknown chunk, or trailing bytes is
 /// rejected before any device write.
 Future<SparseScan> scanSparse(FlashSource source) async {
+  if (source is PreScannedFlashSource) {
+    final prepared = source.takeSparseScan();
+    if (prepared != null) return prepared;
+  }
   if (source.length < sparseHeaderBytes) {
     throw const FlashException('Sparse image is shorter than its header.');
   }
@@ -268,6 +281,8 @@ final class SparsePart {
 
 /// Splits a validated sparse image into parts no larger than [limit].
 List<SparsePart> splitSparseScan(SparseScan scan, int limit) {
+  final compact = scan.splitter;
+  if (compact != null) return compact(limit);
   if (limit < sparseHeaderBytes + 2 * sparseChunkHeaderBytes + scan.blockSize) {
     throw FlashException(
       'max-download-size $limit is too small for a sparse image part.',

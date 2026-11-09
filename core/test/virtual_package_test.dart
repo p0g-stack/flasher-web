@@ -462,30 +462,51 @@ void main() {
     },
   );
 
-  test('a Super selection is refused for virtual flashing', () async {
+  test('a Super selection is represented as one sparse super.img', () async {
+    const selection = Selection(
+      dev: '13',
+      kind: 'SuperHybrid Flasher',
+      region: 'GLO',
+      device: 'Oneplus 13',
+      builder: 'BUILD_SUPER.sh',
+    );
     final fixture = await VirtualFixture.create(
-      partitions: ['boot'],
-      bloatFiles: const {},
-      builders: const [('Super Flasher', '13', 'GLO', 'BUILD_SUPER.sh')],
+      partitions: ['boot', 'my_company', 'product', 'system', 'vendor'],
+      bloatFiles: {
+        'bloat/13/GLO_BLOAT/my_company.img': pattern(fixtureBlock, seed: 501),
+        'bloat/13/GLO_BLOAT/my_preload.img': pattern(fixtureBlock, seed: 502),
+      },
+      builders: const [('SuperHybrid Flasher', '13', 'GLO', 'BUILD_SUPER.sh')],
     );
     addTearDown(fixture.dispose);
-    await expectLater(
-      fixture.open(
-        const Selection(
-          dev: '13',
-          kind: 'Super Flasher',
-          region: 'GLO',
-          device: 'Oneplus 13',
-        ),
-      ),
-      throwsA(
-        isA<FlashException>().having(
-          (error) => error.message,
-          'message',
-          contains('only Regional'),
-        ),
-      ),
-    );
+    final superSize = fixture.superSize('13', 'GLO');
+    final package = await fixture.open(selection, superSize: superSize);
+    try {
+      expect(package.format, 'virtual');
+      expect(package.job, startsWith('virtual-'));
+      expect(package.index.has('super.img'), isTrue);
+      expect(
+        package.buildJson['available_image_sha256'],
+        contains('OOS_FILES_HERE/boot.img'),
+        reason: 'the super digest is lazy and not advertised up front',
+      );
+      expect(package.imageHash('super.img'), isNull);
+      final length = await package.size('super.img');
+      expect(length, greaterThan(0));
+      expect(length, lessThan(superSize));
+      expect(package.imageHash('super.img'), matches(RegExp(r'^[0-9a-f]{64}$')));
+      final head = await _bytesOf(package, 'super.img');
+      expect(head.length, length);
+      expect(head.sublist(0, 4), [0x3a, 0xff, 0x26, 0xed]);
+      final expanded = await package.openExpandedSuper();
+      try {
+        expect(expanded.length, superSize);
+      } finally {
+        await expanded.close();
+      }
+    } finally {
+      await package.close();
+    }
   });
 
   test('a package without bloat images for the selection is refused', () async {

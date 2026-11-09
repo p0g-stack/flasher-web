@@ -12,6 +12,7 @@ import '../bloat/gunzip_rust.dart';
 import '../bloat/manifest.dart';
 import '../catalog/catalog_client.dart';
 import '../catalog/http_transport.dart';
+import '../catalog/ota_catalog.dart';
 import '../facts/facts.dart';
 import '../flash/executor.dart';
 import '../flash/hosted.dart';
@@ -59,9 +60,18 @@ String _upstreamCommit = '';
   targetPlatform: TargetPlatform.vm | TargetPlatform.web,
 )
 base class FlasherService {
-  FlasherService() {
+  FlasherService({Object? transportFactory})
+    : _transportFactory = transportFactory ?? nativeFastbootTransport {
     forwardLogs();
   }
+
+  /// How this service opens fastboot devices. Tests inject a recording fake;
+  /// the default is the native/WebUSB transport. Stored as [Object] because
+  /// squadron_builder cannot describe a function-typed field.
+  final Object _transportFactory;
+
+  FastbootTransport _fastbootTransport() =>
+      (_transportFactory as FastbootTransport Function())();
 
   final Map<String, _PreparedEntry> _prepared = {};
   final Map<String, String> _jobLocks = {};
@@ -452,6 +462,10 @@ base class FlasherService {
         throw const BuildException('Choose a fastboot device serial.');
       }
       final answers = _flashAnswers(req['answers']);
+      if (virtual != null) {
+        final required = await _productRequired(selection, answers, serial, _fastbootTransport());
+        if (required != null) return required;
+      }
       late final FlashPackage package;
       HostedFlashSession? hostedSession;
       VirtualFlashPackage? virtualPackage;
@@ -494,30 +508,11 @@ base class FlasherService {
         // partition read below happens only while the server-side job is
         // pinned, and a lost lease aborts before the next command.
         final transport = hostedSession != null
-            ? hostedSession.guardedTransport(nativeFastbootTransport())
-            : nativeFastbootTransport();
-        if (deviceIdentities[selection.dev]?.product == null &&
-            (answers['product'] ?? '').trim().isEmpty) {
-          final device = await transport.open(serial);
-          try {
-            if (device.serial != serial) {
-              throw const flash_model.FlashException(
-                'The connected serial changed.',
-              );
-            }
-            final product = await flash_prepare.readProduct(device);
-            return {
-              'productRequired': true,
-              'serial': serial,
-              'observedProduct': product,
-              'message':
-                  'Connected product: $product. No confirmed product mapping '
-                  'exists for ${selection.device}. Check the selected model, then '
-                  'type the product explicitly to continue.',
-            };
-          } finally {
-            await device.close();
-          }
+            ? hostedSession.guardedTransport(_fastbootTransport())
+            : _fastbootTransport();
+        if (virtual == null) {
+          final required = await _productRequired(selection, answers, serial, transport);
+          if (required != null) return required;
         }
         if (hosted == null && virtual == null) {
           final workspace = await _openStoreWorkspace(output);
@@ -537,7 +532,7 @@ base class FlasherService {
           token: token,
         );
         if (prepared.resolved) {
-          _prepared.removeWhere((_, entry) => entry.lockKey == lockKey);
+          _prepared.removeWhere((_, entry) => entry.lockKey == lockKey || (virtual != null && entry.virtual));
           _prepared[token] = _PreparedEntry(
             prepared,
             lockKey,
@@ -674,7 +669,8 @@ final class _FlashRun {
             entry.store!, Map<String, Object?>.from(virtual['bloat']! as Map))) {
           throw const flash_model.FlashException('The virtual bloat store changed. Prepare again.');
         }
-        virtualPackage = await _openVirtualPackage(_req, entry.prepared.selection);
+        virtualPackage = await _openVirtualPackage(_req, entry.prepared.selection,
+          preparedPackage: entry.prepared.package as VirtualFlashPackage);
         currentPackage = virtualPackage;
       } else {
         final output = _req['output'];
@@ -717,8 +713,8 @@ final class _FlashRun {
           cancellation.cancel('cancelled while checking the package');
         }
         final flashTransport = session != null
-            ? session.guardedTransport(nativeFastbootTransport())
-            : nativeFastbootTransport();
+            ? session.guardedTransport(_service._fastbootTransport())
+            : _service._fastbootTransport();
         final receipt = await applyConfirmedFlash(
           runPrepared,
           flashTransport,
@@ -884,40 +880,112 @@ Map<String, Object?>? _virtualArg(Map<String, Object?> req) {
   return Map<String, Object?>.from(value);
 }
 
-Future<VirtualFlashPackage> _openVirtualPackage(
-  Map<String, Object?> req, Selection selection,
+Future<Map<String, Object?>?> _productRequired(
+  Selection selection, Map<String, String> answers, String serial, FastbootTransport transport,
 ) async {
-  OtaArchive? ota;
+  if (deviceIdentities[selection.dev]?.product != null ||
+      (answers['product'] ?? '').trim().isNotEmpty) {
+    return null;
+  }
+  final device = await transport.open(serial);
+  try {
+    if (device.serial != serial) {
+      throw const flash_model.FlashException('The connected serial changed.');
+    }
+    final product = await flash_prepare.readProduct(device);
+    return {
+      'productRequired': true,
+      'serial': serial,
+      'observedProduct': product,
+      'message': 'Connected product: $product. No confirmed product mapping '
+          'exists for ${selection.device}. Check the selected model, then '
+          'type the product explicitly to continue.',
+    };
+  } finally {
+    await device.close();
+  }
+}
+
+Future<VirtualFlashPackage> _openVirtualPackage(
+  Map<String, Object?> req, Selection selection, {VirtualFlashPackage? preparedPackage}
+) async {
+  final opened = <OtaArchive>[];
   try {
     final virtual = _virtualArg(req)!;
-    if (selection.kind.contains('Super')) {
-      throw const flash_model.FlashException('Super kinds cannot be flashed virtually.');
-    }
     if (!await loadNative()) {
       throw const flash_model.FlashException('The OTA decoder is unavailable in this place.');
     }
-    final input = Map<String, Object?>.from(virtual['ota']! as Map);
-    // The identity is the catalog entry itself, never a cache path: the same
-    // release opened from the OTA cache and streamed from the server must
-    // produce the same job id.
-    final identity = switch (input['kind']) {
-      'file' => await localOtaIdentity(input['file']!),
-      'url' => <String, Object?>{'kind': 'url', 'url': input['url']},
-      'catalog' => <String, Object?>{'kind': 'catalog', 'entry': input['entry']},
-      _ => throw flash_model.FlashException('Unknown virtual OTA input: ${input['kind']}.'),
-    };
+    final conversion = selection.builder == 'BUILD_ACE6_OOS.sh';
+    if (conversion && virtual['base'] is! Map) {
+      throw const flash_model.FlashException('Ace 6 OxygenOS requires virtual.base.');
+    }
+    if (!conversion && virtual['base'] != null) {
+      throw const flash_model.FlashException('This selection does not consume virtual.base.');
+    }
+    if (virtual['donor'] != null) {
+      throw const flash_model.FlashException('The ODM donor is selected from the catalog, not supplied by the caller.');
+    }
     final bloat = await _openStoreWorkspace(virtual['bloat']);
-    ota = await _openOtaArchive(
-      {...req, 'ota': input},
-      otaCacheWorkspace: bloat,
-    );
+    Future<({OtaArchive archive, Map<String, Object?> identity})> open(Map<String, Object?> input) async {
+      final identity = switch (input['kind']) {
+        'file' => await localOtaIdentity(input['file']!),
+        'url' => <String, Object?>{'kind': 'url', 'url': input['url']},
+        'catalog' => <String, Object?>{'kind': 'catalog', 'entry': input['entry']},
+        _ => throw flash_model.FlashException('Unknown virtual OTA input: ${input['kind']}.'),
+      };
+      final archive = await _openOtaArchive({...req, 'ota': input}, otaCacheWorkspace: bloat);
+      opened.add(archive);
+      final catalogEntry = input['entry'];
+      if (input['kind'] == 'catalog' && catalogEntry is Map) {
+        final size = catalogEntry['size'];
+        if (size is int && size > 0 && archive.length != size) {
+          throw const flash_model.FlashException('The OTA size differs from its catalog entry.');
+        }
+      }
+      return (archive: archive, identity: identity);
+    }
+    final input = Map<String, Object?>.from(virtual['ota']! as Map);
+    final target = await open(input);
+    final base = conversion ? await open(Map<String, Object?>.from(virtual['base']! as Map)) : null;
+    OtaArchive? donor;
+    Map<String, Object?>? donorIdentity;
+    if (needsMatchedOdm(selection.device, selection.kind, selection.region)) {
+      final transport = HttpCatalogTransport();
+      final Map<String, dynamic> data;
+      try {
+        data = await CatalogClient(transport: transport, base: _base(req['apiBase'] as String? ?? '')).loadCatalog();
+      } finally { transport.close(); }
+      final actualTarget = releaseFromMetadata(data, 'OP 15R', selection.region, target.archive.fields);
+      final supplied = input['kind'] == 'catalog' ? Map<String, dynamic>.from(input['entry']! as Map) : null;
+      if (supplied != null && supplied['id'] != actualTarget['id']) {
+        throw const flash_model.FlashException('The target download returned a different OTA version. ODM matching stopped.');
+      }
+      final patch = patchDate(target.archive.fields['post-security-patch-level']);
+      final release = supplied ?? actualTarget;
+      if (patch != patchDate(release['security_patch'])) {
+        throw const flash_model.FlashException('The target OTA security patch differs from its catalog entry.');
+      }
+      final matched = matchingOdm(data, release);
+      final openedDonor = await open({'kind': 'catalog', 'entry': matched});
+      donor = openedDonor.archive;
+      donorIdentity = openedDonor.identity;
+      if (patchDate(donor.fields['post-security-patch-level']) != patch ||
+          releaseFromMetadata(data, 'OP ACE 6T', 'CN', donor.fields)['id'] != matched['id']) {
+        throw const flash_model.FlashException('The donor OTA identity or security patch differs from its matched catalog entry.');
+      }
+    }
     final manifest = await _readBloatManifest(req);
+    final tables = await _readTables(req);
     return await VirtualFlashPackage.load(
-      ota: ota, selection: selection, bloat: bloat,
-      bloatManifest: manifest, sourceIdentity: identity,
+      ota: target.archive, selection: selection, bloat: bloat,
+      bloatManifest: manifest, sourceIdentity: target.identity,
+      base: base?.archive, baseIdentity: base?.identity,
+      donor: donor, donorIdentity: donorIdentity,
+      preparedPackage: preparedPackage,
+      superSize: selection.kind.contains('Super') ? tables.superSize(selection.dev, selection.region) : null,
     );
   } on Object catch (error) {
-    await ota?.close();
+    for (final archive in opened) { await archive.close(); }
     if (error is flash_model.FlashException) rethrow;
     throw flash_model.FlashException('Cannot open virtual package: $error');
   }

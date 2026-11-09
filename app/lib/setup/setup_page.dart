@@ -1016,8 +1016,9 @@ class _OutputBar extends StatelessWidget {
               ),
               if (setup.directFlashSupported)
                 Tooltip(
+                  key: const ValueKey('directFlashHint'),
                   message: directError.isEmpty
-                      ? 'Flash the OTA directly without building a package'
+                      ? setup.directFlashHint
                       : directError,
                   child: FilledButton.icon(
                     key: const ValueKey('flashDirectButton'),
@@ -1065,17 +1066,6 @@ class _OutputBar extends StatelessWidget {
                   textAlign: TextAlign.end,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.error,
-                  ),
-                ),
-              ],
-              if (setup.selectionValid && setup.isSuperKind) ...[
-                const SizedBox(height: 6),
-                Text(
-                  setup.directFlashUnavailable,
-                  key: const ValueKey('directFlashNotice'),
-                  textAlign: TextAlign.end,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
               ],

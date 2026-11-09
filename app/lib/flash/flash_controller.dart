@@ -388,27 +388,30 @@ final class FlashController extends ChangeNotifier {
   Map<String, Object?>? _virtualSnapshot() {
     final virtual = target.virtualRequest;
     if (virtual == null) return null;
-    final ota = virtual['ota'];
-    final bloat = virtual['bloat'];
     return {
-      'ota': ota is Map
-          ? <String, Object?>{
-              'kind': ota['kind'],
-              if (ota['file'] != null) 'file': ota['file'],
-              if (ota['url'] != null) 'url': ota['url'],
-              if (ota['entry'] is Map)
-                'entry': Map<String, Object?>.from(ota['entry'] as Map),
-            }
-          : ota,
-      'bloat': bloat is Map
-          ? <String, Object?>{
-              'kind': bloat['kind'],
-              if (bloat['path'] != null) 'path': bloat['path'],
-              if (bloat['handle'] != null) 'handle': bloat['handle'],
-            }
-          : bloat,
+      'ota': _otaSnapshot(virtual['ota']),
+      if (virtual['base'] != null) 'base': _otaSnapshot(virtual['base']),
+      'bloat': _storeSnapshot(virtual['bloat']),
     };
   }
+
+  Object? _otaSnapshot(Object? ota) => ota is Map
+      ? <String, Object?>{
+          'kind': ota['kind'],
+          if (ota['file'] != null) 'file': ota['file'],
+          if (ota['url'] != null) 'url': ota['url'],
+          if (ota['entry'] is Map)
+            'entry': Map<String, Object?>.from(ota['entry'] as Map),
+        }
+      : ota;
+
+  Object? _storeSnapshot(Object? store) => store is Map
+      ? <String, Object?>{
+          'kind': store['kind'],
+          if (store['path'] != null) 'path': store['path'],
+          if (store['handle'] != null) 'handle': store['handle'],
+        }
+      : store;
 
   Future<void> prepare() async {
     if (_disposed || running) return;
@@ -584,10 +587,17 @@ final class FlashController extends ChangeNotifier {
     return _sameStore(request['output'], prepared['output']);
   }
 
-  /// The virtual identity: the OTA source and the bloat store.
+  /// The virtual identity: the OTA source, the optional BASE OTA and the bloat
+  /// store.
   bool _sameVirtual(Object? a, Object? b) {
     if (a is! Map || b is! Map) return false;
-    return _sameOta(a['ota'], b['ota']) && _sameStore(a['bloat'], b['bloat']);
+    if (!_sameOta(a['ota'], b['ota']) || !_sameStore(a['bloat'], b['bloat'])) {
+      return false;
+    }
+    final left = a['base'];
+    final right = b['base'];
+    if (left == null && right == null) return true;
+    return _sameOta(left, right);
   }
 
   bool _sameOta(Object? a, Object? b) {
@@ -891,12 +901,12 @@ final class FlashController extends ChangeNotifier {
 
   /// Writes a portable ZIP of this virtual package into a save-picker file.
   ///
-  /// The service reads the OTA and verified bloat exactly as a flash does and
-  /// streams the archive into the chosen `FileSystemFileHandle`; nothing is
-  /// staged in browser storage. Returns null on success or cancellation and an
-  /// explanation otherwise.
+  /// The service reads the OTA, the optional BASE OTA and verified bloat
+  /// exactly as a flash does and streams the archive into the chosen
+  /// `FileSystemFileHandle`; nothing is staged in browser storage. Returns
+  /// null on success or cancellation and an explanation otherwise.
   Future<String?> exportZip() async {
-    final virtual = target.virtualRequest;
+    final virtual = _virtualSnapshot();
     if (virtual == null) {
       return 'Only the OTA-backed direct flash can export a package.';
     }

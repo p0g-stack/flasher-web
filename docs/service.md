@@ -251,17 +251,42 @@ and a new confirmation.
 
 A virtual flash applies a full OTA in place: no flasher package is built, no
 image is extracted into a store, and the phone is written from operations
-decoded in memory as the plan reaches them. It is offered for the `Regional
-Flasher` and `RegionalHybrid Flasher` types only; a `Super` kind needs the
-generated `super.img` and is refused.
+decoded in memory as the plan reaches them. All four kinds are supported:
+`Regional Flasher`, `RegionalHybrid Flasher`, `Super Flasher` and
+`SuperHybrid Flasher`.
+
+A `Super` kind also writes the sparse `super.img` at the package root, byte for
+byte what the normal packer produces: `flasherSuperLayout` fixes the LP geometry
+(metadata slots, groups, one read-only extent per present partition, alignment)
+and the same Rust `SparseWriter` streams the image, so gaps and padding are
+DONT_CARE/FILL and the folder and ZIP builds of the same inputs are identical.
+Sparse bloat inputs are expanded exactly as the normal packer expands them.
+For X9U the package also carries `META-INF/com/google/android/super-size` with
+the physical size. The super staging folder (`Super/`) and the launcher files
+`superScrapFiles` removes are never part of the package.
 
 Request, for both `prepareFlash` and `flash`:
 
 ```text
 {"selection": Sel, "serial": String, "answers": {promptId: choice}?,
  "upstreamBase": String,
- "virtual": {"ota": OtaInput, "bloat": Store}}
+ "virtual": {"ota": OtaInput, "base": OtaInput?, "bloat": Store}}
 ```
+
+`base` is required exactly when the selection's builder is `BUILD_ACE6_OOS.sh`
+(Ace 6 IN): the TARGET full OTA is `ota`, the Ace 6 ColorOS BASE full OTA is
+`base`. The conversion stages `targetParts` from the TARGET and `baseParts`
+from the BASE into the super, moves the remaining BASE partitions to the image
+folder and regenerates `vbmeta`, `vbmeta_system` and `vbmeta_vendor` with
+`make_vbmeta` (each BASE image must exist and be at most 1 MiB). For every other
+selection a supplied `base` is refused.
+
+The Ace 6T IN/GLO Super donor is chosen from the catalog, never by the caller: a
+`virtual.donor` field is refused. The service identifies the TARGET release from
+the OTA metadata, requires the catalog security patch to match exactly, and
+opens the first ACE 6T CN release with the same patch; only its `odm` is read.
+The donor identity (catalog entry, manifest digest, length) joins the derived
+job id, so a different donor is a different job.
 
 `output` and `hosted` must be absent. `job` is optional: when supplied it must
 equal the derived identity, otherwise preparation is refused. `flash` takes the
@@ -311,6 +336,24 @@ manifest, partition, bloat and `build.json` snapshot it read) and leaves
 - The OTA must be a full AB OTA with a stored `payload.bin`: ranges address its
   bytes, so a compressed `payload.bin` is refused ("Only OTAs with a stored
   payload.bin can be read in place").
+- A Super package's blocking index is bounded: at most 262144 chunks across the
+  sparse super *inputs* and at most 32 MiB for the five-bytes-per-block index
+  plus rank checkpoints. Both limits fail closed before any device command,
+  with an error naming the limit.
+- Super inputs are raw partition contents, with one exception: a **bloat**
+  image may be Android-sparse and is expanded exactly as the normal packer
+  expands it. An OTA partition image is never expanded; if an OTA partition
+  that would be packed into the super begins with the sparse magic, loading
+  stays lazy but the first real super pass fails closed with "A sparse-encoded
+  OTA partition cannot be represented by virtual super." before any device
+  command.
+- Preparation decodes the super inputs once, recording chunk types and FILL
+  values plus the sparse digest. That index and digest are bound to the
+  confirmation token; `flash` reopens the package with `preparedPackage` and
+  reuses the completed index, so execution never decodes or indexes the super a
+  second time. Execution still validates every generated block against the
+  prepared index and refuses a block whose RAW/FILL shape or FILL value changed,
+  plus any change to a sparse input in the middle of the download.
 - Each operation is bounded: at most 64 MiB of encoded data and, for a
   compressed kind, at most 64 MiB decoded. One package-wide
   least-recently-used cache holds at most 64 MiB of decoded operations, so a
@@ -346,6 +389,10 @@ the selection (X9U regional flashers drop `META-INF`), `Platform-Tools/`
 overwriting template files of the same name, bloat images staged into the
 image folders with the CN `GLO_BLOAT` preload placed in `OOS_FILES_HERE`, and a
 decoded OTA image winning over a staged bloat copy (X9U keeps its bloat image).
+A Super kind's archive contains the generated root `super.img` (streamed from
+the virtual index) and X9U's `META-INF/com/google/android/super-size`; the
+`Super/` staging folder and the `superScrapFiles` launcher files are absent,
+exactly as in the normal build's artifact.
 `updater-script` and every `*.sh` are normalized to LF; other files keep their
 bytes. Like a build ZIP it stores no `build.json` and no checksum file: both are
 returned to the caller instead. Entries are written once in ascending order

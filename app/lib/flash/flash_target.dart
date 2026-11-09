@@ -11,15 +11,21 @@ final class FlashTarget {
   }) : hostedSha256 = null,
        hostedBytes = null,
        virtualOta = null,
+       virtualBase = null,
        virtualBloat = null;
 
   /// A local-first flash with no built package: the service reads the OTA in
   /// place and the verified bloat images from the bloat store.
   ///
+  /// [base] is the Ace 6 ColorOS BASE full OTA an OxygenOS conversion needs;
+  /// an Ace 6T catalog ODM donor is never supplied here because the service
+  /// picks it by security patch.
+  ///
   /// [job] stays empty until `prepareFlash` assigns the derived virtual job
   /// id; the controller echoes it back when executing.
   const FlashTarget.virtual({
     required Map<String, Object?> ota,
+    Map<String, Object?>? base,
     required Map<String, Object?> bloat,
     required this.selection,
     required this.label,
@@ -28,6 +34,7 @@ final class FlashTarget {
        hostedSha256 = null,
        hostedBytes = null,
        virtualOta = ota,
+       virtualBase = base,
        virtualBloat = bloat;
 
   /// A hosted, catalog-owned build. The service fetches the ZIP through
@@ -43,6 +50,7 @@ final class FlashTarget {
        hostedSha256 = sha256,
        hostedBytes = bytes,
        virtualOta = null,
+       virtualBase = null,
        virtualBloat = null;
 
   final String job;
@@ -65,6 +73,11 @@ final class FlashTarget {
   /// The OTA input `{kind: file|url|catalog, ...}`, for a virtual flash.
   final Map<String, Object?>? virtualOta;
 
+  /// The BASE OTA input an Ace 6 conversion reads, or null for every other
+  /// selection. The ODM donor is never a target field: the service matches it
+  /// in the catalog.
+  final Map<String, Object?>? virtualBase;
+
   /// The bloat store `{kind: opfs}` or a directory handle, for a virtual flash.
   final Map<String, Object?>? virtualBloat;
 
@@ -72,11 +85,16 @@ final class FlashTarget {
 
   bool get isVirtual => virtualOta != null && virtualBloat != null;
 
-  /// The only virtual input the service accepts: the OTA source and the
-  /// verified bloat store. No output store and no built job are named.
+  /// The only virtual input the service accepts: the OTA source, the optional
+  /// BASE OTA and the verified bloat store. No output store and no built job
+  /// are named.
   Map<String, Object?>? get virtualRequest {
     if (!isVirtual) return null;
-    return {'ota': virtualOta, 'bloat': virtualBloat};
+    return {
+      'ota': virtualOta,
+      if (virtualBase != null) 'base': virtualBase,
+      'bloat': virtualBloat,
+    };
   }
 
   /// The only hosted input the service accepts: a capability id and the

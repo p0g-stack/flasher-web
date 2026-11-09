@@ -157,6 +157,7 @@ void main() {
     );
     await tester.tap(find.byKey(const ValueKey('chooseOtaFile')));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const ValueKey('buildButton')));
     await tester.tap(find.byKey(const ValueKey('buildButton')));
     await tester.pumpAndSettle();
 

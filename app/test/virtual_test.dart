@@ -42,9 +42,11 @@ Map<String, Object?> _virtualPrepare({String job = _virtualJob}) => {
 
 FlashTarget _virtualTarget(
   Object otaFile, {
+  Map<String, Object?>? base,
   Map<String, Object?>? bloat,
 }) => FlashTarget.virtual(
   ota: {'kind': 'file', 'file': otaFile},
+  base: base,
   bloat: bloat ?? const {'kind': 'opfs'},
   selection: const {
     'device': 'Oneplus 13',
@@ -114,9 +116,25 @@ void main() {
       'ota': {'kind': 'file', 'file': target.virtualOta?['file']},
       'bloat': {'kind': 'opfs'},
     });
+    expect(target.virtualRequest?.containsKey('base'), isFalse);
   });
 
-  test('direct flash gating requires a non-Super kind, bloat and an OTA', (
+  test('a virtual conversion target carries its BASE OTA', () {
+    final ota = Object();
+    final base = Object();
+    final target = _virtualTarget(
+      ota,
+      base: {'kind': 'file', 'file': base},
+    );
+    expect(target.virtualBase, {'kind': 'file', 'file': base});
+    expect(target.virtualRequest, {
+      'ota': {'kind': 'file', 'file': ota},
+      'base': {'kind': 'file', 'file': base},
+      'bloat': {'kind': 'opfs'},
+    });
+  });
+
+  test('direct flash gating supports Super kinds and needs bloat and an OTA', (
     // The gates are pure setup-state facts.
   ) async {
     final harness = Harness();
@@ -130,9 +148,19 @@ void main() {
     addTearDown(setup.dispose);
     await setup.refreshBloat(force: true);
 
-    expect(setup.directFlashSupported, isFalse);
-    expect(setup.directFlashUnavailable, contains('Super kinds'));
+    // The default selection is SuperHybrid Flasher: preparation now packs the
+    // same sparse super image the normal build writes.
+    expect(setup.kind, 'SuperHybrid Flasher');
+    expect(setup.isSuperKind, isTrue);
+    expect(setup.directFlashSupported, isTrue);
+    expect(setup.directFlashUnavailable, isEmpty);
     expect(setup.canFlashDirect, isFalse);
+    expect(
+      setup.directFlashRequirementsError,
+      'Select a full TARGET OTA ZIP before flashing directly.',
+    );
+    expect(setup.directFlashHint, contains('decodes the whole super image'));
+    expect(setup.directFlashHint, contains('several minutes'));
 
     setup.selectKind('Regional Flasher');
     await pumpEventQueue();
@@ -141,6 +169,7 @@ void main() {
       setup.directFlashRequirementsError,
       'Select a full TARGET OTA ZIP before flashing directly.',
     );
+    expect(setup.directFlashHint, isNot(contains('several minutes')));
 
     harness.api.bloatStatusResult = const {
       'total': 2,
@@ -171,24 +200,133 @@ void main() {
     expect(setup.directFlashRequirementsError, isEmpty);
     expect(setup.canFlashDirect, isTrue);
     expect(setup.directFlashOta, {'kind': 'file', 'file': handle});
+    expect(setup.directFlashBase, isNull);
     expect(setup.directFlashBloat, {'kind': 'opfs'});
   });
 
-  testWidgets('a Super selection hides Flash directly with an explanation', (
+  test('an Ace 6 conversion requires the BASE OTA and exposes it', () async {
+    final harness = Harness();
+    harness.api.inspectResult = _inspection();
+    final setup = SetupState(
+      runtime: harness.runtime,
+      tables: harness.tables,
+      environment: harness.environment,
+      preferences: harness.preferences,
+    );
+    addTearDown(setup.dispose);
+    setup.selectDevice('Oneplus Ace 6');
+    await pumpEventQueue();
+    await setup.refreshBloat(force: true);
+
+    expect(setup.kind, 'SuperHybrid Flasher');
+    expect(setup.region, 'IN');
+    expect(setup.needsBase, isTrue);
+    expect(setup.directFlashSupported, isTrue);
+
+    final ota = Object();
+    await setup.setLocalFile(
+      'ota',
+      PickedFile(handle: ota, name: 'target.zip', size: 4096),
+    );
+    expect(
+      setup.directFlashRequirementsError,
+      'Select a full BASE OTA ZIP before flashing directly.',
+    );
+    expect(setup.canFlashDirect, isFalse);
+    expect(setup.directFlashBase, isNull);
+
+    final base = Object();
+    await setup.setLocalFile(
+      'base',
+      PickedFile(handle: base, name: 'base.zip', size: 4096),
+    );
+    expect(setup.directFlashRequirementsError, isEmpty);
+    expect(setup.canFlashDirect, isTrue);
+    expect(setup.directFlashOta, {'kind': 'file', 'file': ota});
+    expect(setup.directFlashBase, {'kind': 'file', 'file': base});
+  });
+
+  test('catalog direct flash keeps the Ace 6T ODM patch gate', () async {
+    final harness = Harness();
+    harness.api.catalog = {
+      'api_version': '1',
+      'releases': [
+        {
+          'id': 'target-1',
+          'device': 'OP 15R',
+          'region': 'GLO',
+          'version': 'CPH2649_11.A.30',
+          'source_url': 'https://example.test/target.zip',
+          'security_patch': '2025-10-01',
+          'model': 'CPH2649',
+          'size': 16 * 1024 * 1024 * 1024,
+          'is_latest': true,
+        },
+      ],
+    };
+    final setup = SetupState(
+      runtime: harness.runtime,
+      tables: harness.tables,
+      environment: harness.environment,
+      preferences: harness.preferences,
+    );
+    addTearDown(setup.dispose);
+    setup.selectDevice('Oneplus Ace 6T');
+    await pumpEventQueue();
+    await setup.refreshBloat(force: true);
+    setup.setOtaMode(OtaMode.catalog);
+    await pumpEventQueue();
+    await setup.fetchCatalog(force: true);
+    await pumpEventQueue();
+
+    expect(setup.needsMatchedOdm, isTrue);
+    expect(setup.directFlashSupported, isTrue);
+    expect(setup.selectedRelease('ota'), isNotNull);
+    expect(setup.odmDonor, isNull);
+    expect(
+      setup.directFlashRequirementsError,
+      'No Ace 6T CN OTA has security patch 2025-10-01. Choose a target with '
+      'an exact patch match; a different ODM will not be substituted.',
+    );
+    expect(setup.canFlashDirect, isFalse);
+  });
+
+  testWidgets('a Super selection shows Flash directly and explains the decode', (
     tester,
   ) async {
-    await pumpApp(tester);
-
-    expect(find.byKey(const ValueKey('flashDirectButton')), findsNothing);
-    expect(find.byKey(const ValueKey('directFlashNotice')), findsOneWidget);
-    expect(
-      find.textContaining('Super kinds fold the OTA'),
-      findsOneWidget,
+    final harness = Harness();
+    harness.api.inspectResult = _inspection();
+    final handle = Object();
+    harness.bridge.otaFile = PickedFile(
+      handle: handle,
+      name: 'super.zip',
+      size: 4096,
     );
+    await pumpApp(tester, harness: harness);
 
+    expect(find.byKey(const ValueKey('flashDirectNotice')), findsNothing);
+    final button = find.byKey(const ValueKey('flashDirectButton'));
+    expect(button, findsOneWidget);
+
+    final chooseOta = find.byKey(const ValueKey('chooseOtaFile'));
+    await tester.ensureVisible(chooseOta);
+    await tester.tap(chooseOta);
+    await tester.pumpAndSettle();
+
+    final tooltip = tester.widget<Tooltip>(
+      find.byKey(const ValueKey('directFlashHint')),
+    );
+    expect(tooltip.message, contains('decodes the whole super image once'));
+    expect(tooltip.message, contains('several minutes'));
+
+    final kind = find.byKey(const ValueKey('kindDropdown'));
+    await tester.ensureVisible(kind);
+    await tester.pumpAndSettle();
     await _chooseRegional(tester);
-    expect(find.byKey(const ValueKey('flashDirectButton')), findsOneWidget);
-    expect(find.byKey(const ValueKey('directFlashNotice')), findsNothing);
+    final regional = tester.widget<Tooltip>(
+      find.byKey(const ValueKey('directFlashHint')),
+    );
+    expect(regional.message, isNot(contains('several minutes')));
   });
 
   testWidgets('Flash directly opens the flash page with the OTA and bloat', (
@@ -234,6 +372,58 @@ void main() {
     expect(virtual['ota'], {'kind': 'file', 'file': handle});
     expect(virtual['bloat'], {'kind': 'opfs'});
     expect(find.text(_virtualJob), findsWidgets);
+  });
+
+  testWidgets('Ace 6 sends the BASE OTA as virtual.base', (tester) async {
+    final harness = Harness();
+    harness.api.inspectResult = _inspection();
+    harness.api.prepareFlashResult = (_) => _virtualPrepare();
+    harness.bridge.fastbootChoices.add(
+      const FastbootUsbDevice(serial: _serial, label: 'Oneplus Ace 6'),
+    );
+    await pumpApp(tester, harness: harness);
+    await chooseDevice(tester, 'OnePlus Ace 6');
+
+    expect(find.byKey(const ValueKey('chooseBaseFile')), findsOneWidget);
+    final baseHandle = Object();
+    final targetHandle = Object();
+    final chooseBase = find.byKey(const ValueKey('chooseBaseFile'));
+    await tester.ensureVisible(chooseBase);
+    harness.bridge.otaFile = PickedFile(
+      handle: baseHandle,
+      name: 'base.zip',
+      size: 4096,
+    );
+    await tester.tap(chooseBase);
+    await tester.pumpAndSettle();
+
+    final chooseOta = find.byKey(const ValueKey('chooseOtaFile'));
+    await tester.ensureVisible(chooseOta);
+    harness.bridge.otaFile = PickedFile(
+      handle: targetHandle,
+      name: 'target.zip',
+      size: 4096,
+    );
+    await tester.tap(chooseOta);
+    await tester.pumpAndSettle();
+
+    final button = find.byKey(const ValueKey('flashDirectButton'));
+    await tester.ensureVisible(button);
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+
+    await _selectDevice(tester);
+    final prepare = harness.api.lastPrepareRequest!;
+    expect(prepare['selection'], {
+      'device': 'Oneplus Ace 6',
+      'kind': 'SuperHybrid Flasher',
+      'region': 'IN',
+    });
+    final virtual = Map<String, Object?>.from(prepare['virtual']! as Map);
+    expect(virtual['ota'], {'kind': 'file', 'file': targetHandle});
+    expect(virtual['base'], {'kind': 'file', 'file': baseHandle});
+    expect(virtual['bloat'], {'kind': 'opfs'});
+    expect(virtual.containsKey('donor'), isFalse);
   });
 
   testWidgets('execution echoes the derived virtual job and the same source', (
@@ -323,6 +513,76 @@ void main() {
     expect(controller.errorText, contains('confirmed input changed'));
   });
 
+  test('a changed BASE OTA invalidates the prepared token', () async {
+    final harness = Harness();
+    harness.api.prepareFlashResult = (_) => _virtualPrepare();
+    final baseFile = Object();
+    final base = <String, Object?>{'kind': 'file', 'file': baseFile};
+    final target = _virtualTarget(Object(), base: base);
+    final controller = FlashController(
+      api: harness.api,
+      bridge: harness.bridge,
+      environment: harness.environment,
+      target: target,
+      upstreamBase: 'upstream/',
+    );
+    addTearDown(controller.dispose);
+    await controller.start();
+    controller.selectDevice({
+      'serial': _serial,
+      'label': 'Oneplus 13',
+      'transport': 'usb',
+    });
+    await pumpEventQueue();
+    expect(
+      harness.api.lastPrepareRequest?['virtual'],
+      containsPair('base', {'kind': 'file', 'file': baseFile}),
+    );
+    expect(controller.ready, isTrue);
+    controller.setAcknowledged(true);
+    expect(controller.canFlash, isTrue);
+
+    base['file'] = Object();
+    await controller.flash();
+
+    expect(harness.api.flashCalls, 0);
+    expect(controller.errorText, contains('confirmed input changed'));
+  });
+
+  test('execution echoes the same BASE OTA identity', () async {
+    final harness = Harness();
+    harness.api.prepareFlashResult = (_) => _virtualPrepare();
+    final baseFile = Object();
+    final target = _virtualTarget(
+      Object(),
+      base: {'kind': 'file', 'file': baseFile},
+    );
+    final controller = FlashController(
+      api: harness.api,
+      bridge: harness.bridge,
+      environment: harness.environment,
+      target: target,
+      upstreamBase: 'upstream/',
+    );
+    addTearDown(controller.dispose);
+    await controller.start();
+    controller.selectDevice({
+      'serial': _serial,
+      'label': 'Oneplus 13',
+      'transport': 'usb',
+    });
+    await pumpEventQueue();
+    controller.setAcknowledged(true);
+    expect(controller.canFlash, isTrue);
+
+    await controller.flash();
+
+    final virtual = Map<String, Object?>.from(
+      harness.api.lastFlashRequest!['virtual']! as Map,
+    );
+    expect(identical((virtual['base']! as Map)['file'], baseFile), isTrue);
+  });
+
   test('exporting a virtual package streams into the save handle', () async {
     final harness = Harness();
     harness.api.exportVirtualStream = (_) => Stream.fromIterable([
@@ -354,8 +614,40 @@ void main() {
     final virtual = Map<String, Object?>.from(request['virtual']! as Map);
     expect(identical((virtual['ota']! as Map)['file'], handle), isTrue);
     expect(virtual['bloat'], {'kind': 'opfs'});
+    expect(virtual.containsKey('base'), isFalse);
     expect(controller.exportResult?['sha256'], 'abc123');
     expect(controller.exporting, isFalse);
+  });
+
+  test('exporting a conversion package streams the BASE OTA', () async {
+    final harness = Harness();
+    harness.api.exportVirtualStream = (_) => Stream.fromIterable([
+      {'type': 'result', 'job': _virtualJob, 'sha256': 'abc123', 'bytes': 10},
+    ]);
+    final handle = Object();
+    final baseHandle = Object();
+    final target = _virtualTarget(
+      handle,
+      base: {'kind': 'file', 'file': baseHandle},
+    );
+    final controller = FlashController(
+      api: harness.api,
+      bridge: harness.bridge,
+      environment: harness.environment,
+      target: target,
+      upstreamBase: 'upstream/',
+    );
+    addTearDown(controller.dispose);
+
+    final message = await controller.exportZip();
+
+    expect(message, isNull);
+    final request = harness.api.lastExportRequest!;
+    expect(request['selection'], target.selection);
+    final virtual = Map<String, Object?>.from(request['virtual']! as Map);
+    expect(virtual['ota'], {'kind': 'file', 'file': handle});
+    expect(virtual['base'], {'kind': 'file', 'file': baseHandle});
+    expect(virtual['bloat'], {'kind': 'opfs'});
   });
 
   testWidgets('a launched file becomes the local OTA choice', (tester) async {

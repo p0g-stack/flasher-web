@@ -226,11 +226,14 @@ class _AppShellState extends State<AppShell> {
 
   void _flashDirect() {
     final ota = _setup.directFlashOta;
+    final base = _setup.directFlashBase;
     final selection = _setup.selectionMap;
     if (ota == null || selection == null) return;
+    if (_setup.needsBase && base == null) return;
     _openFlash(
       FlashTarget.virtual(
         ota: ota,
+        base: base,
         bloat: _setup.directFlashBloat,
         selection: Map<String, Object?>.from(selection),
         label: '${_setup.deviceDisplay} / ${_setup.kind}',

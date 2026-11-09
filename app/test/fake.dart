@@ -394,7 +394,7 @@ UpstreamTables testTables() => UpstreamTables(
       type: 'SuperHybrid Flasher',
       dev: 'Ace6',
       region: 'IN',
-      builder: 'BUILD_SUPER.sh',
+      builder: 'BUILD_ACE6_OOS.sh',
     ),
     BuilderEntry(
       type: 'Super Flasher',
