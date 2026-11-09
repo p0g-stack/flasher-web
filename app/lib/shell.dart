@@ -224,6 +224,21 @@ class _AppShellState extends State<AppShell> {
     return null;
   }
 
+  void _flashDirect() {
+    final ota = _setup.directFlashOta;
+    final selection = _setup.selectionMap;
+    if (ota == null || selection == null) return;
+    _openFlash(
+      FlashTarget.virtual(
+        ota: ota,
+        bloat: _setup.directFlashBloat,
+        selection: Map<String, Object?>.from(selection),
+        label: '${_setup.deviceDisplay} / ${_setup.kind}',
+      ),
+      back: AppPage.setup,
+    );
+  }
+
   void _startBuild() {
     final request = _setup.buildRequest();
     if (request == null) return;
@@ -376,7 +391,11 @@ class _AppShellState extends State<AppShell> {
 
   Widget _pageView() {
     return switch (_page) {
-      AppPage.setup => SetupPage(setup: _setup, onBuild: _startBuild),
+      AppPage.setup => SetupPage(
+        setup: _setup,
+        onBuild: _startBuild,
+        onFlashDirect: _flashDirect,
+      ),
       AppPage.output => AnimatedBuilder(
         animation: _build,
         builder: (context, _) => BuildOutputPage(
@@ -399,6 +418,7 @@ class _AppShellState extends State<AppShell> {
         runtime: widget.runtime,
         tables: widget.tables,
         initial: widget.environment,
+        setup: _setup,
       ),
       AppPage.documentation => DocsPage(runtime: widget.runtime),
     };

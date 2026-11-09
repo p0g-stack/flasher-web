@@ -6,12 +6,11 @@
 /// destination root; destinations are the manifest paths minus `bloat/`.
 library;
 
-import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
-
+import '../storage/budget.dart';
+import '../storage/hashing.dart';
 import '../storage/storage.dart';
 import '../upstream/bloat_selection.dart';
 import '../upstream/tables.dart';
@@ -99,11 +98,17 @@ final class BloatStore {
     required this.workspace,
     required this.manifest,
     Gunzip Function()? gunzip,
+    this.budget,
   }) : _gunzip = gunzip ?? createGunzip;
 
   final Workspace workspace;
   final BloatManifest manifest;
   final Gunzip Function() _gunzip;
+
+  /// The storage budget every download must fit, or null when the caller has
+  /// none (the CLI does not need one). The check runs before an asset is
+  /// fetched, so a full origin refuses the download instead of failing halfway.
+  final StorageBudget? budget;
 
   static const int _chunk = 4 * 1024 * 1024;
 
@@ -178,6 +183,8 @@ final class BloatStore {
         bytesTotal: totalBytes,
       );
 
+      await _ensureBudget(item);
+
       // 2^31 - 1 works on both the VM and dart2js, where `1 << 32` is 0.
       final suffix =
           '${DateTime.now().microsecondsSinceEpoch}-'
@@ -235,7 +242,7 @@ final class BloatStore {
   ) async* {
     final sink = await workspace.create(path);
     var written = 0;
-    final whole = _Hasher();
+    final whole = StreamingSha256();
     var failed = true;
     try {
       for (final part in asset.transportParts) {
@@ -243,7 +250,7 @@ final class BloatStore {
         if (source.length != part.bytes) {
           throw BloatError('Release asset size mismatch: ${part.assetName}');
         }
-        final one = _Hasher();
+        final one = StreamingSha256();
         var offset = 0;
         while (offset < part.bytes) {
           final want = min(_chunk, part.bytes - offset);
@@ -289,7 +296,7 @@ final class BloatStore {
     final source = await workspace.open(transport);
     final sink = await workspace.create(output);
     final decoder = _gunzip();
-    final hasher = _Hasher();
+    final hasher = StreamingSha256();
     var written = 0;
     var failed = true;
     try {
@@ -332,6 +339,7 @@ final class BloatStore {
       failed = false;
     } finally {
       await sink.close();
+      await closeByteSource(source);
       if (failed) await _deleteIfExists(output);
     }
   }
@@ -339,7 +347,7 @@ final class BloatStore {
   Future<int> _writeDecoded(
     ByteSink sink,
     List<int> bytes,
-    _Hasher hasher,
+    StreamingSha256 hasher,
     int offset,
     BloatAsset asset,
   ) async {
@@ -394,18 +402,22 @@ final class BloatStore {
         return false;
       }
       final source = await workspace.open(target);
-      final hasher = _Hasher();
-      var offset = 0;
-      while (offset < asset.rawBytes) {
-        final bytes = await source.read(
-          offset,
-          min(_chunk, asset.rawBytes - offset),
-        );
-        if (bytes.isEmpty) return false;
-        offset += bytes.length;
-        hasher.add(bytes);
+      try {
+        final hasher = StreamingSha256();
+        var offset = 0;
+        while (offset < asset.rawBytes) {
+          final bytes = await source.read(
+            offset,
+            min(_chunk, asset.rawBytes - offset),
+          );
+          if (bytes.isEmpty) return false;
+          offset += bytes.length;
+          hasher.add(bytes);
+        }
+        return hasher.hex == asset.rawSha256;
+      } finally {
+        await closeByteSource(source);
       }
-      return hasher.hex == asset.rawSha256;
     } on Object {
       return false;
     }
@@ -416,15 +428,41 @@ final class BloatStore {
       throw BloatError('Image size mismatch: $path');
     }
     final source = await workspace.open(path);
-    final hasher = _Hasher();
-    var offset = 0;
-    while (offset < size) {
-      final bytes = await source.read(offset, min(_chunk, size - offset));
-      if (bytes.isEmpty) throw BloatError('Image ended early: $path');
-      offset += bytes.length;
-      hasher.add(bytes);
+    try {
+      final hasher = StreamingSha256();
+      var offset = 0;
+      while (offset < size) {
+        final bytes = await source.read(offset, min(_chunk, size - offset));
+        if (bytes.isEmpty) throw BloatError('Image ended early: $path');
+        offset += bytes.length;
+        hasher.add(bytes);
+      }
+      if (hasher.hex != sha256) {
+        throw BloatError('Image SHA-256 mismatch: $path');
+      }
+    } finally {
+      await closeByteSource(source);
     }
-    if (hasher.hex != sha256) throw BloatError('Image SHA-256 mismatch: $path');
+  }
+
+  /// Checks that the transport file — plus the decoded image while gzip
+  /// decoding keeps both — fits the budget before the download starts.
+  ///
+  /// An existing destination file is subtracted: staging replaces it with a
+  /// move, so only the growth is new usage.
+  Future<void> _ensureBudget(_Item item) async {
+    final budget = this.budget;
+    if (budget == null) return;
+    final asset = item.asset;
+    var needed = asset.gzip ? asset.bytes + asset.rawBytes : asset.bytes;
+    try {
+      if (await workspace.exists(item.target)) {
+        needed -= await workspace.size(item.target);
+      }
+    } on Object {
+      // An unreadable destination is replaced anyway; keep the full estimate.
+    }
+    if (needed > 0) await budget.ensure(needed);
   }
 
   Future<void> _replace(String from, String to) => workspace.move(from, to);
@@ -450,27 +488,4 @@ final class _Item {
   final String relative;
   final String target;
   final BloatAsset asset;
-}
-
-/// A streaming SHA-256, so images never have to be in memory at once.
-final class _Hasher {
-  final _DigestSink _sink = _DigestSink();
-  late final ByteConversionSink _input = sha256.startChunkedConversion(_sink);
-
-  void add(List<int> bytes) => _input.add(bytes);
-
-  String get hex {
-    _input.close();
-    return _sink.digest.toString();
-  }
-}
-
-final class _DigestSink implements Sink<Digest> {
-  late Digest digest;
-
-  @override
-  void add(Digest data) => digest = data;
-
-  @override
-  void close() {}
 }

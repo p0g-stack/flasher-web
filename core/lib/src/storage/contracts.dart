@@ -33,6 +33,13 @@ abstract interface class Workspace {
   /// Creates [path] and its parents, replacing an existing file.
   Future<ByteSink> create(String path);
 
+  /// Opens [path] for positional writes, keeping the bytes it already has.
+  ///
+  /// A missing file is created with its parents, like [create]. Unlike
+  /// [create], an existing file is not truncated, so a download that was
+  /// interrupted resumes at its recorded offset instead of starting over.
+  Future<ByteSink> update(String path);
+
   Future<ByteSource> open(String path);
 
   Future<bool> exists(String path);

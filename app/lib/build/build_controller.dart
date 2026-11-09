@@ -410,6 +410,45 @@ final class BuildController extends ChangeNotifier {
     return null;
   }
 
+  /// Whether this page can write a ZIP into a user-chosen file.
+  bool get canExportZip => bridge.canSaveFile;
+
+  /// Writes the finished ZIP straight into a save-picker file.
+  ///
+  /// Unlike [downloadArtifact], the browser does not stage the whole archive
+  /// in its downloads; the store file is copied into the chosen handle.
+  Future<String?> exportZip() async {
+    final result = _result;
+    if (result == null) return 'There is no finished build to export.';
+    if (_hosted) {
+      return 'A hosted ZIP is served by the server; use Download hosted ZIP.';
+    }
+    if (result['format'] == 'folder') {
+      return 'A folder build is not a single ZIP.';
+    }
+    final artifact = result['artifact'];
+    final job = result['job'];
+    if (artifact is! String || artifact.isEmpty || job is! String) {
+      return 'The build result has no artifact to export.';
+    }
+    final Object? destination;
+    try {
+      // The picker must run inside the click task, before any await.
+      destination = await bridge.pickSaveFile(suggestedName: artifact);
+    } on Object catch (error) {
+      return '$error';
+    }
+    if (destination == null) return null;
+    final output = _request?['output'];
+    final handle = output is Map ? output['handle'] : null;
+    await bridge.saveStoreFile(
+      '$job/$artifact',
+      handle: handle,
+      destination: destination,
+    );
+    return null;
+  }
+
   /// Opens the hosted `build.json`, or explains why it is unavailable.
   Future<String?> openManifest() async {
     final url = _result?['manifestUrl'];

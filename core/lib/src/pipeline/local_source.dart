@@ -10,3 +10,7 @@ import '../storage/contracts.dart';
 
 /// Opens [file], a `File` on the web or a path [String] natively.
 Future<ByteSource> openLocalOta(Object file) => platform.openLocalOta(file);
+
+/// Stable picker identity used in an in-place flash confirmation.
+Future<Map<String, Object?>> localOtaIdentity(Object file) =>
+    platform.localOtaIdentity(file);

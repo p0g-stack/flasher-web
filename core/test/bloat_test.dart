@@ -100,6 +100,86 @@ void main() {
     expect(await workspace.exists('13/EU_BLOAT/multi.img'), isFalse);
     expect(await workspace.exists('13/EU_BLOAT/gzip.img'), isFalse);
   });
+
+  test('staging moves instead of copying', () async {
+    final fixture = _Fixture();
+    final recording = _RecordingWorkspace(workspace);
+    final store = BloatStore(workspace: recording, manifest: fixture.manifest);
+    await store.materialize(_Fixture.selection, fixture.fetch).drain<void>();
+
+    final creates = recording.calls
+        .where((call) => call.startsWith('create:'))
+        .toList();
+    final updates = recording.calls
+        .where((call) => call.startsWith('update:'))
+        .where((call) => call.contains('.img'))
+        .toList();
+    final moves = recording.calls
+        .where((call) => call.startsWith('move:'))
+        .toList();
+    // Nothing is staged through a second streaming copy: the transport file is
+    // renamed into place, so HandleWorkspace's native move keeps the peak at
+    // one copy of the image.
+    expect(updates, isEmpty);
+
+    final singleCreates = creates
+        .where((call) => call.contains('single.img'))
+        .toList();
+    expect(singleCreates, hasLength(1));
+    expect(singleCreates.single, contains('.part-'));
+    final singleMoves = moves
+        .where((call) => call.contains('single.img'))
+        .toList();
+    expect(singleMoves, hasLength(1));
+    expect(singleMoves.single, endsWith('->13/EU_BLOAT/single.img'));
+
+    final multiCreates = creates
+        .where((call) => call.contains('multi.img'))
+        .toList();
+    expect(multiCreates, hasLength(1), reason: 'one transport file, one write');
+    expect(multiCreates.single, contains('.transport-'));
+    expect(
+      moves.where((call) => call.contains('multi.img')),
+      hasLength(2),
+      reason: 'transport -> part -> destination are renames',
+    );
+
+    final gzipCreates = creates
+        .where((call) => call.contains('gzip.img'))
+        .toList();
+    expect(
+      gzipCreates,
+      hasLength(2),
+      reason: 'a gzip asset keeps its transport file while the image decodes',
+    );
+    expect(gzipCreates.where((call) => call.contains('.transport-')), hasLength(1));
+    expect(
+      moves.where((call) => call.contains('gzip.img')),
+      hasLength(1),
+    );
+  });
+
+  test('a budget refusal happens before any asset is fetched', () async {
+    final fixture = _Fixture();
+    final store = BloatStore(
+      workspace: workspace,
+      manifest: fixture.manifest,
+      budget: StorageBudget(
+        estimateSource: _FixedEstimate(usage: 0, quota: 0),
+        cap: 1,
+      ),
+    );
+    await expectLater(
+      store.materialize(_Fixture.selection, fixture.fetch),
+      emitsInOrder([
+        isA<BloatStarted>(),
+        isA<BloatStep>(),
+        emitsError(isA<BudgetException>()),
+      ]),
+    );
+    expect(fixture.fetched, isEmpty);
+    expect(await workspace.exists('13/EU_BLOAT/single.img'), isFalse);
+  });
 }
 
 final class _Fixture {
@@ -243,3 +323,63 @@ Future<Uint8List> _readAll(Workspace workspace, String path) async {
 }
 
 String _sha(List<int> bytes) => sha256.convert(bytes).toString();
+
+/// Records the workspace calls a staging run makes, so a test can prove that
+/// an image is written once and renamed, not streamed twice.
+final class _RecordingWorkspace implements Workspace {
+  _RecordingWorkspace(this._inner);
+
+  final Workspace _inner;
+  final List<String> calls = [];
+
+  @override
+  Future<ByteSink> create(String path) {
+    calls.add('create:$path');
+    return _inner.create(path);
+  }
+
+  @override
+  Future<ByteSink> update(String path) {
+    calls.add('update:$path');
+    return _inner.update(path);
+  }
+
+  @override
+  Future<ByteSource> open(String path) {
+    calls.add('open:$path');
+    return _inner.open(path);
+  }
+
+  @override
+  Future<bool> exists(String path) => _inner.exists(path);
+
+  @override
+  Future<int> size(String path) => _inner.size(path);
+
+  @override
+  Future<List<String>> list(String dir, {bool recursive = false}) =>
+      _inner.list(dir, recursive: recursive);
+
+  @override
+  Future<void> move(String from, String to) {
+    calls.add('move:$from->$to');
+    return _inner.move(from, to);
+  }
+
+  @override
+  Future<void> delete(String path) {
+    calls.add('delete:$path');
+    return _inner.delete(path);
+  }
+}
+
+final class _FixedEstimate implements StorageEstimateSource {
+  _FixedEstimate({required this.usage, required this.quota});
+
+  final int usage;
+  final int quota;
+
+  @override
+  Future<StorageEstimate?> estimate() async =>
+      StorageEstimate(usage: usage, quota: quota);
+}

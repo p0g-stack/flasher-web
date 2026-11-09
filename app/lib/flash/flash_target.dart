@@ -9,7 +9,26 @@ final class FlashTarget {
     required this.selection,
     required this.label,
   }) : hostedSha256 = null,
-       hostedBytes = null;
+       hostedBytes = null,
+       virtualOta = null,
+       virtualBloat = null;
+
+  /// A local-first flash with no built package: the service reads the OTA in
+  /// place and the verified bloat images from the bloat store.
+  ///
+  /// [job] stays empty until `prepareFlash` assigns the derived virtual job
+  /// id; the controller echoes it back when executing.
+  const FlashTarget.virtual({
+    required Map<String, Object?> ota,
+    required Map<String, Object?> bloat,
+    required this.selection,
+    required this.label,
+  }) : job = '',
+       store = const {},
+       hostedSha256 = null,
+       hostedBytes = null,
+       virtualOta = ota,
+       virtualBloat = bloat;
 
   /// A hosted, catalog-owned build. The service fetches the ZIP through
   /// same-origin ranges; [store] stays empty and nothing is written locally.
@@ -22,7 +41,9 @@ final class FlashTarget {
   }) : job = jobId,
        store = const {},
        hostedSha256 = sha256,
-       hostedBytes = bytes;
+       hostedBytes = bytes,
+       virtualOta = null,
+       virtualBloat = null;
 
   final String job;
 
@@ -41,7 +62,22 @@ final class FlashTarget {
   /// The exact ZIP length, for a hosted build.
   final int? hostedBytes;
 
+  /// The OTA input `{kind: file|url|catalog, ...}`, for a virtual flash.
+  final Map<String, Object?>? virtualOta;
+
+  /// The bloat store `{kind: opfs}` or a directory handle, for a virtual flash.
+  final Map<String, Object?>? virtualBloat;
+
   bool get isHosted => hostedSha256 != null;
+
+  bool get isVirtual => virtualOta != null && virtualBloat != null;
+
+  /// The only virtual input the service accepts: the OTA source and the
+  /// verified bloat store. No output store and no built job are named.
+  Map<String, Object?>? get virtualRequest {
+    if (!isVirtual) return null;
+    return {'ota': virtualOta, 'bloat': virtualBloat};
+  }
 
   /// The only hosted input the service accepts: a capability id and the
   /// immutable digest and length. No URL or upload is ever sent.

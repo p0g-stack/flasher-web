@@ -6,10 +6,18 @@ import 'setup_state.dart';
 
 /// The New package page: steps 1–4, output choice and Build.
 class SetupPage extends StatelessWidget {
-  const SetupPage({super.key, required this.setup, required this.onBuild});
+  const SetupPage({
+    super.key,
+    required this.setup,
+    required this.onBuild,
+    this.onFlashDirect,
+  });
 
   final SetupState setup;
   final VoidCallback onBuild;
+
+  /// Opens the Flash page for a non-Super selection without a package build.
+  final VoidCallback? onFlashDirect;
 
   @override
   Widget build(BuildContext context) {
@@ -43,7 +51,11 @@ class SetupPage extends StatelessWidget {
                 _AblCard(setup: setup),
               ],
               const SizedBox(height: 16),
-              _OutputBar(setup: setup, onBuild: onBuild),
+              _OutputBar(
+                setup: setup,
+                onBuild: onBuild,
+                onFlashDirect: onFlashDirect,
+              ),
             ],
           );
           return SingleChildScrollView(
@@ -568,6 +580,19 @@ class _LocalOtaRole extends StatelessWidget {
             ],
           ),
         ),
+        if (setup.pendingOtaName != null && file == null && role == 'ota')
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: const ValueKey('reconnectOtaFile'),
+                onPressed: setup.reconnectOtaFile,
+                icon: const Icon(Icons.refresh, size: 16),
+                label: Text('Reconnect ${setup.pendingOtaName}'),
+              ),
+            ),
+          ),
         if (setup.inspecting(role))
           const Padding(
             padding: EdgeInsets.only(top: 8),
@@ -759,6 +784,62 @@ class _CatalogRole extends StatelessWidget {
             color: theme.colorScheme.onSurfaceVariant,
           ),
         ),
+        if (selected != null) ...[
+          const SizedBox(height: 6),
+          if (setup.isOtaCached(selected))
+            HintText(
+              'A complete offline copy is cached in the bloat store.',
+              key: ValueKey('catalogCached-$role'),
+            )
+          else if (setup.canKeepOtaOffline(selected))
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: ValueKey('keepOffline-$role'),
+                onPressed: setup.keepOtaOffline,
+                icon: const Icon(
+                  Icons.download_for_offline_outlined,
+                  size: 18,
+                ),
+                label: Text(
+                  'Keep offline copy · '
+                  '${formatBytes((selected['size'] as num).toInt())}',
+                ),
+              ),
+            )
+          else if (!setup.cachingOta && setup.budget != null)
+            HintText(
+              'The offline copy does not fit the remaining '
+              '${formatBytes(setup.budgetAvailable)} under the app storage '
+              'cap. Evict a cached OTA from Environment first.',
+              key: ValueKey('catalogNoFit-$role'),
+            ),
+          if (setup.cachingOta &&
+              setup.cachingKey != null &&
+              setup.cacheKeyFor(selected) == setup.cachingKey) ...[
+            for (final entry in setup.cacheProgress.entries)
+              ByteProgress(
+                label: entry.key,
+                done: entry.value.done,
+                total: entry.value.total,
+              ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: ValueKey('cancelCacheOta-$role'),
+                onPressed: setup.cancelCacheOta,
+                icon: const Icon(Icons.stop, size: 16),
+                label: const Text('Cancel download'),
+              ),
+            ),
+          ],
+          if (setup.cacheOtaError != null)
+            HintText(
+              setup.cacheOtaError!,
+              key: ValueKey('catalogCacheError-$role'),
+              error: true,
+            ),
+        ],
       ],
     );
   }
@@ -806,10 +887,15 @@ class _AblCard extends StatelessWidget {
 }
 
 class _OutputBar extends StatelessWidget {
-  const _OutputBar({required this.setup, required this.onBuild});
+  const _OutputBar({
+    required this.setup,
+    required this.onBuild,
+    this.onFlashDirect,
+  });
 
   final SetupState setup;
   final VoidCallback onBuild;
+  final VoidCallback? onFlashDirect;
 
   @override
   Widget build(BuildContext context) {
@@ -817,6 +903,7 @@ class _OutputBar extends StatelessWidget {
     final store = setup.outputStore;
     final pending = setup.pendingFolderName(StoreTarget.output);
     final error = setup.buildRequirementsError;
+    final directError = setup.directFlashRequirementsError;
     return SectionCard(
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -886,8 +973,10 @@ class _OutputBar extends StatelessWidget {
                 ),
             ],
           );
-          final actions = Row(
-            mainAxisSize: MainAxisSize.min,
+          final actions = Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               if (!setup.hostedBuild)
                 Row(
@@ -901,18 +990,44 @@ class _OutputBar extends StatelessWidget {
                     const Text('ZIP build'),
                   ],
                 ),
-              const SizedBox(width: 10),
               Tooltip(
                 message: error.isEmpty ? 'Build the package' : error,
-                child: FilledButton.icon(
-                  key: const ValueKey('buildButton'),
-                  onPressed: setup.canBuild ? onBuild : null,
-                  icon: const Icon(Icons.arrow_forward, size: 18),
-                  label: Text(
-                    setup.hostedBuild ? 'Build on server' : 'Build package',
+                child: setup.directFlashSupported
+                    ? FilledButton.tonalIcon(
+                        key: const ValueKey('buildButton'),
+                        onPressed: setup.canBuild ? onBuild : null,
+                        icon: const Icon(Icons.arrow_forward, size: 18),
+                        label: Text(
+                          setup.hostedBuild
+                              ? 'Build on server'
+                              : 'Build package',
+                        ),
+                      )
+                    : FilledButton.icon(
+                        key: const ValueKey('buildButton'),
+                        onPressed: setup.canBuild ? onBuild : null,
+                        icon: const Icon(Icons.arrow_forward, size: 18),
+                        label: Text(
+                          setup.hostedBuild
+                              ? 'Build on server'
+                              : 'Build package',
+                        ),
+                      ),
+              ),
+              if (setup.directFlashSupported)
+                Tooltip(
+                  message: directError.isEmpty
+                      ? 'Flash the OTA directly without building a package'
+                      : directError,
+                  child: FilledButton.icon(
+                    key: const ValueKey('flashDirectButton'),
+                    onPressed: setup.canFlashDirect && onFlashDirect != null
+                        ? onFlashDirect
+                        : null,
+                    icon: const Icon(Icons.flash_on, size: 18),
+                    label: const Text('Flash directly'),
                   ),
                 ),
-              ),
             ],
           );
           return Column(
@@ -939,6 +1054,28 @@ class _OutputBar extends StatelessWidget {
                   textAlign: TextAlign.end,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.error,
+                  ),
+                ),
+              ],
+              if (setup.directFlashSupported && directError.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  directError,
+                  key: const ValueKey('directFlashError'),
+                  textAlign: TextAlign.end,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+              ],
+              if (setup.selectionValid && setup.isSuperKind) ...[
+                const SizedBox(height: 6),
+                Text(
+                  setup.directFlashUnavailable,
+                  key: const ValueKey('directFlashNotice'),
+                  textAlign: TextAlign.end,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
               ],

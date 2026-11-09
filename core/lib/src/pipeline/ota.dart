@@ -8,6 +8,7 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as crypto;
 import '../rust/api/arb.dart';
 import '../rust/api/payload.dart';
 import '../rust/api/zip.dart';
@@ -48,6 +49,7 @@ final class OtaArchive {
     required this.payloadDataOffset,
     required this.dataStart,
     required this.remote,
+    required this.manifestSha256,
   });
 
   /// The source reads are made through; it re-resolves expired catalog links.
@@ -57,6 +59,9 @@ final class OtaArchive {
 
   /// The parsed payload manifest.
   final Manifest manifest;
+
+  /// Digest of the exact protobuf bytes, including operation data hashes.
+  final String manifestSha256;
 
   /// Absolute ZIP offset of `payload.bin`'s data.
   final int payloadDataOffset;
@@ -73,6 +78,15 @@ final class OtaArchive {
   Map<String, int> get partitions => info.partitions;
   bool get stored => info.stored;
   int get payloadSize => info.payloadSize;
+
+  int? _virtualLimit;
+
+  /// Validate once per archive/limit before exposing authenticated reads.
+  void verifyVirtualReads({int maxOperationBytes = 64 << 20}) {
+    if (_virtualLimit == maxOperationBytes) return;
+    manifest.verifyVirtual(maxOperationBytes: BigInt.from(maxOperationBytes));
+    _virtualLimit = maxOperationBytes;
+  }
 
   static const int _tailLimit = 65557 + 20 + 56;
   static const int _maxMetadata = 1024 * 1024;
@@ -196,6 +210,7 @@ final class OtaArchive {
         payloadDataOffset: payloadDataOffset,
         dataStart: header.dataStart.toInt(),
         remote: remote,
+        manifestSha256: crypto.sha256.convert(manifestBytes).toString(),
       );
     } on Object {
       // A source opened only for inspection must not leak its handle.

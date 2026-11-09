@@ -464,6 +464,15 @@ class _ResultCard extends StatelessWidget {
               'This build kept a flasher folder in the chosen output store. '
               'Folder builds are not a single download.',
             ),
+          if (format == 'zip' && !hosted && controller.canExportZip) ...[
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              key: const ValueKey('exportZip'),
+              onPressed: () => _export(context),
+              icon: const Icon(Icons.save_alt, size: 18),
+              label: const Text('Export ZIP'),
+            ),
+          ],
           if (hosted) ...[
             const SizedBox(height: 8),
             OutlinedButton.icon(
@@ -502,6 +511,13 @@ class _ResultCard extends StatelessWidget {
 
   Future<void> _download(BuildContext context) async {
     final message = await controller.downloadArtifact();
+    if (!context.mounted || message == null) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _export(BuildContext context) async {
+    final message = await controller.exportZip();
     if (!context.mounted || message == null) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));

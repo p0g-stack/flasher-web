@@ -1,0 +1,534 @@
+import 'dart:async';
+
+import 'package:flasher_web/api/platform_bridge.dart';
+import 'package:flasher_web/flash/flash_controller.dart';
+import 'package:flasher_web/flash/flash_page.dart';
+import 'package:flasher_web/flash/flash_target.dart';
+import 'package:flasher_web/setup/setup_state.dart';
+import 'package:flasher_web/theme.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'fake.dart';
+
+const _serial = 'SERIAL123';
+const _virtualJob = 'virtual-0123456789abcdef';
+
+Map<String, Object?> _inspection() => {
+  'version': 'CPH2647_11.A.30',
+  'length': 1024,
+  'partitions': {'boot': 10},
+  'fields': {'pre-device': 'CPH2647'},
+};
+
+Map<String, Object?> _virtualPrepare({String job = _virtualJob}) => {
+  'token': 'token-virtual',
+  'serial': _serial,
+  'product': 'OP13',
+  'expectedProduct': 'OP13',
+  'productMatches': true,
+  'mode': 'bootloader',
+  'modeOk': true,
+  'resolved': true,
+  'job': job,
+  'format': 'virtual',
+  'version': 'CPH2647_11.A.30',
+  'steps': ['Require bootloader', 'Flash boot from the OTA'],
+  'executionSteps': ['Require bootloader', 'Flash boot from the OTA'],
+  'confirmation': ['Flash Oneplus 13, serial $_serial'],
+  'prompts': <Map<String, Object?>>[],
+  'warnings': <String>[],
+};
+
+FlashTarget _virtualTarget(
+  Object otaFile, {
+  Map<String, Object?>? bloat,
+}) => FlashTarget.virtual(
+  ota: {'kind': 'file', 'file': otaFile},
+  bloat: bloat ?? const {'kind': 'opfs'},
+  selection: const {
+    'device': 'Oneplus 13',
+    'kind': 'Regional Flasher',
+    'region': 'GLO',
+  },
+  label: 'Oneplus 13 / Regional Flasher',
+);
+
+Future<void> _chooseRegional(WidgetTester tester) async {
+  await chooseKind(tester, 'Regional Flasher');
+}
+
+Future<void> _selectDevice(WidgetTester tester) async {
+  await tester.ensureVisible(find.byKey(const ValueKey('chooseDevice')));
+  await tester.tap(find.byKey(const ValueKey('chooseDevice')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const ValueKey('granted-$_serial')));
+  await tester.pumpAndSettle();
+}
+
+Future<void> _confirmAndFlash(WidgetTester tester) async {
+  await tester.ensureVisible(find.byKey(const ValueKey('confirmFlashDevice')));
+  await tester.tap(find.byKey(const ValueKey('confirmFlashDevice')));
+  await tester.pumpAndSettle();
+  await tester.ensureVisible(find.byKey(const ValueKey('startFlash')));
+  await tester.tap(find.byKey(const ValueKey('startFlash')));
+  await tester.pump();
+}
+
+Future<FlashController> _pumpVirtualFlash(
+  WidgetTester tester,
+  Harness harness,
+  FlashTarget target,
+) async {
+  await tester.binding.setSurfaceSize(const Size(1440, 1000));
+  addTearDown(() => tester.binding.setSurfaceSize(null));
+  final controller = FlashController(
+    api: harness.api,
+    bridge: harness.bridge,
+    environment: harness.environment,
+    target: target,
+    upstreamBase: 'upstream/',
+  );
+  addTearDown(controller.dispose);
+  await controller.start();
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: themeFor(Brightness.light),
+      home: Scaffold(
+        body: FlashPage(controller: controller, onBack: () {}),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+  return controller;
+}
+
+void main() {
+  test('a virtual target names no output or hosted source', () {
+    final target = _virtualTarget(Object());
+    expect(target.isVirtual, isTrue);
+    expect(target.isHosted, isFalse);
+    expect(target.job, isEmpty);
+    expect(target.store, isEmpty);
+    expect(target.virtualRequest, {
+      'ota': {'kind': 'file', 'file': target.virtualOta?['file']},
+      'bloat': {'kind': 'opfs'},
+    });
+  });
+
+  test('direct flash gating requires a non-Super kind, bloat and an OTA', (
+    // The gates are pure setup-state facts.
+  ) async {
+    final harness = Harness();
+    harness.api.inspectResult = _inspection();
+    final setup = SetupState(
+      runtime: harness.runtime,
+      tables: harness.tables,
+      environment: harness.environment,
+      preferences: harness.preferences,
+    );
+    addTearDown(setup.dispose);
+    await setup.refreshBloat(force: true);
+
+    expect(setup.directFlashSupported, isFalse);
+    expect(setup.directFlashUnavailable, contains('Super kinds'));
+    expect(setup.canFlashDirect, isFalse);
+
+    setup.selectKind('Regional Flasher');
+    await pumpEventQueue();
+    expect(setup.directFlashSupported, isTrue);
+    expect(
+      setup.directFlashRequirementsError,
+      'Select a full TARGET OTA ZIP before flashing directly.',
+    );
+
+    harness.api.bloatStatusResult = const {
+      'total': 2,
+      'downloaded': 0,
+      'bytes': 1024,
+      'ready': false,
+    };
+    await setup.refreshBloat();
+    expect(
+      setup.directFlashRequirementsError,
+      'Required bloat files must be downloaded and verified before flashing '
+      'directly.',
+    );
+
+    harness.api.bloatStatusResult = const {
+      'total': 2,
+      'downloaded': 2,
+      'bytes': 1024,
+      'ready': true,
+    };
+    await setup.refreshBloat();
+    final handle = Object();
+    await setup.setLocalFile(
+      'ota',
+      PickedFile(handle: handle, name: 'regional.zip', size: 4096),
+    );
+
+    expect(setup.directFlashRequirementsError, isEmpty);
+    expect(setup.canFlashDirect, isTrue);
+    expect(setup.directFlashOta, {'kind': 'file', 'file': handle});
+    expect(setup.directFlashBloat, {'kind': 'opfs'});
+  });
+
+  testWidgets('a Super selection hides Flash directly with an explanation', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+
+    expect(find.byKey(const ValueKey('flashDirectButton')), findsNothing);
+    expect(find.byKey(const ValueKey('directFlashNotice')), findsOneWidget);
+    expect(
+      find.textContaining('Super kinds fold the OTA'),
+      findsOneWidget,
+    );
+
+    await _chooseRegional(tester);
+    expect(find.byKey(const ValueKey('flashDirectButton')), findsOneWidget);
+    expect(find.byKey(const ValueKey('directFlashNotice')), findsNothing);
+  });
+
+  testWidgets('Flash directly opens the flash page with the OTA and bloat', (
+    tester,
+  ) async {
+    final harness = Harness();
+    harness.api.inspectResult = _inspection();
+    harness.api.prepareFlashResult = (_) => _virtualPrepare();
+    harness.bridge.fastbootChoices.add(
+      const FastbootUsbDevice(serial: _serial, label: 'Oneplus 13'),
+    );
+    final handle = Object();
+    harness.bridge.otaFile = PickedFile(
+      handle: handle,
+      name: 'regional.zip',
+      size: 4096,
+    );
+    await pumpApp(tester, harness: harness);
+    await _chooseRegional(tester);
+    await tester.tap(find.byKey(const ValueKey('chooseOtaFile')));
+    await tester.pumpAndSettle();
+
+    final button = find.byKey(const ValueKey('flashDirectButton'));
+    await tester.ensureVisible(button);
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('flashStatus')), findsOneWidget);
+    expect(find.textContaining('OTA read in place'), findsOneWidget);
+    expect(find.textContaining('Back to setup'), findsWidgets);
+
+    await _selectDevice(tester);
+    final prepare = harness.api.lastPrepareRequest!;
+    expect(prepare.containsKey('output'), isFalse);
+    expect(prepare.containsKey('hosted'), isFalse);
+    expect(prepare.containsKey('job'), isFalse);
+    expect(prepare['selection'], {
+      'device': 'Oneplus 13',
+      'kind': 'Regional Flasher',
+      'region': 'GLO',
+    });
+    final virtual = Map<String, Object?>.from(prepare['virtual']! as Map);
+    expect(virtual['ota'], {'kind': 'file', 'file': handle});
+    expect(virtual['bloat'], {'kind': 'opfs'});
+    expect(find.text(_virtualJob), findsWidgets);
+  });
+
+  testWidgets('execution echoes the derived virtual job and the same source', (
+    tester,
+  ) async {
+    final harness = Harness();
+    final events = StreamController<Map<String, Object?>>();
+    addTearDown(events.close);
+    harness.api.prepareFlashResult = (_) => _virtualPrepare();
+    harness.api.flashStream = (_) => events.stream;
+    final handle = Object();
+    final target = _virtualTarget(handle);
+    final controller = await _pumpVirtualFlash(tester, harness, target);
+    await _selectDevice(tester);
+
+    final prepare = harness.api.lastPrepareRequest!;
+    expect(prepare.containsKey('output'), isFalse);
+    expect(Map<String, Object?>.from(prepare['virtual']! as Map)['ota'], {
+      'kind': 'file',
+      'file': handle,
+    });
+
+    await _confirmAndFlash(tester);
+    final flash = harness.api.lastFlashRequest!;
+    expect(flash['job'], _virtualJob);
+    expect(flash['confirmationToken'], 'token-virtual');
+    expect(flash.containsKey('output'), isFalse);
+    final virtual = Map<String, Object?>.from(flash['virtual']! as Map);
+    expect(identical((virtual['ota']! as Map)['file'], handle), isTrue);
+    expect(virtual['bloat'], {'kind': 'opfs'});
+
+    events.add({
+      'type': 'result',
+      'status': 'succeeded',
+      'receipt': {
+        'status': 'succeeded',
+        'serial': _serial,
+        'device': 'Oneplus 13',
+        'job': _virtualJob,
+        'persistenceWarnings': <String>[],
+        'steps': <Map<String, Object?>>[],
+      },
+    });
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('flashReceipt')), findsOneWidget);
+    expect(find.textContaining('flashed in place'), findsWidgets);
+    expect(controller.receiptPath, contains('browser download'));
+  });
+
+  test('a changed OTA invalidates the prepared token', () async {
+    final harness = Harness();
+    harness.api.prepareFlashResult = (_) => _virtualPrepare();
+    final ota = <String, Object?>{'kind': 'file', 'file': Object()};
+    final target = FlashTarget.virtual(
+      ota: ota,
+      bloat: const {'kind': 'opfs'},
+      selection: const {
+        'device': 'Oneplus 13',
+        'kind': 'Regional Flasher',
+        'region': 'GLO',
+      },
+      label: 'Oneplus 13 / Regional Flasher',
+    );
+    final controller = FlashController(
+      api: harness.api,
+      bridge: harness.bridge,
+      environment: harness.environment,
+      target: target,
+      upstreamBase: 'upstream/',
+    );
+    addTearDown(controller.dispose);
+    await controller.start();
+    controller.selectDevice({
+      'serial': _serial,
+      'label': 'Oneplus 13',
+      'transport': 'usb',
+    });
+    await pumpEventQueue();
+    expect(controller.ready, isTrue);
+    controller.setAcknowledged(true);
+    expect(controller.canFlash, isTrue);
+
+    ota['file'] = Object();
+    await controller.flash();
+
+    expect(harness.api.flashCalls, 0);
+    expect(controller.errorText, contains('confirmed input changed'));
+  });
+
+  test('exporting a virtual package streams into the save handle', () async {
+    final harness = Harness();
+    harness.api.exportVirtualStream = (_) => Stream.fromIterable([
+      {'type': 'progress', 'label': 'ZIP', 'done': 1, 'total': 2},
+      {'type': 'result', 'job': _virtualJob, 'sha256': 'abc123', 'bytes': 10},
+    ]);
+    final handle = Object();
+    final target = _virtualTarget(handle);
+    final controller = FlashController(
+      api: harness.api,
+      bridge: harness.bridge,
+      environment: harness.environment,
+      target: target,
+      upstreamBase: 'upstream/',
+    );
+    addTearDown(controller.dispose);
+
+    final message = await controller.exportZip();
+
+    expect(message, isNull);
+    expect(harness.bridge.pickSaveFileCalls, 1);
+    final request = harness.api.lastExportRequest!;
+    expect(request['selection'], target.selection);
+    expect(request['upstreamBase'], 'upstream/');
+    expect(
+      identical(request['destination'], harness.bridge.saveFileResult),
+      isTrue,
+    );
+    final virtual = Map<String, Object?>.from(request['virtual']! as Map);
+    expect(identical((virtual['ota']! as Map)['file'], handle), isTrue);
+    expect(virtual['bloat'], {'kind': 'opfs'});
+    expect(controller.exportResult?['sha256'], 'abc123');
+    expect(controller.exporting, isFalse);
+  });
+
+  testWidgets('a launched file becomes the local OTA choice', (tester) async {
+    final harness = Harness();
+    harness.api.inspectResult = _inspection();
+    await pumpApp(tester, harness: harness);
+
+    final handle = Object();
+    harness.bridge.launch(
+      PickedFile(handle: handle, name: 'launched.zip', size: 4096),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('launched.zip'), findsOneWidget);
+    expect(harness.api.lastInspectRequest?['ota'], {
+      'kind': 'file',
+      'file': handle,
+    });
+  });
+
+  testWidgets('a remembered OTA is restored after a reload', (tester) async {
+    final harness = Harness();
+    harness.api.inspectResult = _inspection();
+    harness.bridge.rememberedOta = PickedFile(
+      handle: Object(),
+      name: 'remembered.zip',
+      size: 4096,
+    );
+    await pumpApp(tester, harness: harness);
+
+    expect(find.text('remembered.zip'), findsOneWidget);
+  });
+
+  testWidgets('a remembered OTA asks for read permission again', (
+    tester,
+  ) async {
+    final harness = Harness();
+    harness.api.inspectResult = _inspection();
+    harness.bridge.rememberedOta = PickedFile(
+      handle: Object(),
+      name: 'remembered.zip',
+      size: 4096,
+    );
+    harness.bridge.otaPermissionGranted = false;
+    await pumpApp(tester, harness: harness);
+
+    final reconnect = find.byKey(const ValueKey('reconnectOtaFile'));
+    expect(reconnect, findsOneWidget);
+    expect(find.textContaining('Reconnect remembered.zip'), findsOneWidget);
+    await tester.ensureVisible(reconnect);
+    await tester.tap(reconnect);
+    await tester.pumpAndSettle();
+
+    expect(find.text('remembered.zip'), findsOneWidget);
+  });
+
+  testWidgets('the environment page shows the budget and evicts a cached OTA', (
+    tester,
+  ) async {
+    const digest =
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    final harness = Harness();
+    harness.api.storageBudgetResult = const {
+      'cap': 10 * 1024 * 1024 * 1024,
+      'usage': 3 * 1024 * 1024 * 1024,
+      'quota': 64 * 1024 * 1024 * 1024,
+      'available': 7 * 1024 * 1024 * 1024,
+      'items': [
+        {
+          'key': digest,
+          'label': 'OP 13 / GLO / CPH2647_11.A.30',
+          'bytes': 4 * 1024 * 1024 * 1024,
+          'complete': true,
+          'lastUsed': '2026-11-01T00:00:00Z',
+        },
+      ],
+    };
+    await pumpApp(tester, harness: harness);
+
+    await tester.tap(find.text('Environment').first);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('storageBudgetBar')), findsOneWidget);
+    expect(find.textContaining('OP 13 / GLO'), findsOneWidget);
+    expect(find.textContaining('complete'), findsWidgets);
+
+    final evict = find.byKey(const ValueKey('evict-$digest'));
+    await tester.ensureVisible(evict);
+    await tester.tap(evict);
+    await tester.pumpAndSettle();
+
+    expect(harness.api.evictCalls, 1);
+    expect(harness.api.lastEvictRequest?['key'], digest);
+    expect(harness.api.lastEvictRequest?['store'], {'kind': 'opfs'});
+  });
+
+  testWidgets('a catalog OTA offers an offline copy only when it fits', (
+    tester,
+  ) async {
+    final harness = Harness();
+    harness.api.catalog = {
+      'api_version': '1',
+      'releases': [
+        {
+          'id': 'regional-1',
+          'device': 'OP 13',
+          'region': 'GLO',
+          'version': 'CPH2647_11.A.30',
+          'source_url': 'https://example.test/regional.zip',
+          'security_patch': '2025-09-01',
+          'size': 4 * 1024 * 1024 * 1024,
+          'is_latest': true,
+        },
+      ],
+    };
+    harness.api.cacheOtaStream = (_) =>
+        Stream.fromIterable(const [
+          {
+            'type': 'result',
+            'key': 'b',
+            'label': 'OP 13 / GLO',
+            'bytes': 4 * 1024 * 1024 * 1024,
+            'complete': true,
+          },
+        ]);
+    await pumpApp(tester, harness: harness);
+    await _chooseRegional(tester);
+    await tester.tap(find.text('Version catalog'));
+    await tester.pumpAndSettle();
+
+    final keep = find.byKey(const ValueKey('keepOffline-ota'));
+    expect(keep, findsOneWidget);
+    await tester.ensureVisible(keep);
+    await tester.tap(keep);
+    await tester.pumpAndSettle();
+
+    final request = harness.api.lastCacheOtaRequest!;
+    expect(request['store'], {'kind': 'opfs'});
+    final ota = Map<String, Object?>.from(request['ota']! as Map);
+    expect(ota['kind'], 'catalog');
+    expect((ota['entry']! as Map)['id'], 'regional-1');
+  });
+
+  testWidgets('a cached OTA that does not fit is not offered', (tester) async {
+    final harness = Harness();
+    harness.api.storageBudgetResult = const {
+      'cap': 10 * 1024 * 1024 * 1024,
+      'usage': 9 * 1024 * 1024 * 1024,
+      'quota': 64 * 1024 * 1024 * 1024,
+      'available': 1 * 1024 * 1024 * 1024,
+      'items': <Map<String, Object?>>[],
+    };
+    harness.api.catalog = {
+      'api_version': '1',
+      'releases': [
+        {
+          'id': 'regional-1',
+          'device': 'OP 13',
+          'region': 'GLO',
+          'version': 'CPH2647_11.A.30',
+          'source_url': 'https://example.test/regional.zip',
+          'security_patch': '2025-09-01',
+          'size': 4 * 1024 * 1024 * 1024,
+          'is_latest': true,
+        },
+      ],
+    };
+    await pumpApp(tester, harness: harness);
+    await _chooseRegional(tester);
+    await tester.tap(find.text('Version catalog'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('keepOffline-ota')), findsNothing);
+    expect(find.byKey(const ValueKey('catalogNoFit-ota')), findsOneWidget);
+  });
+}

@@ -20,6 +20,7 @@ final class HttpRangeSource implements ByteSource {
     this._headers, {
     required this.length,
     required this.etag,
+    this.observedEtag,
   });
 
   /// Probes [uri] and returns a source whose [length] is the remote length.
@@ -49,6 +50,7 @@ final class HttpRangeSource implements ByteSource {
       Map<String, String>.unmodifiable(headers),
       length: probe.length,
       etag: expectedEtag,
+      observedEtag: probe.etag,
     );
   }
 
@@ -57,6 +59,10 @@ final class HttpRangeSource implements ByteSource {
 
   /// The pinned strong ETag, when this source must stay immutable.
   final String? etag;
+
+  /// The strong ETag the probe saw, or null when the server sent none. A
+  /// download records it to refuse a server that swaps the same URL later.
+  final String? observedEtag;
   bool _closed = false;
 
   @override

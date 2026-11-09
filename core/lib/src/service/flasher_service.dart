@@ -21,6 +21,8 @@ import '../flash/package_source.dart';
 import '../flash/prepare.dart' as flash_prepare;
 import '../flash/store_identity.dart';
 import '../flash/strategy.dart';
+import '../flash/virtual.dart';
+import '../flash/virtual_export.dart';
 import '../link/native_fastboot.dart';
 import '../log.dart';
 import '../native/native.dart';
@@ -30,6 +32,11 @@ import '../pipeline/errors.dart';
 import '../pipeline/local_source.dart';
 import '../pipeline/ota.dart';
 import '../pipeline/ota_headers.dart';
+import '../storage/budget.dart';
+import '../storage/catalog_ota_source.dart';
+import '../storage/estimate.dart';
+import '../storage/export_sink.dart';
+import '../storage/ota_cache.dart';
 import '../storage/storage.dart';
 import '../upstream/tables.dart';
 import 'flasher_service.activator.g.dart';
@@ -118,10 +125,19 @@ base class FlasherService {
       for (final asset in manifest.assets.values)
         for (final part in asset.transportParts) part.assetName: part.bytes,
     };
+    final cache = _otaCache(
+      workspace,
+      apiBase,
+      proxied: await _useOtaProxy(),
+    );
     final store = BloatStore(
       workspace: workspace,
       manifest: manifest,
       gunzip: RustGunzip.new,
+      budget: _budgetFor(
+        req['store'],
+        evict: (needed) => cache.evict(bytesNeeded: needed),
+      ),
     );
     yield {
       'type': 'step',
@@ -154,6 +170,186 @@ base class FlasherService {
     }
     final status = await store.inspect(selection);
     yield {'type': 'result', 'bloat': _statusMap(status)};
+  }
+
+  /// The storage cap, the origin's usage and the cached OTAs of [store].
+  ///
+  /// `items` is the UI's cache list, most recently used first: `key` (catalog
+  /// entry digest), `label`, `bytes`, `complete`, `lastUsed` (ISO-8601 UTC).
+  @squadronMethod
+  Future<Map<String, Object?>> storageBudget(Map<String, Object?> req) async {
+    final workspace = await _openStoreWorkspace(req['store']);
+    final cache = _otaCache(
+      workspace,
+      req['apiBase'] as String? ?? '',
+      proxied: await _useOtaProxy(),
+    );
+    final report = await _budgetFor(req['store']).snapshot();
+    final entries = await cache.entries();
+    return {
+      'cap': report.cap,
+      'usage': report.usage,
+      'quota': report.quota,
+      'available': report.available,
+      'items': [
+        for (final entry in entries.reversed)
+          {
+            'key': entry.key,
+            'label': entry.label,
+            'bytes': entry.bytes,
+            'complete': entry.complete,
+            'lastUsed': entry.lastUsedAt.toIso8601String(),
+          },
+      ],
+    };
+  }
+
+  /// Downloads or resumes one catalog OTA into the cache under [store].
+  ///
+  /// The request names `store` (where `ota-cache/` lives) and
+  /// `ota: {"kind": "catalog", "entry": <release>}`; `apiBase` selects the
+  /// same-origin proxy. Events are `started`, `progress` and a final `result`.
+  /// The download is checked against the storage cap first and may evict the
+  /// least recently used cached OTA to make room.
+  @squadronMethod
+  Stream<Map<String, Object?>> cacheOta(Map<String, Object?> req) async* {
+    final input = req['ota'];
+    if (input is! Map || input['kind'] != 'catalog') {
+      throw const BuildException('Only a catalog OTA can be cached.');
+    }
+    final value = input['entry'];
+    if (value is! Map) {
+      throw const BuildException('Select an OTA catalog version.');
+    }
+    final entry = Map<String, dynamic>.from(value);
+    final workspace = await _openStoreWorkspace(req['store']);
+    final apiBase = req['apiBase'] as String? ?? '';
+    final cache = _otaCache(
+      workspace,
+      apiBase,
+      proxied: await _useOtaProxy(),
+    );
+    final budget = _budgetFor(
+      req['store'],
+      evict: (needed) => cache.evict(bytesNeeded: needed),
+    );
+    final label = otaEntryLabel(entry);
+    await for (final event in cache.download(entry, budget: budget)) {
+      switch (event) {
+        case OtaCacheStarted(:final key, :final total, :final resumedFrom):
+          yield {
+            'type': 'started',
+            'key': key,
+            'label': label,
+            'total': total,
+            'resumedFrom': resumedFrom,
+          };
+        case OtaCacheProgress(:final key, :final bytes, :final total):
+          yield {
+            'type': 'progress',
+            'key': key,
+            'label': label,
+            'done': bytes,
+            'total': total,
+          };
+        case OtaCacheFinished(:final entry):
+          yield {
+            'type': 'result',
+            'key': entry.key,
+            'label': entry.label,
+            'bytes': entry.bytes,
+            'complete': entry.complete,
+            'sha256': entry.sha256,
+            'etag': entry.etag,
+            'lastUsed': entry.lastUsedAt.toIso8601String(),
+          };
+      }
+    }
+  }
+
+  /// Deletes one cached OTA by its catalog entry digest.
+  @squadronMethod
+  Future<Map<String, Object?>> evictCachedOta(Map<String, Object?> req) async {
+    final key = req['key'];
+    if (key is! String || key.isEmpty) {
+      throw const BuildException('Missing cached OTA key.');
+    }
+    final workspace = await _openStoreWorkspace(req['store']);
+    final cache = _otaCache(
+      workspace,
+      req['apiBase'] as String? ?? '',
+      proxied: await _useOtaProxy(),
+    );
+    final matching = (await cache.entries()).where(
+      (entry) => entry.key == key,
+    );
+    final before = matching.isEmpty ? null : matching.first;
+    final removed = await cache.remove(key);
+    final report = await _budgetFor(req['store']).snapshot();
+    return {
+      'key': key,
+      'removed': removed,
+      'freed': removed ? before?.bytes ?? 0 : 0,
+      'storage': _budgetMap(report),
+    };
+  }
+
+  /// Streams the virtual package as a flasher ZIP into the destination the
+  /// user picked, outside the app's stores.
+  ///
+  /// The request is the prepare request's `virtual` and `selection`, plus
+  /// `destination`: the `FileSystemFileHandle` from the save picker on the web,
+  /// or `{"kind": "path", "path": "<file>"}` on the VM. Events are a `step`
+  /// line, `progress` while images stream and the export's own `result`
+  /// (`job`, `format`, `sha256`, `bytes`, `entries`). A cancelled or failed
+  /// export leaves a partial, invalid ZIP at the destination.
+  @squadronMethod
+  Stream<Map<String, Object?>> exportVirtual(Map<String, Object?> req) async* {
+    final tables = await _readTables(req);
+    final selectionMap = req['selection'];
+    final selection = tables.selection(
+      _stringArg(selectionMap, 'device', 'selection'),
+      _stringArg(selectionMap, 'kind', 'selection'),
+      _stringArg(selectionMap, 'region', 'selection'),
+    );
+    if (!await loadNative()) {
+      throw const flash_model.FlashException(
+        'The OTA decoder is unavailable in this place.',
+      );
+    }
+    final package = await _openVirtualPackage(req, selection);
+    ByteSink? sink;
+    try {
+      final upstream = UpstreamAssets(req['upstreamBase'] as String? ?? '');
+      sink = await openExportSink(req['destination']);
+      yield {
+        'type': 'step',
+        'index': 1,
+        'total': 2,
+        'title': 'Write flasher ZIP',
+      };
+      Map<String, Object?>? result;
+      await for (final event in exportVirtualZip(
+        package: package,
+        upstream: upstream,
+        sink: sink,
+      )) {
+        if (event['type'] == 'result') {
+          result = event;
+        } else {
+          yield event;
+        }
+      }
+      if (result == null) {
+        throw const flash_model.FlashException(
+          'The ZIP export ended without a result.',
+        );
+      }
+      yield result;
+    } finally {
+      await sink?.close();
+      await package.close();
+    }
   }
 
   /// Validates a full AB OTA and reports what a build would use.
@@ -249,14 +445,30 @@ base class FlasherService {
         _stringArg(selectionMap, 'region', 'selection'),
       );
       final hosted = _hostedArg(req);
+      final virtual = _virtualArg(req);
       final output = req['output'];
+      final serial = req['serial'];
+      if (serial is! String || serial.trim().isEmpty) {
+        throw const BuildException('Choose a fastboot device serial.');
+      }
+      final answers = _flashAnswers(req['answers']);
       late final FlashPackage package;
       HostedFlashSession? hostedSession;
+      VirtualFlashPackage? virtualPackage;
       final String job;
       final String storeKey;
       if (hosted != null) {
         job = hosted.jobId;
         storeKey = _hostedStoreKey(hosted);
+      } else if (virtual != null) {
+        virtualPackage = await _openVirtualPackage(req, selection);
+        package = virtualPackage;
+        job = virtualPackage.job;
+        storeKey = 'virtual|${_storeKey(virtual['bloat'])}';
+        if (req['job'] != null && req['job'] != job) {
+          await virtualPackage.close();
+          throw const flash_model.FlashException('The virtual OTA identity changed. Prepare again.');
+        }
       } else {
         if (output is! Map) {
           throw const BuildException('Missing output store.');
@@ -270,13 +482,9 @@ base class FlasherService {
       }
       final lockKey = '$storeKey|$job';
       if (_jobLocks.containsKey(lockKey)) {
+        await virtualPackage?.close();
         throw const flash_model.FlashException('This job is being flashed.');
       }
-      final serial = req['serial'];
-      if (serial is! String || serial.trim().isEmpty) {
-        throw const BuildException('Choose a fastboot device serial.');
-      }
-      final answers = _flashAnswers(req['answers']);
       if (hosted != null) {
         hostedSession = await HostedFlashSession.open(artifact: hosted);
         package = hostedSession.package;
@@ -311,7 +519,7 @@ base class FlasherService {
             await device.close();
           }
         }
-        if (hosted == null) {
+        if (hosted == null && virtual == null) {
           final workspace = await _openStoreWorkspace(output);
           final buildJson = await readJobManifest(workspace, job);
           package = await openFlashPackage(workspace, job, buildJson);
@@ -333,17 +541,21 @@ base class FlasherService {
           _prepared[token] = _PreparedEntry(
             prepared,
             lockKey,
-            hosted == null
-                ? Map<String, Object?>.unmodifiable(
-                    Map<String, Object?>.from(output! as Map),
-                  )
-                : null,
+            virtual != null
+                ? Map<String, Object?>.unmodifiable(Map<String, Object?>.from(virtual['bloat']! as Map))
+                : hosted == null
+                    ? Map<String, Object?>.unmodifiable(
+                        Map<String, Object?>.from(output! as Map),
+                      )
+                    : null,
             hosted,
+            virtual != null,
           );
         }
         return prepared.toMap();
       } finally {
         await hostedSession?.close();
+        await virtualPackage?.close();
       }
     } on LinkFailure catch (error) {
       return {'error': error.toMap()};
@@ -368,11 +580,12 @@ base class FlasherService {
 }
 
 final class _PreparedEntry {
-  const _PreparedEntry(this.prepared, this.lockKey, this.store, this.hosted);
+  const _PreparedEntry(this.prepared, this.lockKey, this.store, this.hosted, this.virtual);
   final flash_prepare.PreparedFlash prepared;
   final String lockKey;
   final Map<String, Object?>? store;
   final HostedArtifact? hosted;
+  final bool virtual;
 }
 
 final class _FlashRun {
@@ -399,6 +612,7 @@ final class _FlashRun {
     }
     HostedArtifact? hosted;
     HostedFlashSession? session;
+    VirtualFlashPackage? virtualPackage;
     try {
       final token = _req['confirmationToken'];
       if (token is! String || token.isEmpty) {
@@ -414,6 +628,10 @@ final class _FlashRun {
         );
       }
       hosted = _hostedArg(_req);
+      final virtual = _virtualArg(_req);
+      if (entry.virtual != (virtual != null)) {
+        throw const flash_model.FlashException('The confirmed package source changed. Prepare again.');
+      }
       if (entry.hosted != null &&
           (hosted == null || !entry.hosted!.sameIdentity(hosted))) {
         throw const flash_model.FlashException(
@@ -427,9 +645,9 @@ final class _FlashRun {
           'Prepare again.',
         );
       }
-      final storeKey = hosted != null
-          ? _hostedStoreKey(hosted)
-          : _storeKey(_req['output']);
+      final storeKey = virtual != null
+          ? 'virtual|${_storeKey(virtual['bloat'])}'
+          : hosted != null ? _hostedStoreKey(hosted) : _storeKey(_req['output']);
       final rawJob = _req['job'];
       final job = hosted != null
           ? hosted.jobId
@@ -451,6 +669,13 @@ final class _FlashRun {
         }
         session = await HostedFlashSession.open(artifact: hosted);
         currentPackage = session.package;
+      } else if (virtual != null) {
+        if (entry.store == null || !await sameFlashStore(
+            entry.store!, Map<String, Object?>.from(virtual['bloat']! as Map))) {
+          throw const flash_model.FlashException('The virtual bloat store changed. Prepare again.');
+        }
+        virtualPackage = await _openVirtualPackage(_req, entry.prepared.selection);
+        currentPackage = virtualPackage;
       } else {
         final output = _req['output'];
         if (output is! Map) throw const BuildException('Missing output store.');
@@ -478,7 +703,7 @@ final class _FlashRun {
           entry.prepared,
           package: currentPackage,
         );
-        final runPrepared = hosted != null
+        final runPrepared = hosted != null || virtual != null
             ? entry.prepared.withPackage(currentPackage)
             : entry.prepared;
         if (_service._jobLocks.containsKey(entry.lockKey)) {
@@ -501,7 +726,10 @@ final class _FlashRun {
           emit: _emit,
           cancellation: cancellation,
         );
-        if (hosted != null) {
+        if (virtual != null) {
+          receipt['virtual'] = await virtualPackage!.snapshot();
+          receipt['persistenceWarnings'] = <String>[];
+        } else if (hosted != null) {
           // A hosted job has no local directory to persist into. The receipt
           // is returned in full; the page downloads it.
           receipt['hosted'] = hosted.toMap();
@@ -548,6 +776,7 @@ final class _FlashRun {
       if (!_controller.isClosed) _controller.addError(error, stack);
     } finally {
       final lock = _lockKey;
+      await virtualPackage?.close();
       if (lock != null) _service._jobLocks.remove(lock);
       if (!done.isCompleted) done.complete();
       if (!_controller.isClosed) {
@@ -643,6 +872,57 @@ HostedArtifact? _hostedArg(Map<String, Object?> req) {
 String _hostedStoreKey(HostedArtifact artifact) =>
     'hosted|${artifact.jobId}|${artifact.sha256}|${artifact.bytes}';
 
+Map<String, Object?>? _virtualArg(Map<String, Object?> req) {
+  final value = req['virtual'];
+  if (value == null) return null;
+  if (value is! Map || value['ota'] is! Map || value['bloat'] is! Map) {
+    throw const flash_model.FlashException('A virtual flash requires virtual.ota and virtual.bloat.');
+  }
+  if (req['output'] != null || req['hosted'] != null) {
+    throw const flash_model.FlashException('A virtual flash cannot name output or hosted.');
+  }
+  return Map<String, Object?>.from(value);
+}
+
+Future<VirtualFlashPackage> _openVirtualPackage(
+  Map<String, Object?> req, Selection selection,
+) async {
+  OtaArchive? ota;
+  try {
+    final virtual = _virtualArg(req)!;
+    if (selection.kind.contains('Super')) {
+      throw const flash_model.FlashException('Super kinds cannot be flashed virtually.');
+    }
+    if (!await loadNative()) {
+      throw const flash_model.FlashException('The OTA decoder is unavailable in this place.');
+    }
+    final input = Map<String, Object?>.from(virtual['ota']! as Map);
+    // The identity is the catalog entry itself, never a cache path: the same
+    // release opened from the OTA cache and streamed from the server must
+    // produce the same job id.
+    final identity = switch (input['kind']) {
+      'file' => await localOtaIdentity(input['file']!),
+      'url' => <String, Object?>{'kind': 'url', 'url': input['url']},
+      'catalog' => <String, Object?>{'kind': 'catalog', 'entry': input['entry']},
+      _ => throw flash_model.FlashException('Unknown virtual OTA input: ${input['kind']}.'),
+    };
+    final bloat = await _openStoreWorkspace(virtual['bloat']);
+    ota = await _openOtaArchive(
+      {...req, 'ota': input},
+      otaCacheWorkspace: bloat,
+    );
+    final manifest = await _readBloatManifest(req);
+    return await VirtualFlashPackage.load(
+      ota: ota, selection: selection, bloat: bloat,
+      bloatManifest: manifest, sourceIdentity: identity,
+    );
+  } on Object catch (error) {
+    await ota?.close();
+    if (error is flash_model.FlashException) rethrow;
+    throw flash_model.FlashException('Cannot open virtual package: $error');
+  }
+}
+
 Map<String, String> _flashAnswers(Object? value) {
   if (value == null) return const {};
   if (value is! Map) {
@@ -688,12 +968,101 @@ Future<Workspace> _openStoreWorkspace(Object? value) async {
   return openStore(Map<String, Object?>.from(value));
 }
 
+/// The OTA cache over [workspace], keyed by catalog entry digest.
+///
+/// The cache directory is `ota-cache/` inside the store that also holds the
+/// bloat images, so a user who picks one folder gets one place for app data.
+OtaCache _otaCache(
+  Workspace workspace,
+  String apiBase, {
+  required bool proxied,
+}) => OtaCache(
+  workspace: workspace,
+  sources: CatalogOtaSourceFactory(
+    client: CatalogClient(
+      transport: HttpCatalogTransport(),
+      base: _base(apiBase),
+    ),
+    apiBase: apiBase,
+    proxyOta: proxied,
+  ),
+);
+
+/// Whether reads go through the same-origin `/api/ota` proxy.
+///
+/// A browser host needs it for CORS and CDN headers; the VM reads the direct
+/// link and sends OnePlus's headers itself.
+Future<bool> _useOtaProxy() async {
+  final place = await PlaceInfo.current();
+  return place.facts.has(Fact.fsOpfs) || place.facts.has(Fact.fsPicker);
+}
+
+/// The storage budget for [store].
+///
+/// OPFS and a VM path have a platform capacity reading. A folder the user
+/// picked is outside the origin's quota, so only the app cap applies; the
+/// platform cannot report how full it is.
+StorageBudget _budgetFor(
+  Object? store, {
+  Future<int> Function(int needed)? evict,
+}) {
+  final kind = store is Map ? '${store['kind']}' : '';
+  if (kind == 'handle') {
+    return StorageBudget(
+      estimateSource: const UnknownStorageEstimate(),
+      evictDefault: evict,
+    );
+  }
+  return StorageBudget(
+    estimateSource: PlatformStorageEstimateSource(path: _storePath(store)),
+    evictDefault: evict,
+  );
+}
+
+Map<String, Object?> _budgetMap(StorageBudgetReport report) => {
+  'cap': report.cap,
+  'usage': report.usage,
+  'quota': report.quota,
+  'available': report.available,
+};
+
+/// The volume or directory a store lives in, for the VM capacity reading.
+String _storePath(Object? store) {
+  final path = store is Map ? store['path'] : null;
+  return path is String && path.isNotEmpty ? path : '.';
+}
+
+/// A complete cached OTA for [release], or null when this release is not
+/// cached.
+///
+/// A cache that cannot be read is a miss: it must never fail a flash that
+/// could stream the same bytes.
+Future<ByteSource?> _openCachedOta(
+  Workspace workspace,
+  Map<String, dynamic> release,
+  String apiBase,
+) async {
+  try {
+    return await _otaCache(
+      workspace,
+      apiBase,
+      proxied: await _useOtaProxy(),
+    ).openCachedCatalogOta(release);
+  } on Object catch (error) {
+    _log.warning('the cached OTA is unusable; streaming instead: $error');
+    return null;
+  }
+}
+
 ByteSource _bloatAssetSource(String apiBase, String asset, int length) {
   final uri = _apiUri(apiBase, 'api/bloat/${Uri.encodeComponent(asset)}');
   return _RangeAsset(uri, length);
 }
 
-Future<OtaArchive> _openOtaArchive(Map<String, Object?> req) async {
+Future<OtaArchive> _openOtaArchive(
+  Map<String, Object?> req, {
+  Workspace? otaCacheWorkspace,
+}) async {
   final input = req['ota'];
   if (input is! Map) {
     throw const BuildException('Select a full OTA file or enter its URL.');
@@ -724,6 +1093,22 @@ Future<OtaArchive> _openOtaArchive(Map<String, Object?> req) async {
       if (entry is! Map) {
         throw const BuildException('Select an OTA catalog version.');
       }
+      final release = Map<String, dynamic>.from(entry);
+      if (otaCacheWorkspace != null) {
+        final cached = await _openCachedOta(otaCacheWorkspace, release, apiBase);
+        if (cached != null) {
+          // A complete cache hit is transparent: same catalog identity, same
+          // archive; payload op hashes are still checked while it is read.
+          try {
+            return await OtaArchive.open(cached, remote: false);
+          } on Object catch (error) {
+            await closeByteSource(cached);
+            _log.warning(
+              'the cached OTA cannot be opened; streaming instead: $error',
+            );
+          }
+        }
+      }
       final client = CatalogClient(
         transport: HttpCatalogTransport(),
         base: _base(apiBase),
@@ -731,7 +1116,7 @@ Future<OtaArchive> _openOtaArchive(Map<String, Object?> req) async {
       Future<ByteSource> openFresh() async => HttpRangeSource.open(
         _otaUri(
           apiBase,
-          await client.resolveLink(Map<String, dynamic>.from(entry)),
+          await client.resolveLink(release),
           proxied: proxied,
         ),
         headers: proxied ? const {} : otaRequestHeaders,

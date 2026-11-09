@@ -151,7 +151,9 @@ Compute surface (`rust/src/api/`):
   `decode_op(name, index, data: Vec<u8>) -> Result<Vec<u8>>` (verifies the op's data SHA-256, decompresses
   REPLACE / REPLACE_BZ / REPLACE_XZ / REPLACE_ZSTD; returns the bytes for `dst` in order; ZERO/DISCARD return empty);
   `verify_full() -> Result<u32>` (port of upstream `verify_full_payload`: rejects source-dependent operations
-  and incomplete partitions). Opaque `Sha256Hasher { new, update, update_zeros(n), finish_hex }`.
+  and incomplete partitions); `verify_virtual(max_operation_bytes)` adds the in-place rules on top: every
+  non-ZERO operation carries a 32-byte data SHA-256 and neither its encoded nor its decoded size exceeds the
+  limit. Opaque `Sha256Hasher { new, update, update_zeros(n), finish_hex }`.
   `GzipDecoder { new, push(bytes) -> Vec<u8>, finish() -> Result<Vec<u8>> }`.
 - `arb.rs`: `arb_scan(image: Vec<u8>) -> Result<ArbInfo { major, minor, index }>` (port of otaripper `arbscan`).
 - `sparse.rs`: `sparse_header(bytes28: Vec<u8>) -> Option<SparseHeader>`; `sparse_chunk(bytes12: Vec<u8>) -> Result<SparseChunk>`;
@@ -193,6 +195,45 @@ Flashing starts from a finished job in the output Store. `build.json` names the
 artifact (ZIP or folder), and the package is opened in place: a ZIP is read
 through its central directory and a streaming inflater, so preparation and
 execution never buffer a whole image.
+
+### Virtual packages (no staged artifact)
+
+`core/lib/src/flash/virtual.dart` implements `FlashPackage` over a full OTA
+plus the verified bloat store, so `planFlash`, `prepareFlash` and
+`executePreparedFlash` run unchanged and nothing is extracted:
+
+- `VirtualFlashPackage.load` refuses a `Super` kind and an OTA whose manifest
+  is not a full payload (Rust `verify_virtual`), verifies every selected bloat
+  image against `bloat-manifest.json` (size and raw SHA-256), and builds the
+  entry set `native_pipeline.stage` would produce: the bloat images in their
+  folders, then the OTA's partitions as `<imageFolder>/<name>.img`. A decoded
+  OTA image replaces a staged bloat copy at the same path; X9U keeps its bloat
+  image and drops the OTA copy. For CN, `GLO_BLOAT` goes to `OOS_FILES_HERE`
+  and every other non-main folder to `COS_FILES_HERE`. The `build.json`-shaped
+  map (`output_format: "virtual"`) carries device, dev, kind, region, version
+  and the per-path digests it knows (`image_sha256` only when all are known).
+- `virtualJobId` derives the job from the OTA source identity, manifest digest,
+  OTA length and selection, and `snapshot()` exposes the same data, so
+  `packageDigest` binds a confirmation token to the exact OTA and bloat bytes.
+- `core/lib/src/flash/ota_source.dart` implements `FlashSource` over the
+  payload. `OtaPartitionSource` maps a partition's destination extents —
+  sorted, tiling the image, independent of operation order and of how many
+  extents one operation owns — to the operations that fill them, and decodes an
+  operation on demand through Rust `decode_op`, which checks its data SHA-256
+  before returning bytes. `OtaOperationCache` is one package-wide LRU of
+  decoded operations capped at 64 MiB; an operation that needs more, or that
+  has no hash, is refused while the source is built. `RandomFlashCursor` gives
+  the executor the forward-only reads and skips the sparse split needs.
+- Integrity: preparation decodes every image once; execution re-checks each
+  operation's hash instead of rehashing a whole image, and the ticket's
+  pre-write recheck compares image sizes plus the snapshot digest only (bloat
+  was verified when the package was opened). An 8 MiB read cap keeps a caller
+  from materializing a whole image.
+- `core/lib/src/flash/virtual_export.dart` (`exportVirtualZip`) streams the
+  tree a build would package into a ZIP64 through the same Rust `ZipWriter`,
+  with `updater-script`/`*.sh` line endings normalized and Platform-Tools
+  overriding same-named template files; the checksum and `build.json` are
+  returned rather than stored, and no temporary file or workspace is used.
 
 ### Read-only preparation
 

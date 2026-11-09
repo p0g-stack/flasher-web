@@ -146,6 +146,12 @@ impl Manifest {
     pub fn verify_full(&self) -> Result<u32> {
         self.inner.verify_full()
     }
+
+    /// Full, hash-authenticated operations small enough for virtual reads.
+    #[frb(sync)]
+    pub fn verify_virtual(&self, max_operation_bytes: u64) -> Result<()> {
+        self.inner.verify_virtual(max_operation_bytes)
+    }
 }
 
 /// Streaming SHA-256 with an explicit zero run for holes in sparse images.

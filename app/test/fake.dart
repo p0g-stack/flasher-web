@@ -60,9 +60,28 @@ final class FakeFlasherApi implements FlasherApi {
   Map<String, Object?>? lastBuildRequest;
   Map<String, Object?>? lastPrepareRequest;
   Map<String, Object?>? lastFlashRequest;
+  Map<String, Object?>? lastStorageBudgetRequest;
+  Map<String, Object?>? lastCacheOtaRequest;
+  Map<String, Object?>? lastEvictRequest;
+  Map<String, Object?>? lastExportRequest;
+  Map<String, Object?>? lastInspectRequest;
   int prepareCalls = 0;
   int flashCalls = 0;
+  int evictCalls = 0;
   bool buildCanceled = false;
+
+  Map<String, Object?> storageBudgetResult = const {
+    'cap': 10 * 1024 * 1024 * 1024,
+    'usage': 2 * 1024 * 1024 * 1024,
+    'quota': 64 * 1024 * 1024 * 1024,
+    'available': 8 * 1024 * 1024 * 1024,
+    'items': <Map<String, Object?>>[],
+  };
+
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
+  cacheOtaStream;
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
+  exportVirtualStream;
 
   @override
   Future<Map<String, Object?>> environment() async => environmentResult;
@@ -81,6 +100,7 @@ final class FakeFlasherApi implements FlasherApi {
 
   @override
   Future<Map<String, Object?>> inspectOta(Map<String, Object?> request) async {
+    lastInspectRequest = request;
     final result = inspectResult;
     if (result == null) throw StateError('No inspectOta result scripted.');
     return result;
@@ -119,6 +139,33 @@ final class FakeFlasherApi implements FlasherApi {
     flashCalls++;
     lastFlashRequest = request;
     return flashStream?.call(request) ?? const Stream.empty();
+  }
+
+  @override
+  Future<Map<String, Object?>> storageBudget(Map<String, Object?> request) async {
+    lastStorageBudgetRequest = request;
+    return storageBudgetResult;
+  }
+
+  @override
+  Stream<Map<String, Object?>> cacheOta(Map<String, Object?> request) {
+    lastCacheOtaRequest = request;
+    return cacheOtaStream?.call(request) ?? const Stream.empty();
+  }
+
+  @override
+  Future<Map<String, Object?>> evictCachedOta(
+    Map<String, Object?> request,
+  ) async {
+    evictCalls++;
+    lastEvictRequest = request;
+    return {'key': request['key'], 'removed': true, 'freed': 0};
+  }
+
+  @override
+  Stream<Map<String, Object?>> exportVirtual(Map<String, Object?> request) {
+    lastExportRequest = request;
+    return exportVirtualStream?.call(request) ?? const Stream.empty();
   }
 
   @override
@@ -185,6 +232,60 @@ final class FakePlatformBridge implements PlatformBridge {
   @override
   Future<PickedFile?> pickOtaFile() async => otaFile;
 
+  /// A remembered OTA the page may reopen after a reload.
+  PickedFile? rememberedOta;
+  bool otaPermissionGranted = true;
+
+  /// The save-picker destination; null means the user cancelled.
+  Object? saveFileResult = const _SaveDestination();
+
+  @override
+  bool canSaveFile = true;
+  int pickSaveFileCalls = 0;
+  final saveFileNames = <String>[];
+  final savedFiles = <String>[];
+
+  final _launched = StreamController<PickedFile>.broadcast();
+
+  void launch(PickedFile file) => _launched.add(file);
+
+  @override
+  Stream<PickedFile> get launchedFiles => _launched.stream;
+
+  @override
+  Future<PickedFile?> rememberedOtaFile() async =>
+      otaPermissionGranted ? rememberedOta : null;
+
+  @override
+  Future<String?> rememberedOtaFileName() async => rememberedOta?.name;
+
+  @override
+  Future<PickedFile?> requestRememberedOtaFile() async => rememberedOta;
+
+  int forgetOtaCalls = 0;
+
+  @override
+  Future<void> forgetRememberedOta() async {
+    forgetOtaCalls++;
+    rememberedOta = null;
+  }
+
+  @override
+  Future<Object?> pickSaveFile({required String suggestedName}) async {
+    pickSaveFileCalls++;
+    saveFileNames.add(suggestedName);
+    return saveFileResult;
+  }
+
+  @override
+  Future<void> saveStoreFile(
+    String path, {
+    Object? handle,
+    required Object destination,
+  }) async {
+    savedFiles.add('$path|$destination');
+  }
+
   @override
   Future<FastbootUsbDevice?> chooseFastbootDevice() async {
     chooseFastbootCalls++;
@@ -236,7 +337,16 @@ final class FakePlatformBridge implements PlatformBridge {
   @override
   void dispose() {
     _dropped.close();
+    _launched.close();
   }
+}
+
+/// A stand-in `FileSystemFileHandle` for save-picker scripts.
+final class _SaveDestination {
+  const _SaveDestination();
+
+  @override
+  String toString() => 'save-destination';
 }
 
 /// A small portion of the real upstream tables: two device families, the Ace 6
@@ -309,6 +419,42 @@ UpstreamTables testTables() => UpstreamTables(
       dev: 'X9U',
       region: 'CN',
       builder: 'BUILD_SUPER.sh',
+    ),
+    BuilderEntry(
+      type: 'Regional Flasher',
+      dev: '13',
+      region: 'GLO',
+      builder: 'BUILD_REGIONAL.sh',
+    ),
+    BuilderEntry(
+      type: 'Regional Flasher',
+      dev: '13',
+      region: 'EU',
+      builder: 'BUILD_REGIONAL.sh',
+    ),
+    BuilderEntry(
+      type: 'Regional Flasher',
+      dev: '13',
+      region: 'IN',
+      builder: 'BUILD_REGIONAL.sh',
+    ),
+    BuilderEntry(
+      type: 'Regional Flasher',
+      dev: '13',
+      region: 'CN',
+      builder: 'BUILD_REGIONAL.sh',
+    ),
+    BuilderEntry(
+      type: 'Regional Flasher',
+      dev: 'Ace6T',
+      region: 'GLO',
+      builder: 'BUILD_REGIONAL.sh',
+    ),
+    BuilderEntry(
+      type: 'RegionalHybrid Flasher',
+      dev: '13',
+      region: 'GLO',
+      builder: 'BUILD_REGIONAL.sh',
     ),
   ],
 );

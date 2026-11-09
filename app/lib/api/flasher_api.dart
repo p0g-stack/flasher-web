@@ -50,6 +50,30 @@ abstract interface class FlasherApi {
   /// one result carrying the receipt.
   Stream<Map<String, Object?>> flash(Map<String, Object?> request);
 
+  /// The 10 GiB app budget, the platform estimate and the cached OTAs.
+  ///
+  /// Request: `{store, apiBase}`. Result: `{cap, usage, quota, available,
+  /// items: [{key, label, bytes, complete, lastUsed}]}`, most recently used
+  /// first.
+  Future<Map<String, Object?>> storageBudget(Map<String, Object?> request);
+
+  /// Downloads one catalog OTA into the OTA cache under the bloat store.
+  ///
+  /// Request: `{store, apiBase, ota: {kind: 'catalog', entry}}`. Events:
+  /// `started`, `progress`, then one `result` carrying `key`, `bytes`,
+  /// `sha256`, `etag` and `lastUsed`.
+  Stream<Map<String, Object?>> cacheOta(Map<String, Object?> request);
+
+  /// Removes one cached OTA. Request: `{store, key}`.
+  Future<Map<String, Object?>> evictCachedOta(Map<String, Object?> request);
+
+  /// Writes a portable ZIP of a virtual package into a save-picker handle.
+  ///
+  /// Request: `{virtual: {ota, bloat}, selection, upstreamBase, destination}`.
+  /// Events: `step`, `log`, `progress`, then one `result` carrying `job`,
+  /// `sha256` and `bytes`.
+  Stream<Map<String, Object?>> exportVirtual(Map<String, Object?> request);
+
   /// Releases the worker behind this API, if any.
   void dispose();
 }

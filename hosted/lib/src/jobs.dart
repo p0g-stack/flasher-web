@@ -2,7 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flasher_web_core/flasher_web_core.dart';
+import 'package:flasher_web_core/flasher_web_core.dart'
+    hide OtaCache, OtaCacheEntry;
 
 import 'active_pins.dart';
 import 'bloat_cache.dart';

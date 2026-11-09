@@ -42,6 +42,21 @@ final class IoWorkspace implements Workspace {
   }
 
   @override
+  Future<ByteSink> update(String path) async {
+    final normalized = normalizeWorkspacePath(path);
+    await _root.create(recursive: true);
+    final target = await _guard(normalized);
+    final type = await FileSystemEntity.type(target, followLinks: false);
+    if (type == FileSystemEntityType.directory) {
+      throw FileSystemException('Is a directory', target);
+    }
+    if (type == FileSystemEntityType.link) {
+      throw FileSystemException('Is a symbolic link', target);
+    }
+    return FileSink.open(File(target), keepExisting: true);
+  }
+
+  @override
   Future<ByteSource> open(String path) async {
     final normalized = normalizeWorkspacePath(path);
     final target = await _guard(normalized);

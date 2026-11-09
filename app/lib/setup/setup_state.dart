@@ -51,8 +51,15 @@ final class SetupState extends ChangeNotifier {
     _dropSubscription = runtime.bridge.droppedFiles.listen((file) {
       unawaited(setLocalFile('ota', file));
     });
+    _launchSubscription = runtime.bridge.launchedFiles.listen((file) {
+      // A file opened with the installed PWA is the same local OTA choice as
+      // a dropped file.
+      unawaited(setLocalFile('ota', file));
+    });
     unawaited(_restoreStores());
+    unawaited(_restoreOtaFile());
     unawaited(refreshBloat());
+    unawaited(refreshBudget());
   }
 
   final AppRuntime runtime;
@@ -100,7 +107,20 @@ final class SetupState extends ChangeNotifier {
   String? _odmError;
 
   StreamSubscription<PickedFile>? _dropSubscription;
+  StreamSubscription<PickedFile>? _launchSubscription;
   bool _disposed = false;
+
+  String? _pendingOtaName;
+
+  Map<String, Object?>? _budget;
+  bool _budgetLoading = false;
+  String? _budgetError;
+  bool _cachingOta = false;
+  String? _cacheOtaError;
+  String? _cachingKey;
+  int _cacheToken = 0;
+  StreamSubscription<Map<String, Object?>>? _cacheSubscription;
+  final _cacheProgress = <String, ({int done, int total})>{};
 
   String get device => _device;
   String get kind => _kind;
@@ -532,6 +552,51 @@ final class SetupState extends ChangeNotifier {
     _notify();
   }
 
+  /// The name of a remembered local OTA whose read permission must be renewed.
+  String? get pendingOtaName => _pendingOtaName;
+
+  /// Reopens the remembered OTA. The browser prompts for read permission, so
+  /// call this from the click handler.
+  Future<void> reconnectOtaFile() async {
+    try {
+      final file = await runtime.bridge.requestRememberedOtaFile();
+      if (_disposed) return;
+      if (file == null) {
+        _inspectionErrors['ota'] =
+            'The browser did not grant read access to the remembered OTA. '
+            'Choose it again.';
+        _notify();
+        return;
+      }
+      _pendingOtaName = null;
+      await setLocalFile('ota', file);
+    } on Object catch (error) {
+      _inspectionErrors['ota'] = '$error';
+      _notify();
+    }
+  }
+
+  Future<void> _restoreOtaFile() async {
+    try {
+      final file = await runtime.bridge.rememberedOtaFile();
+      if (_disposed) return;
+      if (file != null) {
+        _pendingOtaName = null;
+        await setLocalFile('ota', file);
+        return;
+      }
+      final name = await runtime.bridge.rememberedOtaFileName();
+      if (_disposed) return;
+      if (name != null && name.isNotEmpty) {
+        _pendingOtaName = name;
+        _notify();
+      }
+    } on Object {
+      // The remembered handle is optional: a missing browser store only means
+      // the OTA is picked again.
+    }
+  }
+
   Future<void> _inspect(String role) async {
     final file = _localFiles[role];
     if (file == null || !_inspecting.add(role)) return;
@@ -785,6 +850,7 @@ final class SetupState extends ChangeNotifier {
     if (target == StoreTarget.bloat) {
       _bloatStore = choice;
       unawaited(refreshBloat());
+      unawaited(refreshBudget());
     } else {
       _outputStore = choice;
     }
@@ -923,6 +989,229 @@ final class SetupState extends ChangeNotifier {
     };
   }
 
+  // ----------------------------------------------------------- direct flash
+
+  /// Super kinds build a super partition image set and cannot be flashed from
+  /// the OTA bytes alone.
+  bool get isSuperKind => _kind.contains('Super');
+
+  bool get directFlashSupported =>
+      selectionValid &&
+      (_kind == 'Regional Flasher' || _kind == 'RegionalHybrid Flasher');
+
+  /// Why Flash directly is not offered for this selection.
+  String get directFlashUnavailable {
+    if (!selectionValid) {
+      return 'Choose a supported device, flasher type and region.';
+    }
+    if (isSuperKind) {
+      return '$_kind needs a built package: Super kinds fold the OTA into a '
+          'super partition image set. Flash directly is offered for Regional '
+          'Flasher and RegionalHybrid Flasher selections.';
+    }
+    return '$_kind has no direct flash path. Flash directly is offered for '
+        'Regional Flasher and RegionalHybrid Flasher selections.';
+  }
+
+  /// Port of the direct-flash prerequisites: verified bloat and one OTA.
+  String get directFlashRequirementsError {
+    if (!directFlashSupported) return directFlashUnavailable;
+    if (!bloatReady) {
+      return 'Required bloat files must be downloaded and verified before '
+          'flashing directly.';
+    }
+    if (_otaMode == OtaMode.catalog) {
+      if (_selectedReleases['ota'] == null) {
+        return 'Select a full TARGET OTA catalog version before flashing '
+            'directly.';
+      }
+    } else if (_localFiles['ota'] == null) {
+      return 'Select a full TARGET OTA ZIP before flashing directly.';
+    }
+    return '';
+  }
+
+  bool get canFlashDirect =>
+      directFlashRequirementsError.isEmpty &&
+      !_bloatDownloading &&
+      !catalogLoading;
+
+  /// The OTA input a direct flash reads in place, or null when it cannot.
+  Map<String, Object?>? get directFlashOta =>
+      directFlashSupported ? otaInput('ota') : null;
+
+  /// The verified bloat store a direct flash reads from.
+  Map<String, Object?> get directFlashBloat => _bloatStore.toService();
+
+  // ------------------------------------------------------- storage budget
+
+  Map<String, Object?>? get budget => _budget;
+  bool get budgetLoading => _budgetLoading;
+  String? get budgetError => _budgetError;
+
+  int get budgetCap => (_budget?['cap'] as num? ?? appStorageCapBytes).toInt();
+  int get budgetUsage => (_budget?['usage'] as num? ?? 0).toInt();
+  int get budgetQuota => (_budget?['quota'] as num? ?? 0).toInt();
+  int get budgetAvailable => (_budget?['available'] as num? ?? 0).toInt();
+
+  List<Map<String, Object?>> get cachedOtas {
+    final items = _budget?['items'];
+    if (items is! List) return const [];
+    return [
+      for (final item in items)
+        if (item is Map) Map<String, Object?>.from(item),
+    ];
+  }
+
+  bool get cachingOta => _cachingOta;
+  String? get cacheOtaError => _cacheOtaError;
+  Map<String, ({int done, int total})> get cacheProgress =>
+      Map.unmodifiable(_cacheProgress);
+
+  /// The cache key of a catalog entry, or null when the entry is not
+  /// cacheable.
+  String? cacheKeyFor(Map<String, dynamic> entry) {
+    try {
+      return otaEntryDigest(entry);
+    } on Object {
+      return null;
+    }
+  }
+
+  bool isOtaCached(Map<String, dynamic> entry) {
+    final key = cacheKeyFor(entry);
+    if (key == null) return false;
+    return cachedOtas.any(
+      (item) => item['key'] == key && item['complete'] == true,
+    );
+  }
+
+  /// Whether one more catalog OTA fits under the app cap and the platform
+  /// quota. Unknown numbers never promise a fit.
+  bool canKeepOtaOffline(Map<String, dynamic> entry) {
+    if (!selectionValid || _cachingOta) return false;
+    if (_budget == null || _budgetError != null) return false;
+    final size = entry['size'];
+    if (size is! num || size <= 0) return false;
+    return size.toInt() <= budgetAvailable && !isOtaCached(entry);
+  }
+
+  Future<void> refreshBudget() async {
+    if (_budgetLoading) return;
+    _budgetLoading = true;
+    _budgetError = null;
+    _notify();
+    try {
+      final result = await runtime.service.storageBudget({
+        'store': _bloatStore.toService(),
+        'apiBase': runtime.apiBase,
+      });
+      if (_disposed) return;
+      _budget = result;
+    } on Object catch (error) {
+      if (_disposed) return;
+      _budget = null;
+      _budgetError = '$error';
+    } finally {
+      if (!_disposed) {
+        _budgetLoading = false;
+        _notify();
+      }
+    }
+  }
+
+  /// Downloads the selected catalog OTA into the local OTA cache so it can be
+  /// flashed offline. Only catalog sources are cacheable.
+  Future<void> keepOtaOffline() async {
+    final entry = _selectedReleases['ota'];
+    if (entry == null || !canKeepOtaOffline(entry)) return;
+    final ota = otaInput('ota');
+    if (ota == null || ota['kind'] != 'catalog') return;
+    final token = ++_cacheToken;
+    _cachingOta = true;
+    _cacheOtaError = null;
+    _cachingKey = cacheKeyFor(entry);
+    _cacheProgress.clear();
+    _notify();
+    _cacheSubscription = runtime.service
+        .cacheOta({
+          'store': _bloatStore.toService(),
+          'apiBase': runtime.apiBase,
+          'ota': ota,
+        })
+        .listen(
+          (event) {
+            if (_disposed || token != _cacheToken) return;
+            switch (event['type']) {
+              case 'progress':
+                final label = event['label'];
+                final done = event['done'];
+                final total = event['total'];
+                if (label is String && done is num && total is num) {
+                  _cacheProgress[label] = (
+                    done: done.toInt(),
+                    total: total.toInt(),
+                  );
+                }
+              case 'result':
+                _cachingOta = false;
+                _cachingKey = null;
+                _cacheSubscription = null;
+                unawaited(refreshBudget());
+              default:
+                break;
+            }
+            _notify();
+          },
+          onError: (Object error) {
+            if (_disposed || token != _cacheToken) return;
+            _cachingOta = false;
+            _cachingKey = null;
+            _cacheSubscription = null;
+            _cacheOtaError = 'Could not keep the OTA offline: $error';
+            _notify();
+          },
+          onDone: () {
+            if (_disposed || token != _cacheToken) return;
+            if (_cachingOta) {
+              _cachingOta = false;
+              _cachingKey = null;
+              _cacheSubscription = null;
+              _notify();
+            }
+          },
+          cancelOnError: false,
+        );
+  }
+
+  void cancelCacheOta() {
+    if (!_cachingOta) return;
+    _cacheToken++;
+    _cachingOta = false;
+    _cachingKey = null;
+    unawaited(_cacheSubscription?.cancel());
+    _cacheSubscription = null;
+    _notify();
+  }
+
+  /// Removes one cached OTA from the store the budget covers.
+  Future<void> evictCachedOta(String key) async {
+    try {
+      await runtime.service.evictCachedOta({
+        'store': _bloatStore.toService(),
+        'apiBase': runtime.apiBase,
+        'key': key,
+      });
+      _budgetError = null;
+    } on Object catch (error) {
+      _budgetError = '$error';
+      _notify();
+    }
+    await refreshBudget();
+  }
+
+  String? get cachingKey => _cachingKey;
+
   void _savePreferences() {
     final value = preferences
         .copyWith(
@@ -948,7 +1237,9 @@ final class SetupState extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _dropSubscription?.cancel();
+    _launchSubscription?.cancel();
     _bloatSubscription?.cancel();
+    _cacheSubscription?.cancel();
     if (_bloatAwake) {
       _bloatAwake = false;
       unawaited(runtime.bridge.endKeepAwake());

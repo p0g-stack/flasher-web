@@ -35,11 +35,28 @@ final class WebPlatformBridge implements PlatformBridge {
     }).toJS;
     web.document.addEventListener('dragover', _dragOver);
     web.document.addEventListener('drop', _drop);
+    _launchListener = ((web.Event event) {
+      final jsEvent = _toJSAny(event);
+      final detail = jsEvent != null && jsEvent.isA<JSObject>()
+          ? (jsEvent as JSObject).getProperty<JSAny?>('detail'.toJS)
+          : null;
+      _enqueueLaunches(detail);
+      unawaited(_drainLaunches());
+    }).toJS;
+    web.window.addEventListener('flasher-launch-files', _launchListener);
+    // The shim queues handles before Flutter starts; take them and leave an
+    // empty array so the queue cannot grow for the life of the page.
+    _enqueueLaunches(globalContext['flasherLaunchFiles']);
+    globalContext['flasherLaunchFiles'] = <JSAny>[].toJS;
   }
 
   late final JSFunction _dragOver;
   late final JSFunction _drop;
+  late final JSFunction _launchListener;
   final _dropped = StreamController<PickedFile>.broadcast();
+  final _launched = StreamController<PickedFile>.broadcast();
+  final _launchQueue = <JSObject>[];
+  bool _draining = false;
 
   web.IDBDatabase? _db;
   int _keepAlive = 0;
@@ -277,25 +294,29 @@ final class WebPlatformBridge implements PlatformBridge {
   @override
   Future<DirectoryRef?> rememberedDirectory(String key) async {
     final handle = await _getHandle(key);
-    if (handle == null) return null;
+    if (handle == null || !handle.has('name')) return null;
+    final directory = handle as web.FileSystemDirectoryHandle;
     final permission = await _permission(handle, request: false);
     if (permission != 'granted') return null;
-    return DirectoryRef(handle: handle, name: handle.name);
+    return DirectoryRef(handle: directory, name: directory.name);
   }
 
   @override
   Future<String?> rememberedDirectoryName(String key) async {
     final handle = await _getHandle(key);
-    return handle?.name;
+    if (handle == null) return null;
+    final name = handle.getProperty<JSAny?>('name'.toJS);
+    return name != null && name.isA<JSString>() ? (name as JSString).toDart : null;
   }
 
   @override
   Future<DirectoryRef?> requestRememberedDirectory(String key) async {
     final handle = await _getHandle(key);
-    if (handle == null) return null;
+    if (handle == null || !handle.has('name')) return null;
+    final directory = handle as web.FileSystemDirectoryHandle;
     final permission = await _permission(handle, request: true);
     if (permission != 'granted') return null;
-    return DirectoryRef(handle: handle, name: handle.name);
+    return DirectoryRef(handle: directory, name: directory.name);
   }
 
   @override
@@ -319,7 +340,11 @@ final class WebPlatformBridge implements PlatformBridge {
       if (value == null) return null;
       final handles = (value as JSArray<web.FileSystemFileHandle>).toDart;
       if (handles.isEmpty) return null;
-      final file = await handles.first.getFile().toDart;
+      final handle = handles.first;
+      final file = await handle.getFile().toDart;
+      // Remember the handle, not just the File: a reload can reopen it with a
+      // read-permission prompt, while a File object cannot be persisted.
+      await _putHandle('ota', handle);
       return PickedFile(handle: file, name: file.name, size: file.size);
     }
     return _pickWithInput();
@@ -335,10 +360,15 @@ final class WebPlatformBridge implements PlatformBridge {
     input.onchange = ((web.Event event) {
       final file = input.files?.item(0);
       web.document.body?.removeChild(input);
+      if (file == null) {
+        completer.complete(null);
+        return;
+      }
+      // An <input> pick has no handle to reopen, so a stale remembered OTA
+      // must not come back after a reload.
+      unawaited(forgetRememberedOta());
       completer.complete(
-        file == null
-            ? null
-            : PickedFile(handle: file, name: file.name, size: file.size),
+        PickedFile(handle: file, name: file.name, size: file.size),
       );
     }).toJS;
     input.click();
@@ -347,6 +377,164 @@ final class WebPlatformBridge implements PlatformBridge {
 
   @override
   Stream<PickedFile> get droppedFiles => _dropped.stream;
+
+  @override
+  Stream<PickedFile> get launchedFiles {
+    // The queue may hold files launched before this page had a listener.
+    unawaited(_drainLaunches());
+    return _launched.stream;
+  }
+
+  void _enqueueLaunches(JSAny? files) {
+    if (files == null || !files.isA<JSArray>()) return;
+    for (final item in (files as JSArray).toDart) {
+      if (item != null && item.isA<JSObject>()) {
+        _launchQueue.add(item as JSObject);
+      }
+    }
+  }
+
+  /// Resolves queued launch handles to Files. `getFile()` may reject when the
+  /// grant was withdrawn, so one unreadable handle never blocks the rest.
+  Future<void> _drainLaunches() async {
+    if (_draining) return;
+    _draining = true;
+    try {
+      while (_launchQueue.isNotEmpty) {
+        final handle = _launchQueue.removeAt(0);
+        final web.File file;
+        try {
+          file = await (handle as web.FileSystemFileHandle).getFile().toDart;
+        } on Object {
+          continue;
+        }
+        if (!file.name.toLowerCase().endsWith('.zip')) continue;
+        _launched.add(
+          PickedFile(handle: file, name: file.name, size: file.size),
+        );
+      }
+    } finally {
+      _draining = false;
+      if (_launchQueue.isNotEmpty) unawaited(_drainLaunches());
+    }
+  }
+
+  @override
+  Future<PickedFile?> rememberedOtaFile() async {
+    final handle = await _getHandle('ota');
+    if (handle == null || !handle.has('getFile')) return null;
+    if (await _permission(handle, request: false, mode: 'read') != 'granted') {
+      return null;
+    }
+    return _otaFileFrom(handle);
+  }
+
+  @override
+  Future<String?> rememberedOtaFileName() async {
+    final handle = await _getHandle('ota');
+    if (handle == null) return null;
+    final name = handle.getProperty<JSAny?>('name'.toJS);
+    return name != null && name.isA<JSString>() ? (name as JSString).toDart : null;
+  }
+
+  @override
+  Future<PickedFile?> requestRememberedOtaFile() async {
+    final handle = await _getHandle('ota');
+    if (handle == null || !handle.has('getFile')) return null;
+    if (await _permission(handle, request: true, mode: 'read') != 'granted') {
+      return null;
+    }
+    return _otaFileFrom(handle);
+  }
+
+  @override
+  Future<void> forgetRememberedOta() async {
+    final database = await _database();
+    final completer = Completer<void>();
+    final transaction = database.transaction(_store.toJS, 'readwrite');
+    transaction.objectStore(_store).delete('${_prefix}ota'.toJS);
+    transaction.oncomplete = ((web.Event event) {
+      completer.complete();
+    }).toJS;
+    transaction.onerror = ((web.Event event) {
+      completer.complete();
+    }).toJS;
+    await completer.future;
+  }
+
+  Future<PickedFile?> _otaFileFrom(JSObject handle) async {
+    try {
+      final file = await (handle as web.FileSystemFileHandle)
+          .getFile()
+          .toDart;
+      return PickedFile(handle: file, name: file.name, size: file.size);
+    } on Object {
+      return null;
+    }
+  }
+
+  @override
+  bool get canSaveFile => _globalFunction('showSaveFilePicker') != null;
+
+  @override
+  Future<Object?> pickSaveFile({required String suggestedName}) async {
+    final picker = _globalFunction('showSaveFilePicker');
+    if (picker == null) {
+      throw UnsupportedError(
+        'This browser cannot choose a save file; use the download button.',
+      );
+    }
+    // The picker must run in this click task before any await.
+    final options = <String, Object?>{
+      'suggestedName': suggestedName,
+      'types': [
+        {
+          'description': 'ZIP archive',
+          'accept': {
+            'application/zip': ['.zip'],
+          },
+        },
+      ],
+    }.jsify();
+    try {
+      final promise = picker.callAsFunction(globalContext, options);
+      return await (promise as JSPromise<JSAny?>).toDart;
+    } on Object catch (error) {
+      if (_jsString(_toJSAny(error), 'name') == 'AbortError') return null;
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> saveStoreFile(
+    String path, {
+    Object? handle,
+    required Object destination,
+  }) async {
+    final root = handle == null
+        ? await web.window.navigator.storage.getDirectory().toDart
+        : handle as web.FileSystemDirectoryHandle;
+    final parts = path
+        .split('/')
+        .where((part) => part.isNotEmpty && part != '.')
+        .toList();
+    if (parts.isEmpty) throw StateError('No file to save.');
+    var directory = root;
+    for (final part in parts.take(parts.length - 1)) {
+      directory = await directory
+          .getDirectoryHandle(part, web.FileSystemGetDirectoryOptions())
+          .toDart;
+    }
+    final source = await directory
+        .getFileHandle(parts.last, web.FileSystemGetFileOptions())
+        .toDart
+        .then((file) => file.getFile().toDart);
+    final writable = await (destination as web.FileSystemFileHandle)
+        .createWritable()
+        .toDart;
+    await writable.write(source as JSAny).toDart;
+    await writable.close().toDart;
+  }
 
   @override
   Future<bool> requestPersistentStorage() async {
@@ -461,7 +649,9 @@ final class WebPlatformBridge implements PlatformBridge {
   void dispose() {
     web.document.removeEventListener('dragover', _dragOver);
     web.document.removeEventListener('drop', _drop);
+    web.window.removeEventListener('flasher-launch-files', _launchListener);
     _dropped.close();
+    _launched.close();
     _db?.close();
     final guard = _leaveGuard;
     if (guard != null) {
@@ -494,10 +684,7 @@ final class WebPlatformBridge implements PlatformBridge {
     return database;
   }
 
-  Future<void> _putHandle(
-    String key,
-    web.FileSystemDirectoryHandle handle,
-  ) async {
+  Future<void> _putHandle(String key, JSObject handle) async {
     final database = await _database();
     final completer = Completer<void>();
     final transaction = database.transaction(_store.toJS, 'readwrite');
@@ -513,7 +700,7 @@ final class WebPlatformBridge implements PlatformBridge {
     await completer.future;
   }
 
-  Future<web.FileSystemDirectoryHandle?> _getHandle(String key) async {
+  Future<JSObject?> _getHandle(String key) async {
     final database = await _database();
     final completer = Completer<JSAny?>();
     final request = database
@@ -527,14 +714,15 @@ final class WebPlatformBridge implements PlatformBridge {
       completer.complete(null);
     }).toJS;
     final value = await completer.future;
-    return value as web.FileSystemDirectoryHandle?;
+    return value != null && value.isA<JSObject>() ? value as JSObject : null;
   }
 
   Future<String> _permission(
-    web.FileSystemDirectoryHandle handle, {
+    JSObject handle, {
     required bool request,
+    String mode = 'readwrite',
   }) async {
-    final options = <String, Object?>{'mode': 'readwrite'}.jsify();
+    final options = <String, Object?>{'mode': mode}.jsify();
     try {
       final result = request
           ? await handle

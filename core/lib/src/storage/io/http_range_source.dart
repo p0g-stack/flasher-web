@@ -17,6 +17,7 @@ final class HttpRangeSource implements ByteSource {
     this._headers,
     this._client, {
     required this.length,
+    this.observedEtag,
   });
 
   /// Probes [uri] and returns a source whose [length] is the remote length.
@@ -29,12 +30,13 @@ final class HttpRangeSource implements ByteSource {
   }) async {
     final client = HttpClient()..autoUncompress = false;
     try {
-      final total = await _probe(client, uri, headers);
+      final probe = await _probe(client, uri, headers);
       return HttpRangeSource._(
         uri,
         Map<String, String>.unmodifiable(headers),
         client,
-        length: total,
+        length: probe.total,
+        observedEtag: probe.etag,
       );
     } on Object {
       client.close(force: true);
@@ -49,6 +51,10 @@ final class HttpRangeSource implements ByteSource {
 
   @override
   final int length;
+
+  /// The ETag the probe saw, or null when the server sent none. A download
+  /// records it to refuse a server that swaps the same URL later.
+  final String? observedEtag;
 
   @override
   Future<Uint8List> read(int offset, int length) async {
@@ -95,13 +101,14 @@ final class HttpRangeSource implements ByteSource {
     _client.close(force: true);
   }
 
-  static Future<int> _probe(
+  static Future<({int total, String? etag})> _probe(
     HttpClient client,
     Uri uri,
     Map<String, String> headers,
   ) async {
     final response = await _send(client, uri, headers, 0, 1);
     final contentRange = response.headers.value('content-range');
+    final etag = response.headers.value('etag');
 
     if (response.statusCode == 416) {
       await response.drain<void>();
@@ -111,14 +118,14 @@ final class HttpRangeSource implements ByteSource {
           'server rejected a one-byte probe for a $total-byte resource',
         );
       }
-      return 0;
+      return (total: 0, etag: etag);
     }
 
     if (response.statusCode == 200) {
       final total = response.contentLength;
       if (total == 0) {
         await response.drain<void>();
-        return 0;
+        return (total: 0, etag: etag);
       }
       await _discard(response);
       throw RangeException('server ignored Range for $uri');
@@ -158,7 +165,7 @@ final class HttpRangeSource implements ByteSource {
         'probe of $uri returned ${builder.length} bytes, wanted 1',
       );
     }
-    return range.total;
+    return (total: range.total, etag: etag);
   }
 
   static Future<HttpClientResponse> _send(

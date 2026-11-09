@@ -1,8 +1,22 @@
 {
+    "id": "/",
     "name": "Flasher Builder",
     "short_name": "Flasher",
-    "start_url": ".",
+    "start_url": "./",
+    "scope": "/",
     "display": "standalone",
+    "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+    "launch_handler": {
+        "client_mode": "navigate-existing"
+    },
+    "file_handlers": [
+        {
+            "action": "./",
+            "accept": {
+                "application/zip": [".zip"]
+            }
+        }
+    ],
     "background_color": "#F3F6FC",
     "theme_color": "#3268D9",
     "description": "Turn a full OTA into a ready-to-use flasher package in your browser.",

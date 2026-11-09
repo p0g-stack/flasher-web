@@ -43,5 +43,21 @@ final class SquadronFlasherApi implements FlasherApi {
       _worker.flash(request);
 
   @override
+  Future<Map<String, Object?>> storageBudget(Map<String, Object?> request) =>
+      _worker.storageBudget(request);
+
+  @override
+  Stream<Map<String, Object?>> cacheOta(Map<String, Object?> request) =>
+      _worker.cacheOta(request);
+
+  @override
+  Future<Map<String, Object?>> evictCachedOta(Map<String, Object?> request) =>
+      _worker.evictCachedOta(request);
+
+  @override
+  Stream<Map<String, Object?>> exportVirtual(Map<String, Object?> request) =>
+      _worker.exportVirtual(request);
+
+  @override
   void dispose() => _worker.terminate();
 }

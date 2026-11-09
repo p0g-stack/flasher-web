@@ -32,6 +32,33 @@
 
   <title>Flasher Builder</title>
   <link rel="manifest" href="manifest.json">
+
+  <script>
+    // manifest.json's file_handlers deliver OTA ZIPs opened from the OS (or
+    // from Chrome's "Open with") as FileSystemFileHandles. Register the
+    // consumer before Flutter starts, and keep every handle in a queue the
+    // Dart side can drain once its UI is ready: the launch event has no
+    // listener yet at this point.
+    (function () {
+      window.flasherLaunchFiles = window.flasherLaunchFiles || [];
+
+      function publish(files) {
+        if (!files || files.length === 0) return;
+        for (var i = 0; i < files.length; i++) {
+          window.flasherLaunchFiles.push(files[i]);
+        }
+        window.dispatchEvent(
+          new CustomEvent('flasher-launch-files', { detail: files })
+        );
+      }
+
+      if ('launchQueue' in window && 'setConsumer' in window.launchQueue) {
+        window.launchQueue.setConsumer(function (launchParams) {
+          publish(launchParams && launchParams.files);
+        });
+      }
+    })();
+  </script>
 </head>
 <body>
   <!--
@@ -43,5 +70,17 @@
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
   <script src="flutter_bootstrap.js" async></script>
+
+  <script>
+    // app_sw.js replaces Flutter's self-unregistering stub service worker. It
+    // caches the app shell and never sees /api/ or Range requests.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('app_sw.js').catch(function (error) {
+          console.warn('Service worker registration failed:', error);
+        });
+      });
+    }
+  </script>
 </body>
 </html>

@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flasher_web_core/flasher_web_core.dart';
+import 'package:flasher_web_core/flasher_web_core.dart'
+    hide OtaCache, OtaCacheEntry;
 import 'package:flasher_web_hosted/src/bloat_cache.dart';
 import 'package:flasher_web_hosted/src/build_runner.dart';
 import 'package:flasher_web_hosted/src/catalog_gateway.dart';

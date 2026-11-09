@@ -19,6 +19,7 @@ import 'model.dart';
 import 'package_source.dart';
 import 'plan.dart';
 import 'sparse.dart';
+import 'virtual.dart';
 
 /// One image after inspection.
 final class FlashImageInfo {
@@ -277,8 +278,11 @@ Future<PreparedFlash> prepareFlash({
   }
   if (buildJson['image_sha256'] == null) {
     warnings.add(
-      'This older build has no final-image SHA-256 manifest. Current bytes '
-      'are validated and bound to this confirmation, but not to build-time digests.',
+      package is VirtualFlashPackage
+          ? 'Some OTA images have no whole-image SHA-256. Every operation is '
+              'hash-verified and the fully decoded images are bound to this confirmation.'
+          : 'This older build has no final-image SHA-256 manifest. Current bytes '
+              'are validated and bound to this confirmation, but not to build-time digests.',
     );
   }
   if (buildJson['test_fixture'] == true) {
@@ -421,12 +425,32 @@ Future<PreparedFlash> prepareFlash({
 /// Re-inspects every image the ticket names. The service calls this
 /// immediately before a write, so a package changed after preparation is
 /// refused even when its file sizes stayed the same.
+///
+/// A [VirtualFlashPackage] is bound by its snapshot digest (OTA identity,
+/// manifest, verified bloat) and its decoded images are hash-authenticated
+/// per operation, so only their sizes are rechecked here; a folder or ZIP
+/// package is rehashed.
 Future<void> verifyPreparedImages(
   PreparedFlash prepared, {
   FlashPackage? package,
 }) async {
   final current = package ?? prepared.package;
+  if (current is VirtualFlashPackage &&
+      await packageDigest(current) != prepared.binding.packageDigest) {
+    throw const FlashException('The virtual OTA or bloat identity changed. Prepare again.');
+  }
   for (final info in prepared.images.values) {
+    // A virtual package is re-opened for the attempt: the manifest is
+    // snapshot-bound, every operation is hash-verified before it yields
+    // bytes, and `VirtualFlashPackage.load` re-verifies every bloat image
+    // against the manifest before the package exists. Rehashing either kind
+    // here would read the same bytes a second time without adding a check.
+    if (current is VirtualFlashPackage) {
+      if (await current.size(info.path) != info.bytes) {
+        throw FlashException('${info.path} changed size after preparation.');
+      }
+      continue;
+    }
     final source = await current.open(info.path);
     try {
       if (source.length != info.bytes) {
@@ -576,7 +600,9 @@ Future<FlashImageInfo> _inspectImage(
           ? splitRawImage(source.length, maxDownloadSize).length
           : 1;
     }
-    final expected = _manifestHash(buildJson, path);
+    final expected = package is VirtualFlashPackage
+        ? package.imageHash(path)
+        : _manifestHash(buildJson, path);
     if (expected != null && expected != digest) {
       throw FlashException(
         '$path does not match the final-image SHA-256 recorded by the build.',

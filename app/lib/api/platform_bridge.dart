@@ -119,6 +119,42 @@ abstract interface class PlatformBridge {
   /// Picks a full OTA ZIP.
   Future<PickedFile?> pickOtaFile();
 
+  /// Files opened through the installed PWA's file handler (`launchQueue`).
+  ///
+  /// The page's shim queues handles before Flutter starts, so the first
+  /// listener receives them as well. Only `.zip` files are emitted.
+  Stream<PickedFile> get launchedFiles;
+
+  /// A previously picked OTA whose read permission is still granted.
+  Future<PickedFile?> rememberedOtaFile();
+
+  /// The name of a remembered OTA even when read permission must be renewed.
+  Future<String?> rememberedOtaFileName();
+
+  /// Renews read permission on the remembered OTA and opens it.
+  ///
+  /// Call from the click handler: the permission prompt needs the gesture.
+  Future<PickedFile?> requestRememberedOtaFile();
+
+  /// Drops the remembered OTA, for a pick the browser cannot persist.
+  Future<void> forgetRememberedOta();
+
+  /// Whether this page can show a save-file picker.
+  bool get canSaveFile;
+
+  /// Shows the browser save picker and returns its `FileSystemFileHandle`.
+  ///
+  /// Call from the click handler before any await. Null means the user
+  /// cancelled; a browser without the picker throws [UnsupportedError].
+  Future<Object?> pickSaveFile({required String suggestedName});
+
+  /// Writes one store file into a save-picker [destination] handle.
+  Future<void> saveStoreFile(
+    String path, {
+    Object? handle,
+    required Object destination,
+  });
+
   /// Whether the page can open a WebUSB fastboot chooser right now.
   ///
   /// This is a page capability probe; whether the place can write is the
@@ -205,6 +241,35 @@ final class UnsupportedPlatformBridge implements PlatformBridge {
 
   @override
   Future<PickedFile?> pickOtaFile() async => _unsupported();
+
+  @override
+  Stream<PickedFile> get launchedFiles => const Stream.empty();
+
+  @override
+  Future<PickedFile?> rememberedOtaFile() async => null;
+
+  @override
+  Future<String?> rememberedOtaFileName() async => null;
+
+  @override
+  Future<PickedFile?> requestRememberedOtaFile() async => null;
+
+  @override
+  Future<void> forgetRememberedOta() async {}
+
+  @override
+  bool get canSaveFile => false;
+
+  @override
+  Future<Object?> pickSaveFile({required String suggestedName}) async =>
+      _unsupported();
+
+  @override
+  Future<void> saveStoreFile(
+    String path, {
+    Object? handle,
+    required Object destination,
+  }) async => _unsupported();
 
   @override
   bool get canChooseFastbootDevice => false;

@@ -14,12 +14,20 @@ import '../contracts.dart';
 /// become visible when [close] closes the stream, as the File System Access
 /// API specifies.
 final class HandleSink {
-  /// Opens [handle], truncating an existing file, and picks the best backend.
-  static Future<ByteSink> open(web.FileSystemFileHandle handle) async {
+  /// Opens [handle] and picks the best backend.
+  ///
+  /// An existing file keeps its bytes unless [keepExisting] is false, which
+  /// truncates it (the workspace `create` contract). Keeping the bytes is the
+  /// workspace `update` contract: an interrupted download resumes where it
+  /// stopped.
+  static Future<ByteSink> open(
+    web.FileSystemFileHandle handle, {
+    bool keepExisting = false,
+  }) async {
     web.FileSystemSyncAccessHandle? sync;
     try {
       sync = await handle.createSyncAccessHandle().toDart;
-      sync.truncate(0);
+      if (!keepExisting) sync.truncate(0);
       return SyncAccessSink(sync);
     } on Object {
       try {
@@ -28,12 +36,18 @@ final class HandleSink {
         // The handle never opened or already closed.
       }
     }
-    final writable = await handle.createWritable().toDart;
-    try {
-      await writable.truncate(0).toDart;
-    } on Object {
-      await writable.close().toDart;
-      rethrow;
+    final writable = await handle
+        .createWritable(
+          web.FileSystemCreateWritableOptions(keepExistingData: keepExisting),
+        )
+        .toDart;
+    if (!keepExisting) {
+      try {
+        await writable.truncate(0).toDart;
+      } on Object {
+        await writable.close().toDart;
+        rethrow;
+      }
     }
     return WritableSink(writable);
   }

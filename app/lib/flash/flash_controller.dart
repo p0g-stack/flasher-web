@@ -57,6 +57,7 @@ final class FlashController extends ChangeNotifier {
   String? _prepareError;
   PreparedFlash? _prepared;
   Map<String, Object?>? _preparedRequest;
+  String? _derivedJob;
   int _generation = 0;
   Timer? _debounce;
   StreamSubscription<Map<String, Object?>>? _subscription;
@@ -77,6 +78,13 @@ final class FlashController extends ChangeNotifier {
   String? _cancelNote;
   bool _regranting = false;
   String? _regrantMessage;
+
+  bool _exporting = false;
+  String? _exportError;
+  Map<String, Object?>? _exportResult;
+  StreamSubscription<Map<String, Object?>>? _exportSubscription;
+  final _exportLog = <String>[];
+  final _exportProgress = <String, ({int done, int total})>{};
 
   FlashPhase get phase => _phase;
   List<Map<String, Object?>> get devices => List.unmodifiable(_devices);
@@ -121,8 +129,19 @@ final class FlashController extends ChangeNotifier {
   bool get regranting => _regranting;
   String? get regrantMessage => _regrantMessage;
   String get logText => _log.join('\n');
+
+  /// The job the service will flash. A virtual job id is derived by the
+  /// service from the OTA identity, so it appears after preparation.
+  String get jobId {
+    if (!target.isVirtual) return target.job;
+    final job = _prepared?.job ?? _derivedJob;
+    return job == null || job.isEmpty ? 'assigned by the service' : job;
+  }
+
   String get receiptPath => target.isHosted
       ? 'this browser download (hosted job ${target.job})'
+      : target.isVirtual
+      ? 'this browser download (virtual job $jobId; no local job exists)'
       : '${target.job}/flash-receipt.json';
 
   bool get answersComplete {
@@ -336,22 +355,59 @@ final class FlashController extends ChangeNotifier {
     });
   }
 
-  Map<String, Object?> _request({String? token}) {
+  Map<String, Object?> _request({String? token, String? job}) {
     final request = <String, Object?>{
-      'job': target.job,
       'selection': target.selection,
       'upstreamBase': upstreamBase,
       if (_serial != null) 'serial': _serial,
       'answers': Map<String, String>.from(_answers),
       'confirmationToken': ?token,
     };
-    final hosted = target.hostedRequest;
-    if (hosted != null) {
-      request['hosted'] = hosted;
-    } else {
-      request['output'] = target.store;
+    if (target.isHosted) {
+      request['job'] = target.job;
+      request['hosted'] = target.hostedRequest;
+      return request;
     }
+    if (target.isVirtual) {
+      // Preparation omits the job: the service derives it from the OTA
+      // identity and returns it. Execution echoes the returned id, which is
+      // what the confirmed plan is bound to.
+      final jobId = job ?? _prepared?.job ?? target.job;
+      if (jobId.isNotEmpty) request['job'] = jobId;
+      request['virtual'] = _virtualSnapshot();
+      return request;
+    }
+    request['job'] = target.job;
+    request['output'] = target.store;
     return request;
+  }
+
+  /// A copy of the virtual identity, so the prepared request cannot change
+  /// when the caller's map changes. The file object itself stays the same
+  /// reference: that is the identity the service compares too.
+  Map<String, Object?>? _virtualSnapshot() {
+    final virtual = target.virtualRequest;
+    if (virtual == null) return null;
+    final ota = virtual['ota'];
+    final bloat = virtual['bloat'];
+    return {
+      'ota': ota is Map
+          ? <String, Object?>{
+              'kind': ota['kind'],
+              if (ota['file'] != null) 'file': ota['file'],
+              if (ota['url'] != null) 'url': ota['url'],
+              if (ota['entry'] is Map)
+                'entry': Map<String, Object?>.from(ota['entry'] as Map),
+            }
+          : ota,
+      'bloat': bloat is Map
+          ? <String, Object?>{
+              'kind': bloat['kind'],
+              if (bloat['path'] != null) 'path': bloat['path'],
+              if (bloat['handle'] != null) 'handle': bloat['handle'],
+            }
+          : bloat,
+    };
   }
 
   Future<void> prepare() async {
@@ -410,6 +466,7 @@ final class FlashController extends ChangeNotifier {
       );
       _prepared = prepared;
       _preparedRequest = Map<String, Object?>.unmodifiable(request);
+      if (prepared.job.isNotEmpty) _derivedJob = prepared.job;
       _productRequired = false;
     } on Object catch (error) {
       if (_disposed || generation != _generation) return;
@@ -438,8 +495,8 @@ final class FlashController extends ChangeNotifier {
     if (!canFlash) return;
     final prepared = _prepared!;
     final token = prepared.token!;
-    final request = _request(token: token);
-    if (!_sameRequest(_request(), _preparedRequest)) {
+    final request = _request(token: token, job: prepared.job);
+    if (!_sameRequest(_request(job: prepared.job), _preparedRequest)) {
       _errorText =
           'The confirmed input changed. Prepare the flash again before '
           'writing.';
@@ -508,17 +565,41 @@ final class FlashController extends ChangeNotifier {
     Map<String, Object?>? prepared,
   ) {
     if (prepared == null) return false;
-    if (request['job'] != prepared['job']) return false;
     if (request['serial'] != prepared['serial']) return false;
     if ((request['upstreamBase'] ?? '') != (prepared['upstreamBase'] ?? '')) {
       return false;
     }
     if (!_sameMap(request['selection'], prepared['selection'])) return false;
     if (!_sameMap(request['answers'], prepared['answers'])) return false;
+    if (target.isVirtual) {
+      // The job is derived from the OTA identity, so the identity itself is
+      // what must still match: the same file object or catalog entry and the
+      // same bloat store. A changed identity needs a new preparation.
+      return _sameVirtual(request['virtual'], prepared['virtual']);
+    }
+    if (request['job'] != prepared['job']) return false;
     if (target.isHosted) {
       return _sameMap(request['hosted'], prepared['hosted']);
     }
     return _sameStore(request['output'], prepared['output']);
+  }
+
+  /// The virtual identity: the OTA source and the bloat store.
+  bool _sameVirtual(Object? a, Object? b) {
+    if (a is! Map || b is! Map) return false;
+    return _sameOta(a['ota'], b['ota']) && _sameStore(a['bloat'], b['bloat']);
+  }
+
+  bool _sameOta(Object? a, Object? b) {
+    if (a is! Map || b is! Map) return false;
+    if (a['kind'] != b['kind']) return false;
+    return switch ('${a['kind']}') {
+      // A picked file is the browser object itself; a re-pick is new identity.
+      'file' => a['file'] != null && identical(a['file'], b['file']),
+      'url' => a['url'] == b['url'],
+      'catalog' => _sameMap(a['entry'], b['entry']),
+      _ => false,
+    };
   }
 
   bool _sameMap(Object? a, Object? b) {
@@ -609,6 +690,10 @@ final class FlashController extends ChangeNotifier {
                     : 'The hosted build has no local job, so download the '
                           'receipt now; it is not written into a local folder. '
                           'Wiping and rooting stay manual on the phone.')
+              : target.isVirtual
+              ? 'The OTA was flashed in place from its own bytes and no local '
+                    'job exists, so download the receipt now. Wiping and '
+                    'rooting stay manual on the phone.'
               : (persistence is List && persistence.isNotEmpty
                     ? 'Flashing finished, but the receipt could not be fully '
                           'saved. Download it now. '
@@ -771,7 +856,7 @@ final class FlashController extends ChangeNotifier {
       RegExp(r'[^A-Za-z0-9._-]'),
       '_',
     );
-    final name = 'flash-${target.job}-$port.json';
+    final name = 'flash-$_jobSlug-$port.json';
     await bridge.downloadText(
       '${const JsonEncoder.withIndent('  ').convert(receipt)}\n',
       name,
@@ -785,9 +870,131 @@ final class FlashController extends ChangeNotifier {
       RegExp(r'[^A-Za-z0-9._-]'),
       '_',
     );
-    await bridge.downloadText(logText, 'flash-${target.job}-$port.log');
+    await bridge.downloadText(logText, 'flash-$_jobSlug-$port.log');
     return null;
   }
+
+  String get _jobSlug => target.isVirtual
+      ? jobId.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_')
+      : target.job;
+
+  // ---------------------------------------------------------------- export
+
+  bool get canExportZip => target.isVirtual;
+
+  bool get exporting => _exporting;
+  String? get exportError => _exportError;
+  Map<String, Object?>? get exportResult => _exportResult;
+  List<String> get exportLog => List.unmodifiable(_exportLog);
+  Map<String, ({int done, int total})> get exportProgress =>
+      Map.unmodifiable(_exportProgress);
+
+  /// Writes a portable ZIP of this virtual package into a save-picker file.
+  ///
+  /// The service reads the OTA and verified bloat exactly as a flash does and
+  /// streams the archive into the chosen `FileSystemFileHandle`; nothing is
+  /// staged in browser storage. Returns null on success or cancellation and an
+  /// explanation otherwise.
+  Future<String?> exportZip() async {
+    final virtual = target.virtualRequest;
+    if (virtual == null) {
+      return 'Only the OTA-backed direct flash can export a package.';
+    }
+    if (_exporting) return 'An export is already running.';
+    final Object? destination;
+    try {
+      // The picker must run inside the click task, before any await.
+      destination = await bridge.pickSaveFile(
+        suggestedName: 'flasher-${_safeName(target.label)}.zip',
+      );
+    } on Object catch (error) {
+      return '$error';
+    }
+    if (destination == null) return null;
+    _exporting = true;
+    _exportError = null;
+    _exportResult = null;
+    _exportLog.clear();
+    _exportProgress.clear();
+    _notify();
+    final completer = Completer<String?>();
+    final request = <String, Object?>{
+      'virtual': virtual,
+      'selection': target.selection,
+      'upstreamBase': upstreamBase,
+      'destination': destination,
+    };
+    void finish() {
+      _exporting = false;
+      if (!completer.isCompleted) {
+        completer.complete(_exportError);
+      }
+      _notify();
+    }
+
+    try {
+      _exportSubscription = api
+          .exportVirtual(request)
+          .listen(
+            (event) {
+              switch (event['type']) {
+                case 'step':
+                  final title = event['title'];
+                  if (title is String && title.isNotEmpty) {
+                    _exportLog.add(title);
+                  }
+                case 'log':
+                  final text = event['text'];
+                  if (text is String) {
+                    for (final line in text.split('\n')) {
+                      if (line.trim().isNotEmpty) _exportLog.add(line);
+                    }
+                  }
+                case 'progress':
+                  final label = event['label'];
+                  final done = event['done'];
+                  final total = event['total'];
+                  if (label is String && done is num && total is num) {
+                    _exportProgress[label] = (
+                      done: done.toInt(),
+                      total: total.toInt(),
+                    );
+                  }
+                case 'result':
+                  _exportResult = Map<String, Object?>.from(event);
+                  _exportLog.add(
+                    'Exported ${event['bytes']} bytes · SHA-256 '
+                    '${event['sha256']}',
+                  );
+                default:
+                  break;
+              }
+              _notify();
+            },
+            onError: (Object error) {
+              _exportError = 'The export failed: $error';
+              _exportLog.add('ERROR: $error');
+              finish();
+            },
+            onDone: () {
+              if (_exportResult == null && _exportError == null) {
+                _exportError = 'The export ended without a result.';
+              }
+              finish();
+            },
+            cancelOnError: false,
+          );
+    } on Object catch (error) {
+      _exportError = 'The export failed: $error';
+      _exportLog.add('ERROR: $error');
+      finish();
+    }
+    return completer.future;
+  }
+
+  String _safeName(String value) => value
+      .replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '-')
+      .replaceAll(RegExp(r'^-+|-+$'), '');
 
   void _resetPreparation() {
     _debounce?.cancel();
@@ -827,6 +1034,9 @@ final class FlashController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _debounce?.cancel();
+    final export = _exportSubscription;
+    _exportSubscription = null;
+    if (export != null) unawaited(export.cancel());
     final subscription = _subscription;
     _subscription = null;
     if (subscription != null) {

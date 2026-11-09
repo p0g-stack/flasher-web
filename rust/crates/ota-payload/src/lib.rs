@@ -358,11 +358,15 @@ fn hex(bytes: &[u8]) -> String {
     text
 }
 
-fn read_all(mut reader: impl Read, codec: &str) -> Result<Vec<u8>> {
+fn read_all(mut reader: impl Read, codec: &str, limit: u64) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    reader
+    reader.by_ref().take(limit)
         .read_to_end(&mut out)
         .with_context(|| format!("invalid {codec} operation data"))?;
+    let mut extra = [0u8; 1];
+    let more = reader.read(&mut extra)
+        .with_context(|| format!("invalid {codec} operation data"))?;
+    ensure!(more == 0, "{codec} operation exceeds its destination extents");
     Ok(out)
 }
 
@@ -457,12 +461,12 @@ impl Manifest {
         let total = extent_bytes(self, op)?;
         let out = match op.kind {
             OP_REPLACE => data,
-            OP_REPLACE_BZ => read_all(bzip2::read::BzDecoder::new(&data[..]), "bzip2")?,
-            OP_REPLACE_XZ => read_all(lzma_rust2::XzReader::new(&data[..], true), "xz")?,
+            OP_REPLACE_BZ => read_all(bzip2::read::BzDecoder::new(&data[..]), "bzip2", total)?,
+            OP_REPLACE_XZ => read_all(lzma_rust2::XzReader::new(&data[..], true), "xz", total)?,
             OP_REPLACE_ZSTD => {
                 let decoder = ruzstd::decoding::StreamingDecoder::new(&data[..])
                     .context("invalid zstd operation data")?;
-                read_all(decoder, "zstd")?
+                read_all(decoder, "zstd", total)?
             }
             OP_ZERO | OP_DISCARD => return Ok(Vec::new()),
             other => bail!(
@@ -479,6 +483,36 @@ impl Manifest {
             out.len()
         );
         Ok(out)
+    }
+
+    /// Validate the stronger contract required by in-place virtual reads.
+    /// Missing operation hashes fail closed; callers may use normal extraction.
+    pub fn verify_virtual(&self, max_operation_bytes: u64) -> Result<()> {
+        self.verify_full()?;
+        for partition in &self.partitions {
+            for (index, op) in partition.ops.iter().enumerate() {
+                ensure!(
+                    op.data_length <= max_operation_bytes,
+                    "operation {index} of {:?} exceeds the virtual encoded-operation limit",
+                    partition.name
+                );
+                if !matches!(op.kind, OP_ZERO | OP_DISCARD) {
+                    ensure!(
+                        extent_bytes(self, op)? <= max_operation_bytes,
+                        "operation {index} of {:?} exceeds the virtual decoded-operation limit",
+                        partition.name
+                    );
+                }
+                if op.data_length > 0 || !matches!(op.kind, OP_ZERO | OP_DISCARD) {
+                    ensure!(
+                        op.data_hash.as_ref().is_some_and(|hash| hash.len() == 32),
+                        "operation {index} of {:?} has no data SHA-256; use a normal folder build",
+                        partition.name
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Port of upstream `verify_full_payload`: this manifest describes a

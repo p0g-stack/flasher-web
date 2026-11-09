@@ -1,4 +1,5 @@
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 
 import 'package:web/web.dart' as web;
 
@@ -15,8 +16,10 @@ import 'interop.dart';
 /// object works in the page and in a Web Worker.
 ///
 /// Files are written through [HandleSink], which prefers a worker's
-/// `createSyncAccessHandle()` and falls back to a writable stream. `move` is a
-/// copy followed by a delete because File System Access has no portable rename.
+/// `createSyncAccessHandle()` and falls back to a writable stream. `move` uses
+/// the browser's own `FileSystemHandle.move()` where it exists (OPFS files in
+/// Chromium) and falls back to a copy followed by a delete because File System
+/// Access has no portable rename.
 final class HandleWorkspace implements Workspace {
   HandleWorkspace(JSObject directoryHandle)
     : _root = directoryHandle as web.FileSystemDirectoryHandle;
@@ -32,6 +35,13 @@ final class HandleWorkspace implements Workspace {
     final normalized = normalizeWorkspacePath(path);
     final handle = await _file(normalized, create: true);
     return HandleSink.open(handle);
+  }
+
+  @override
+  Future<ByteSink> update(String path) async {
+    final normalized = normalizeWorkspacePath(path);
+    final handle = await _file(normalized, create: true);
+    return HandleSink.open(handle, keepExisting: true);
   }
 
   @override
@@ -97,6 +107,9 @@ final class HandleWorkspace implements Workspace {
 
     if (sourceType == 'file') {
       final sourceHandle = await _file(source, create: false);
+      if (await _nativeMove(sourceHandle, parent, name, source, destination)) {
+        return;
+      }
       final blob = await sourceHandle.getFile().toDart;
       final target = await parent
           .getFileHandle(name, web.FileSystemGetFileOptions(create: true))
@@ -112,6 +125,15 @@ final class HandleWorkspace implements Workspace {
     }
 
     final sourceDirectory = await _directory(source, create: false);
+    if (await _nativeMove(
+      sourceDirectory,
+      parent,
+      name,
+      source,
+      destination,
+    )) {
+      return;
+    }
     final targetDirectory = await parent
         .getDirectoryHandle(
           name,
@@ -127,6 +149,31 @@ final class HandleWorkspace implements Workspace {
     final normalized = normalizeWorkspacePath(path);
     if (await _type(normalized) == null) return;
     await _removeEntry(normalized);
+  }
+
+  /// Renames [handle] into [parent] as [name] with the browser's own `move()`.
+  ///
+  /// Returns false when the browser has no `move` (package:web does not bind
+  /// it) or refuses it, for example on the page or in a picked directory, so
+  /// the caller copies instead. A refused call that did move the entry leaves
+  /// no source behind; that is reported as success so it is not copied onto
+  /// itself.
+  Future<bool> _nativeMove(
+    web.FileSystemHandle handle,
+    web.FileSystemDirectoryHandle parent,
+    String name,
+    String source,
+    String destination,
+  ) async {
+    if (!hasMethod(handle, 'move')) return false;
+    try {
+      await handle
+          .callMethod<JSPromise<JSAny?>>('move'.toJS, parent, name.toJS)
+          .toDart;
+      return true;
+    } on Object {
+      return await _type(source) == null && await _type(destination) != null;
+    }
   }
 
   Future<web.FileSystemDirectoryHandle> _directory(

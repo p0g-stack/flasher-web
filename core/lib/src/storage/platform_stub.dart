@@ -27,6 +27,9 @@ final class IoWorkspace implements Workspace {
   Future<ByteSink> create(String path) async => _unsupported();
 
   @override
+  Future<ByteSink> update(String path) async => _unsupported();
+
+  @override
   Future<ByteSource> open(String path) async => _unsupported();
 
   @override
@@ -94,6 +97,9 @@ final class HandleWorkspace implements Workspace {
   Future<ByteSink> create(String path) async => _unsupported();
 
   @override
+  Future<ByteSink> update(String path) async => _unsupported();
+
+  @override
   Future<ByteSource> open(String path) async => _unsupported();
 
   @override
@@ -120,6 +126,9 @@ final class HttpRangeSource implements ByteSource {
     Uri uri, {
     Map<String, String> headers = const {},
   }) async => HttpRangeSource._();
+
+  /// The strong ETag the probe observed; this branch never probes.
+  String? get observedEtag => null;
 
   @override
   int get length => _unsupported();

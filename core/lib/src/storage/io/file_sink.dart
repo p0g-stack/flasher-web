@@ -7,17 +7,23 @@ import 'serial_queue.dart';
 /// A [ByteSink] over a file, written through one positional
 /// [RandomAccessFile].
 ///
-/// [open] creates the file and replaces an existing one, matching the
-/// workspace `create` contract. Writes and truncations are serialized on the file's
-/// single cursor. `RandomAccessFile.truncate` extends a file with zero bytes,
-/// and a write past the old end leaves a zero-filled hole.
+/// [open] creates the file. An existing file is replaced unless [keepExisting]
+/// is true, which keeps its bytes for the workspace `update` contract. Writes
+/// and truncations are serialized on the file's single cursor.
+/// `RandomAccessFile.truncate` extends a file with zero bytes, and a write past
+/// the old end leaves a zero-filled hole.
 final class FileSink implements ByteSink {
   FileSink._(this._raf);
 
-  /// Opens [file] for writing, truncating an existing file.
-  static Future<FileSink> open(File file) async {
+  /// Opens [file] for writing, truncating it unless [keepExisting] is true.
+  static Future<FileSink> open(
+    File file, {
+    bool keepExisting = false,
+  }) async {
     await file.parent.create(recursive: true);
-    final raf = await file.open(mode: FileMode.writeOnly);
+    final raf = await file.open(
+      mode: keepExisting ? FileMode.append : FileMode.writeOnly,
+    );
     return FileSink._(raf);
   }
 
