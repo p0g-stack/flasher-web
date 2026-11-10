@@ -551,9 +551,8 @@ void main() {
       ..add(
         const UsbException(
           UsbFailureKind.permission,
-          'The browser refused WebUSB permission.',
+          'access denied',
           name: 'SecurityError',
-          cause: 'SecurityError: access denied',
         ),
       )
       ..add(null);
