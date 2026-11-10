@@ -9,15 +9,18 @@ import 'contracts.dart';
 import 'ota_cache.dart';
 import 'paths.dart';
 
-/// downloadx owns scheduling, chunk layout, retries and resume metadata. This
-/// adapter reuses our strict HTTP range reader, so its large logical chunks
-/// become bounded HTTP reads rather than file-sized response buffers.
+/// downloadx owns scheduling, chunk layout, retries and resume metadata. The
+/// adapter forwards validated HTTP body chunks immediately, so progress and
+/// idle detection measure arriving bytes rather than completed HTTP ranges.
 final class DownloadxWorkspaceIo extends dlx.DownloadxIo {
   DownloadxWorkspaceIo({
     required this.workspace,
     required this.reader,
     this.readBytes = 8 * 1024 * 1024,
-  });
+    DateTime Function()? clock,
+  }) : _clock = clock ?? DateTime.now {
+    _checkpointAt = _clock();
+  }
 
   final Workspace workspace;
   final CatalogOtaReader reader;
@@ -26,7 +29,8 @@ final class DownloadxWorkspaceIo extends dlx.DownloadxIo {
   String? _sinkPath;
   Future<void> _tail = Future<void>.value();
   int _dirty = 0;
-  DateTime _checkpointAt = DateTime.now();
+  final DateTime Function() _clock;
+  late DateTime _checkpointAt;
   List<int>? _pendingMeta;
   String? _pendingMetaPath;
   final List<List<int>> _metaWrites = [];
@@ -77,14 +81,16 @@ final class DownloadxWorkspaceIo extends dlx.DownloadxIo {
   Stream<List<int>> _body(int offset, int end, dlx.CancelToken? signal) async* {
     while (offset < end) {
       if (signal?.isCancelled ?? false) throw signal!.reason;
-      final bytes = await reader.read(
+      final count = min(readBytes, end - offset);
+      await for (final bytes in reader.streamRange(
         offset,
-        min(readBytes, end - offset),
+        count,
         cancelled: signal?.whenCancelled,
-      );
-      if (signal?.isCancelled ?? false) throw signal!.reason;
-      yield bytes;
-      offset += bytes.length;
+      )) {
+        if (signal?.isCancelled ?? false) throw signal!.reason;
+        yield bytes;
+      }
+      offset += count;
     }
   }
 
@@ -143,14 +149,17 @@ final class DownloadxWorkspaceIo extends dlx.DownloadxIo {
     }
   });
 
-  bool get _checkpointDue {
+  /// Whether publishing a new engine snapshot is worth a durable checkpoint.
+  /// Cheap OPFS/IO flushes have a one-second floor, independent of progress
+  /// frequency or connection count. Staged FSA files retain the 512 MiB rule.
+  bool get checkpointDue {
+    if (forceCheckpoint) return true;
     final sink = _sink;
-    if (forceCheckpoint || sink == null || _dirty == 0) return true;
-    if (sink is! CheckpointByteSink) return true;
-    if (_dirty >= sink.checkpointBytes) return true;
-    // Never turn a staged FSA file's expensive copy into a time-based loop.
-    return sink.checkpointBytes <= 8 * 1024 * 1024 &&
-        DateTime.now().difference(_checkpointAt).inSeconds >= 30;
+    if (sink == null || _dirty == 0) return false;
+    if (sink is CheckpointByteSink && sink.checkpointBytes > 8 * 1024 * 1024) {
+      return _dirty >= sink.checkpointBytes;
+    }
+    return _clock().difference(_checkpointAt) >= const Duration(seconds: 1);
   }
 
   Future<void> _checkpoint() async {
@@ -164,7 +173,7 @@ final class DownloadxWorkspaceIo extends dlx.DownloadxIo {
       }
     }
     _dirty = 0;
-    _checkpointAt = DateTime.now();
+    _checkpointAt = _clock();
   }
 
   Future<void> _publishMeta(String destination) async {
@@ -186,7 +195,7 @@ final class DownloadxWorkspaceIo extends dlx.DownloadxIo {
       }
       _pendingMeta = _metaWrites.removeAt(0);
       _pendingMetaPath = from;
-      if (_checkpointDue) await _publishMeta(to);
+      if (checkpointDue) await _publishMeta(to);
       return;
     }
     if (from == _sinkPath) {

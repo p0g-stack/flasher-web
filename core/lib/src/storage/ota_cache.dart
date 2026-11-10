@@ -159,22 +159,77 @@ final class CatalogOtaReader {
         return bytes;
       } on Object {
         if (_closed || aborted || _identityFailure != null) rethrow;
-        if (!identical(attempted, _source)) continue;
-        final refreshing = _refreshing;
-        if (refreshing != null) {
-          await refreshing;
-        } else {
-          if (_refreshes >= maxRefreshes) rethrow;
-          final refresh = _reopen();
-          _refreshing = refresh;
-          try {
-            await refresh;
-          } finally {
-            _refreshing = null;
-          }
-        }
+        if (!await _refreshAfterFailure(attempted)) rethrow;
       }
     }
+  }
+
+  /// Incremental ranges for downloadx. Once a body byte has been emitted,
+  /// failures belong to the engine's retry/resume path, never link replay.
+  Stream<Uint8List> streamRange(
+    int offset,
+    int count, {
+    Future<void>? cancelled,
+  }) async* {
+    checkReadRange(offset, count, length);
+    var aborted = false;
+    cancelled?.then((_) => aborted = true);
+    while (true) {
+      if (_closed || aborted) throw StateError('OTA read cancelled');
+      if (_identityFailure case final Object fatal) throw fatal;
+      final attempted = _source;
+      var emitted = false;
+      var received = 0;
+      try {
+        final body = attempted is StreamingByteSource
+            ? attempted.streamRange(offset, count, cancelled: cancelled)
+            : Stream.fromFuture(
+                attempted is CancellableByteSource
+                    ? attempted.readCancellable(offset, count, cancelled)
+                    : attempted.read(offset, count),
+              );
+        await for (final bytes in body) {
+          if (_closed || aborted) throw StateError('OTA read cancelled');
+          if (_identityFailure case final Object fatal) throw fatal;
+          if (bytes.length > count - received) {
+            throw const OtaCacheException(
+              'The OTA range exceeded its requested length.',
+            );
+          }
+          if (bytes.isEmpty) continue;
+          received += bytes.length;
+          emitted = true;
+          yield bytes;
+        }
+        if (received != count) {
+          throw OtaCacheException(
+            'The OTA server ended a range early at $offset.',
+          );
+        }
+        return;
+      } on Object {
+        if (emitted || _closed || aborted || _identityFailure != null) rethrow;
+        if (!await _refreshAfterFailure(attempted)) rethrow;
+      }
+    }
+  }
+
+  Future<bool> _refreshAfterFailure(ByteSource attempted) async {
+    if (!identical(attempted, _source)) return true;
+    final refreshing = _refreshing;
+    if (refreshing != null) {
+      await refreshing;
+      return true;
+    }
+    if (_refreshes >= maxRefreshes) return false;
+    final refresh = _reopen();
+    _refreshing = refresh;
+    try {
+      await refresh;
+    } finally {
+      _refreshing = null;
+    }
+    return true;
   }
 
   Future<void> _reopen() async {
@@ -662,14 +717,12 @@ final class OtaCache {
 
       final progress = StreamController<OtaCacheEvent>();
       void checkpointProgress() {
+        if (!io!.checkpointDue) return;
         unawaited(persist().catchError((Object error, StackTrace stack) {
           download.pause();
           progress.addError(error, stack);
         }));
       }
-      final removeChunkProgress = download.emitter.onType<dlx.ChunkProgressEvent>(
-        (_) => checkpointProgress(),
-      );
       final removeProgress = download.emitter.onType<dlx.ProgressEvent>((
         event,
       ) {
@@ -689,7 +742,6 @@ final class OtaCache {
         await running;
       } finally {
         removeProgress();
-        removeChunkProgress();
         download.cancel();
         await running;
         while (persisting) {

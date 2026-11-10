@@ -14,7 +14,7 @@ import 'interop.dart';
 /// whose `Content-Range` names exactly the requested bytes and the same total;
 /// a server that ignores `Range`, shortens the body or changes the length is
 /// an error.
-final class HttpRangeSource implements CancellableByteSource {
+final class HttpRangeSource implements StreamingByteSource {
   HttpRangeSource._(
     this._uri,
     this._headers, {
@@ -80,7 +80,27 @@ final class HttpRangeSource implements CancellableByteSource {
     Future<void>? cancelled,
   ) async {
     checkReadRange(offset, length, this.length);
-    if (length == 0) return Uint8List(0);
+    final bytes = Uint8List(length);
+    var received = 0;
+    await for (final chunk in streamRange(
+      offset,
+      length,
+      cancelled: cancelled,
+    )) {
+      bytes.setRange(received, received + chunk.length, chunk);
+      received += chunk.length;
+    }
+    return bytes;
+  }
+
+  @override
+  Stream<Uint8List> streamRange(
+    int offset,
+    int length, {
+    Future<void>? cancelled,
+  }) async* {
+    checkReadRange(offset, length, this.length);
+    if (length == 0) return;
     if (_closed) throw StateError('HTTP range source is closed: $_uri');
     final abort = web.AbortController();
     _requests.add(abort);
@@ -117,7 +137,6 @@ final class HttpRangeSource implements CancellableByteSource {
       final body = response.body;
       if (body == null) throw const RangeException('missing range body');
       final stream = body.getReader() as web.ReadableStreamDefaultReader;
-      final bytes = Uint8List(length);
       var received = 0;
       try {
         while (true) {
@@ -127,17 +146,23 @@ final class HttpRangeSource implements CancellableByteSource {
           if (chunk.length > length - received) {
             throw const RangeException('range body exceeds requested length');
           }
-          bytes.setRange(received, received + chunk.length, chunk);
           received += chunk.length;
+          yield chunk;
         }
       } finally {
-        await stream.cancel().toDart;
-        stream.releaseLock();
+        abort.abort();
+        try {
+          await stream.cancel().toDart;
+        } on Object {
+          // A failed/aborted body may reject cancellation too. Keep its
+          // original read error; cancellation is only releasing resources.
+        } finally {
+          stream.releaseLock();
+        }
       }
       if (received != length) {
         throw RangeException('body is $received bytes, wanted $length');
       }
-      return bytes;
     } finally {
       _requests.remove(abort);
     }

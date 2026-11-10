@@ -11,7 +11,7 @@ import '../range.dart';
 /// whose `Content-Range` names exactly the requested bytes and the same total;
 /// a server that ignores `Range`, shortens the body or changes the length is
 /// an error.
-final class HttpRangeSource implements CancellableByteSource {
+final class HttpRangeSource implements StreamingByteSource {
   HttpRangeSource._(
     this._uri,
     this._headers,
@@ -81,7 +81,27 @@ final class HttpRangeSource implements CancellableByteSource {
     Future<void>? cancelled,
   ) async {
     checkReadRange(offset, length, this.length);
-    if (length == 0) return Uint8List(0);
+    final bytes = Uint8List(length);
+    var received = 0;
+    await for (final chunk in streamRange(
+      offset,
+      length,
+      cancelled: cancelled,
+    )) {
+      bytes.setRange(received, received + chunk.length, chunk);
+      received += chunk.length;
+    }
+    return bytes;
+  }
+
+  @override
+  Stream<Uint8List> streamRange(
+    int offset,
+    int length, {
+    Future<void>? cancelled,
+  }) async* {
+    checkReadRange(offset, length, this.length);
+    if (length == 0) return;
     if (_closed) throw StateError('HTTP range source is closed: $_uri');
 
     final response = await _send(
@@ -115,15 +135,17 @@ final class HttpRangeSource implements CancellableByteSource {
       rethrow;
     }
 
-    final bytes = Uint8List(length);
+    // Do not buffer a range: each network chunk reaches the consumer before
+    // waiting for the next chunk, including on a very slow connection.
     var received = 0;
     await for (final chunk in response) {
       if (chunk.length > length - received) {
         await _discard(response);
         throw const RangeException('range body exceeds requested length');
       }
-      bytes.setRange(received, received + chunk.length, chunk);
+      final bytes = chunk is Uint8List ? chunk : Uint8List.fromList(chunk);
       received += chunk.length;
+      yield bytes;
     }
     if (received != length) {
       throw RangeException(
@@ -131,7 +153,6 @@ final class HttpRangeSource implements CancellableByteSource {
         '$_uri at $offset',
       );
     }
-    return bytes;
   }
 
   /// Closes the client this source created.

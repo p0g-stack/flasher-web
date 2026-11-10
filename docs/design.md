@@ -133,8 +133,8 @@ working. Every response must carry exactly the requested `Content-Range` and
 the same strong ETag, and the length is pinned to the catalog size, so a server
 that changed the file is refused, not mixed in. An expired signed link is
 resolved once for all connections. The chunk layout is written only after its
-bytes are flushed (every 8 MiB in OPFS or a folder, every 512 MiB in a file
-picked with the save picker, where each flush copies the file), so a cancel,
+bytes are flushed (at most once per second in OPFS or a folder, every 512 MiB
+in a file picked with the save picker, where each flush copies the file), so a cancel,
 crash or reload resumes with only the missing ranges. Before resuming, every
 recorded range must still be inside the file; a shorter file restarts from
 zero. A server without a strong ETag gets one connection and no resume across

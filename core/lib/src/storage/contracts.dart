@@ -20,6 +20,19 @@ abstract interface class CancellableByteSource implements ByteSource {
   );
 }
 
+/// Validated HTTP ranges delivered incrementally with consumer backpressure.
+///
+/// Headers are checked before the first chunk. Normal completion means exactly
+/// the requested byte count; an early end is an error. Cancelling a subscription
+/// releases that request without closing other requests on the source.
+abstract interface class StreamingByteSource implements CancellableByteSource {
+  Stream<Uint8List> streamRange(
+    int offset,
+    int length, {
+    Future<void>? cancelled,
+  });
+}
+
 /// Positional writes to a byte range.
 ///
 /// Writes do not move a shared cursor: [write] puts [bytes] at [offset] and

@@ -115,6 +115,16 @@ inputs throw. `resumedFrom` counts the bytes already on disk, which may be
 scattered ranges rather than a prefix. Cancelling the stream leaves the partial
 file and its chunk layout in place for the next download of the same entry.
 
+Positional downloads deliver validated HTTP response-body chunks to downloadx
+as they arrive, rather than buffering an entire 8 MiB range. Progress and the
+30-second network-idle timeout therefore follow arriving bytes. Link refresh is
+shared and allowed only before a range emits its first body byte; a mid-body
+failure is retried by downloadx from the bytes already written. OPFS/IO durable
+checkpoints have a one-second floor, checked by the progress tick, rather than
+flushing on every body chunk. Staged file-picker writes still checkpoint after
+512 MiB; pause/failure/completion commits the latest snapshot. Progress can lead
+the durable resume checkpoint. Full-file SHA-256 still uses a final read-back.
+
 ## Flash contract
 
 ### `prepareFlash`
