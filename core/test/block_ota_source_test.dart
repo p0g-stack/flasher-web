@@ -80,6 +80,19 @@ void main() {
     await source.close();
   });
 
+  test('an empty API base requests origin-root paths, even from a Web Worker', () async {
+    final requested = <Uri>[];
+    final source = await BlockOtaSource.open(id: id, client: MockClient((request) async {
+      requested.add(request.url);
+      if (request.url.path == '/api/block-config') return http.Response('{"publicBase":null}', 200);
+      return request.url.path == '/api/manifest' ? metadata(manifest()) : block(List.filled(12, 2));
+    }));
+    expect(await source.read(0, 2), [2, 2]);
+    // A relative `api/...` would resolve against `/workers/<script>.js` in a worker.
+    expect(requested.map((uri) => uri.path), ['/api/block-config', '/api/manifest', '/api/block']);
+    await source.close();
+  });
+
   test('arbitrary reads cross aligned blocks and use exact short final block', () async {
     final size = BlockOtaSource.blockSize;
     final requested = <String>[];

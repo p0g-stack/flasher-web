@@ -110,7 +110,9 @@ final class BlockOtaSource implements StreamingByteSource {
     );
   }
 
-  static Uri _base(String value) => Uri.parse(value.isEmpty || value.endsWith('/') ? value : '$value/');
+  /// An empty base is the origin root, never the caller's directory: a Web
+  /// Worker resolves relative URLs against its own script (`/workers/…`).
+  static Uri _base(String value) => Uri.parse(value.isEmpty ? '/' : value.endsWith('/') ? value : '$value/');
 
   /// Bound the response before buffering it, including error responses. Never
   /// accidentally turn an ignored Range / wrong endpoint into a whole OTA GET.
