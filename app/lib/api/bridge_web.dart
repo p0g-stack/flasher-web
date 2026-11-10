@@ -262,7 +262,13 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
 
   @override
   Future<PickedFile?> pickOtaFile() async {
-    final picked = await FilePicker.pickFile(webOptions: _otaPicker);
+    // The dialog filters with `types`; the extensions keep the `<input>`
+    // fallback, which every other browser picks through, filtered to zips.
+    final picked = await FilePicker.pickFile(
+      type: FileType.custom,
+      allowedExtensions: const ['zip'],
+      webOptions: _otaPicker,
+    );
     if (picked is! WebPlatformFile) return null;
     final file = picked.file;
     if (file == null) return null;

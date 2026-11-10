@@ -27,6 +27,7 @@ before it is flashed or exported, and a flash leaves only a receipt.
 | App | `app/` (Flutter web) | The setup, flash, environment and documentation pages, and the app's service worker. The page owns permission choosers; the service runs in a Squadron Web Worker. |
 | Edge worker | `worker/` (Cloudflare Workers) | Serves `app/build/web` and the same-origin `/api/*` routes the browser cannot do itself (CORS). Local: `wrangler dev`. |
 | Upstream sync | `tool/sync_upstream.dart` | Fetches the pinned upstream commit and writes `app/web/upstream/` (gitignored). |
+| Carried patches | `third_party/<name>/` + `tool/third_party.dart` | A `PIN` (repo, commit, package) plus a `git format-patch` series per carried package: bootstrap checks the commit out under `.dart_tool/` (gitignored), applies the series and overrides the package in `pubspec_overrides.yaml`. Carries the web picker's file system access dialog. |
 
 ## Upstream snapshot (`app/web/upstream/`, served as static files)
 
