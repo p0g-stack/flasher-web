@@ -14,6 +14,13 @@ use crate::timeout;
 /// (including a Web Worker) copy a piece without a whole-image allocation.
 pub const MAX_CHUNK: usize = 1024 * 1024;
 
+/// Download bytes reach the device in multiples of this size; only the last
+/// transfer of a download may be shorter. A short USB packet ends the device's
+/// pending read, so a separately sent 28-byte sparse header in the middle of a
+/// download can stall fastbootd. AOSP `FastBootDriver::SparseWriteCallback`
+/// coalesces into the same unit (`TRANSPORT_CHUNK_SIZE`).
+const TRANSPORT_CHUNK: usize = 1024;
+
 /// The fastboot command line is one USB transfer; keep it within the protocol's
 /// 64-byte packet budget.
 const MAX_COMMAND: usize = 64;
@@ -61,6 +68,9 @@ pub struct Session<T: BulkTransport> {
     transport: Option<T>,
     serial: String,
     state: State,
+    /// Accepted download bytes not yet sent: always fewer than
+    /// [`TRANSPORT_CHUNK`], flushed by `end_download`.
+    pending: Vec<u8>,
     max_in: usize,
     timeout: Duration,
     retired: bool,
@@ -72,6 +82,7 @@ impl<T: BulkTransport> Session<T> {
             transport: Some(transport),
             serial,
             state: State::Idle,
+            pending: Vec::new(),
             max_in: max_in.max(64),
             timeout,
             retired: false,
@@ -271,13 +282,26 @@ impl<T: BulkTransport> Session<T> {
                 ),
             ));
         }
-        let sent = end as u32;
-        let result = self.send(stage, bytes, self.timeout).await;
+        // Send whole TRANSPORT_CHUNK units; keep the residual for the next
+        // write. An aligned chunk with nothing pending is sent without a copy.
+        let mut data = if self.pending.is_empty() {
+            bytes
+        } else {
+            let mut joined = std::mem::take(&mut self.pending);
+            joined.extend_from_slice(&bytes);
+            joined
+        };
+        let residual = data.len() % TRANSPORT_CHUNK;
+        if residual != 0 {
+            self.pending = data.split_off(data.len() - residual);
+        }
+        self.state = State::Downloading { expected, sent: end as u32 };
+        if data.is_empty() {
+            return Ok(());
+        }
+        let result = self.send(stage, data, self.timeout).await;
         match result {
-            Ok(()) => {
-                self.state = State::Downloading { expected, sent };
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(error) => {
                 let cleanup = self.retire().await;
                 Err(error.with_cleanup(cleanup))
@@ -305,6 +329,13 @@ impl<T: BulkTransport> Session<T> {
             error.uncertain = false;
             let cleanup = self.retire().await;
             return Err(error.with_cleanup(cleanup));
+        }
+        if !self.pending.is_empty() {
+            let tail = std::mem::take(&mut self.pending);
+            if let Err(error) = self.send("writeDownload", tail, self.timeout).await {
+                let cleanup = self.retire().await;
+                return Err(error.with_cleanup(cleanup));
+            }
         }
         let outcome = self.end_inner(stage, WRITE_TIMEOUT).await;
         self.finish(outcome).await
@@ -438,6 +469,7 @@ impl<T: BulkTransport> Session<T> {
     async fn retire(&mut self) -> Vec<String> {
         self.retired = true;
         self.state = State::Idle;
+        self.pending = Vec::new();
         let Some(mut transport) = self.transport.take() else {
             return Vec::new();
         };
@@ -457,4 +489,60 @@ fn record(messages: &mut Vec<LinkMessage>, kind: &str, text: String) {
         kind: kind.to_string(),
         text,
     });
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    struct Recorder {
+        writes: Vec<usize>,
+        replies: VecDeque<&'static [u8]>,
+    }
+
+    impl BulkTransport for Recorder {
+        fn blame(&self) -> &'static str {
+            "usb"
+        }
+        async fn write_all(&mut self, data: Vec<u8>) -> Result<(), TransportError> {
+            self.writes.push(data.len());
+            Ok(())
+        }
+        async fn read(&mut self, _max: usize) -> Result<Vec<u8>, TransportError> {
+            Ok(self.replies.pop_front().expect("unexpected read").to_vec())
+        }
+        async fn close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sparse_headers_never_reach_the_device_as_short_transfers() {
+        // A sparse image arrives as a 28-byte file header, a 12-byte chunk
+        // header and then data; only the final transfer may be short.
+        let pieces = [28, 12, MAX_CHUNK, MAX_CHUNK, 12, 500];
+        let total: usize = pieces.iter().sum();
+        let data_reply: &'static [u8] =
+            Box::leak(format!("DATA{total:08x}").into_bytes().into_boxed_slice());
+        let transport = Recorder {
+            writes: Vec::new(),
+            replies: VecDeque::from([data_reply, b"OKAY".as_slice()]),
+        };
+        let mut session = Session::new(transport, "S".into(), 64, Duration::from_secs(5));
+        tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async {
+            session.begin_download(total as u32).await.unwrap();
+            for size in pieces {
+                session.write_download(vec![0; size]).await.unwrap();
+            }
+            session.end_download().await.unwrap();
+        });
+        let writes = &session.transport.as_ref().unwrap().writes;
+        // The download command itself, then the data transfers.
+        let data = &writes[1..];
+        assert_eq!(data.iter().sum::<usize>(), total);
+        let (last, body) = data.split_last().unwrap();
+        assert!(body.iter().all(|len| len % TRANSPORT_CHUNK == 0), "{data:?}");
+        assert!(*last > 0);
+    }
 }
