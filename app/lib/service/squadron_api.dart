@@ -46,16 +46,8 @@ final class SquadronFlasherApi implements FlasherApi {
       _worker.storageBudget(request);
 
   @override
-  Stream<Map<String, Object?>> cacheOta(Map<String, Object?> request) =>
-      _worker.cacheOta(request);
-
-  @override
   Stream<Map<String, Object?>> saveOta(Map<String, Object?> request) =>
       _worker.saveOta(request);
-
-  @override
-  Future<Map<String, Object?>> evictCachedOta(Map<String, Object?> request) =>
-      _worker.evictCachedOta(request);
 
   @override
   Stream<Map<String, Object?>> exportVirtual(Map<String, Object?> request) =>

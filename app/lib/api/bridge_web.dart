@@ -84,7 +84,6 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   /// The OTA ZIP the page remembered, and the unfinished save, each as the
   /// `file_picker` token of its handle.
   static const _otaTokenKey = 'flasher_web.ota-token';
-  static const _otaSaveKey = 'flasher_web.ota-save';
   static const _preferencesKey = 'flasher_web.preferences';
   static const _directoryPrefix = 'flasher_web.directory.';
 
@@ -388,13 +387,11 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     await _forgetToken(previous);
   }
 
-  /// Drops [token] from the browser's store unless a remembered file still
-  /// uses it: the store keeps one record per file, so the OTA and the
-  /// unfinished save share a token when the OTA was saved to disk.
+  /// Drops [token] from the browser's store unless the remembered OTA still
+  /// uses it.
   Future<void> _forgetToken(String? token) async {
     if (token == null) return;
     if (await _preferences.getString(_otaTokenKey) == token) return;
-    if ((await _savedRecord())?.token == token) return;
     try {
       await WebPlatformFile.forget(token);
     } on Object {
@@ -602,75 +599,6 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
       await _rememberOtaToken(await WebPlatformFile.persistHandle(handle));
     }
     return _otaFileFrom(handle);
-  }
-
-  @override
-  Future<void> rememberOtaSave(
-    Object destination,
-    Map<String, Object?> request,
-  ) async {
-    final token = await WebPlatformFile.persistHandle(
-      destination as web.FileSystemFileHandle,
-    );
-    final previous = (await _savedRecord())?.token;
-    await _preferences.setString(
-      _otaSaveKey,
-      jsonEncode({'token': token, 'request': request}),
-    );
-    await _forgetToken(previous);
-  }
-
-  @override
-  Future<({String name, Map<String, Object?> request})?>
-  rememberedOtaSave() async {
-    final record = await _savedRecord();
-    if (record == null) return null;
-    final file = await WebPlatformFile.restore(record.token);
-    if (file == null) {
-      // The browser dropped the file, so nothing is left to resume.
-      await _preferences.remove(_otaSaveKey);
-      return null;
-    }
-    return (name: file.name, request: record.request);
-  }
-
-  @override
-  Future<Object?> requestRememberedOtaSave() async {
-    final record = await _savedRecord();
-    if (record == null) return null;
-    final handle = (await WebPlatformFile.restore(record.token))?.handle;
-    if (handle == null) return null;
-    // Writing over it needs readwrite, which a reload drops like read.
-    final granted = await requestPermission(
-      handle,
-      mode: FilePermissionMode.readWrite,
-    );
-    return granted ? handle : null;
-  }
-
-  @override
-  Future<void> forgetOtaSave() async {
-    final token = (await _savedRecord())?.token;
-    await _preferences.remove(_otaSaveKey);
-    await _forgetToken(token);
-  }
-
-  /// The remembered unfinished save: the token of its file and the request
-  /// that describes the download.
-  Future<({String token, Map<String, Object?> request})?> _savedRecord() async {
-    final raw = await _preferences.getString(_otaSaveKey);
-    if (raw == null) return null;
-    final Object? decoded;
-    try {
-      decoded = jsonDecode(raw);
-    } on FormatException {
-      return null;
-    }
-    if (decoded is! Map<String, dynamic>) return null;
-    final token = decoded['token'];
-    final request = decoded['request'];
-    if (token is! String || request is! Map<String, dynamic>) return null;
-    return (token: token, request: Map<String, Object?>.from(request));
   }
 
   Future<PickedFile?> _otaFileFrom(web.FileSystemFileHandle handle) async {

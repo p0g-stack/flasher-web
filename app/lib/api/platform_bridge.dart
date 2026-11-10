@@ -125,27 +125,6 @@ abstract interface class PlatformBridge {
     required bool remember,
   });
 
-  /// Remembers an OTA download into a save-picker [destination] before it
-  /// starts, with the [request] that resumes it, so a reload can continue the
-  /// partial file instead of starting over. One save is remembered at a time.
-  Future<void> rememberOtaSave(
-    Object destination,
-    Map<String, Object?> request,
-  );
-
-  /// The remembered save's file name and request, without a permission
-  /// prompt; null when none is remembered.
-  Future<({String name, Map<String, Object?> request})?> rememberedOtaSave();
-
-  /// Renews write permission on the remembered save and returns its handle.
-  ///
-  /// Call from the click handler: the permission prompt needs the gesture.
-  /// Null when nothing is remembered or the user refuses.
-  Future<Object?> requestRememberedOtaSave();
-
-  /// Drops the remembered save.
-  Future<void> forgetOtaSave();
-
   /// Whether the page can open a WebUSB fastboot chooser right now.
   ///
   /// This is a page capability probe; whether the place can write is the
@@ -291,22 +270,6 @@ final class UnsupportedPlatformBridge implements PlatformBridge {
     Object destination, {
     required bool remember,
   }) async => _unsupported();
-
-  @override
-  Future<void> rememberOtaSave(
-    Object destination,
-    Map<String, Object?> request,
-  ) async => _unsupported();
-
-  @override
-  Future<({String name, Map<String, Object?> request})?>
-  rememberedOtaSave() async => null;
-
-  @override
-  Future<Object?> requestRememberedOtaSave() async => null;
-
-  @override
-  Future<void> forgetOtaSave() async {}
 
   @override
   bool get canChooseFastbootDevice => false;

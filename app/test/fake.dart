@@ -66,25 +66,19 @@ final class FakeFlasherApi implements FlasherApi {
   Map<String, Object?>? lastPrepareRequest;
   Map<String, Object?>? lastFlashRequest;
   Map<String, Object?>? lastStorageBudgetRequest;
-  Map<String, Object?>? lastCacheOtaRequest;
   Map<String, Object?>? lastSaveOtaRequest;
-  Map<String, Object?>? lastEvictRequest;
   Map<String, Object?>? lastExportRequest;
   Map<String, Object?>? lastInspectRequest;
   int prepareCalls = 0;
   int flashCalls = 0;
-  int evictCalls = 0;
 
   Map<String, Object?> storageBudgetResult = const {
     'cap': 10 * 1024 * 1024 * 1024,
     'usage': 2 * 1024 * 1024 * 1024,
     'quota': 64 * 1024 * 1024 * 1024,
     'available': 8 * 1024 * 1024 * 1024,
-    'items': <Map<String, Object?>>[],
   };
 
-  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
-  cacheOtaStream;
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   saveOtaStream;
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
@@ -170,24 +164,9 @@ final class FakeFlasherApi implements FlasherApi {
   }
 
   @override
-  Stream<Map<String, Object?>> cacheOta(Map<String, Object?> request) {
-    lastCacheOtaRequest = request;
-    return cacheOtaStream?.call(request) ?? const Stream.empty();
-  }
-
-  @override
   Stream<Map<String, Object?>> saveOta(Map<String, Object?> request) {
     lastSaveOtaRequest = request;
     return saveOtaStream?.call(request) ?? const Stream.empty();
-  }
-
-  @override
-  Future<Map<String, Object?>> evictCachedOta(
-    Map<String, Object?> request,
-  ) async {
-    evictCalls++;
-    lastEvictRequest = request;
-    return {'key': request['key'], 'removed': true, 'freed': 0};
   }
 
   @override
@@ -327,35 +306,6 @@ final class FakePlatformBridge implements PlatformBridge {
     if (remember) rememberedOta = savedOta;
     return savedOta;
   }
-
-  /// The remembered unfinished save, as [rememberOtaSave] stored it.
-  ({Object destination, Map<String, Object?> request})? otaSave;
-
-  /// Whether [requestRememberedOtaSave] grants write permission.
-  bool grantOtaSave = true;
-
-  @override
-  Future<void> rememberOtaSave(
-    Object destination,
-    Map<String, Object?> request,
-  ) async {
-    otaSave = (destination: destination, request: request);
-  }
-
-  @override
-  Future<({String name, Map<String, Object?> request})?>
-  rememberedOtaSave() async {
-    final save = otaSave;
-    if (save == null) return null;
-    return (name: '${save.request['suggestedName']}', request: save.request);
-  }
-
-  @override
-  Future<Object?> requestRememberedOtaSave() async =>
-      grantOtaSave ? otaSave?.destination : null;
-
-  @override
-  Future<void> forgetOtaSave() async => otaSave = null;
 
   @override
   Future<FastbootDeviceChoice?> chooseFastbootDevice() async {

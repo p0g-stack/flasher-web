@@ -22,7 +22,7 @@ class EnvironmentPage extends StatefulWidget {
   final UpstreamTables tables;
   final EnvironmentInfo initial;
 
-  /// Owns the budget reading and the cached OTA list of the bloat store.
+  /// Owns the budget reading of the bloat store.
   final SetupState setup;
 
   @override
@@ -294,7 +294,6 @@ class _StorageBudgetCard extends StatelessWidget {
         final cap = setup.budgetCap;
         final usage = setup.budgetUsage;
         final fraction = cap > 0 ? (usage / cap).clamp(0.0, 1.0) : 0.0;
-        final items = setup.cachedOtas;
         return SectionCard(
           title: 'Storage budget',
           trailing: TextButton.icon(
@@ -308,8 +307,8 @@ class _StorageBudgetCard extends StatelessWidget {
             children: [
               Text(
                 'This app keeps at most ${formatBytes(cap)} in browser '
-                'storage. Bloat images and cached catalog OTAs share the '
-                'budget; local OTA files are read in place and cost nothing.',
+                'storage. The verified bloat images share the budget; an OTA '
+                'is read in place, from the edge cache, or saved outside it.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -341,84 +340,10 @@ class _StorageBudgetCard extends StatelessWidget {
                   error: true,
                 ),
               ],
-              const SizedBox(height: 14),
-              const FieldLabel('CACHED OTAs'),
-              const SizedBox(height: 4),
-              if (items.isEmpty)
-                const HintText(
-                  'No catalog OTA is cached. Use Download OTA › App cache on '
-                  'a catalog version to read the same release offline.',
-                )
-              else
-                for (final item in items) _CachedOtaRow(setup: setup, item: item),
             ],
           ),
         );
       },
-    );
-  }
-}
-
-class _CachedOtaRow extends StatelessWidget {
-  const _CachedOtaRow({required this.setup, required this.item});
-
-  final SetupState setup;
-  final Map<String, Object?> item;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final key = item['key'];
-    final keyText = key is String && key.isNotEmpty ? key : null;
-    final bytes = item['bytes'];
-    final complete = item['complete'] == true;
-    final lastUsed = item['lastUsed'];
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            complete ? Icons.offline_pin : Icons.pending_outlined,
-            size: 18,
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '${item['label'] ?? key ?? 'OTA'}',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                Text(
-                  [
-                    if (bytes is num) formatBytes(bytes.toInt()),
-                    complete ? 'complete' : 'partial',
-                    if (lastUsed is String && lastUsed.isNotEmpty)
-                      'last used ${formatCreated(lastUsed)}',
-                  ].join(' · '),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 10),
-          TextButton.icon(
-            key: ValueKey('evict-$key'),
-            onPressed: keyText == null
-                ? null
-                : () => setup.evictCachedOta(keyText),
-            icon: const Icon(Icons.delete_outline, size: 16),
-            label: const Text('Evict'),
-          ),
-        ],
-      ),
     );
   }
 }

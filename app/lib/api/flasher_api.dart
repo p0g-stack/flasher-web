@@ -48,19 +48,10 @@ abstract interface class FlasherApi {
   Stream<Map<String, Object?>> rebootRetry(Map<String, Object?> request);
   Future<Map<String, Object?>> stopRun(Map<String, Object?> request);
 
-  /// The 10 GiB app budget, the platform estimate and the cached OTAs.
+  /// The 10 GiB app budget and the platform estimate.
   ///
-  /// Request: `{store, apiBase}`. Result: `{cap, usage, quota, available,
-  /// items: [{key, label, bytes, complete, lastUsed}]}`, most recently used
-  /// first.
+  /// Request: `{store}`. Result: `{cap, usage, quota, available}`.
   Future<Map<String, Object?>> storageBudget(Map<String, Object?> request);
-
-  /// Downloads one catalog OTA into the OTA cache under the bloat store.
-  ///
-  /// Request: `{store, apiBase, ota: {kind: 'catalog', entry}}`. Events:
-  /// `started`, `progress`, then one `result` carrying `key`, `bytes`,
-  /// `sha256`, `etag` and `lastUsed`.
-  Stream<Map<String, Object?>> cacheOta(Map<String, Object?> request);
 
   /// Copies one catalog OTA into a file outside the app's stores.
   ///
@@ -68,9 +59,6 @@ abstract interface class FlasherApi {
   /// `destination` is a save-picker handle or a streamed download. Events:
   /// `started`, `progress`, then one `result` carrying `bytes` and `sha256`.
   Stream<Map<String, Object?>> saveOta(Map<String, Object?> request);
-
-  /// Removes one cached OTA. Request: `{store, key}`.
-  Future<Map<String, Object?>> evictCachedOta(Map<String, Object?> request);
 
   /// Writes a portable ZIP of a virtual package into a save-picker handle.
   ///

@@ -746,16 +746,9 @@ class _OtaDownload extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (setup.isOtaCached(entry))
-          HintText(
-            'A complete offline copy is cached in the app storage.',
-            key: ValueKey('catalogCached-$role'),
-          ),
         if (downloads.running && mine) ...[
           Text(
-            downloads.target == OtaDownloadTarget.cache
-                ? 'Downloading into the app cache…'
-                : 'Saving to this computer…',
+            'Saving to this computer…',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           for (final item in downloads.progress.entries)
@@ -780,7 +773,7 @@ class _OtaDownload extends StatelessWidget {
             child: TextButton.icon(
               key: ValueKey('downloadOta-$role'),
               onPressed: setup.canDownloadOta(role)
-                  ? () => _choose(context)
+                  ? () => setup.downloadOtaToComputer(role)
                   : null,
               icon: const Icon(Icons.download_outlined, size: 18),
               label: Text(
@@ -790,29 +783,12 @@ class _OtaDownload extends StatelessWidget {
               ),
             ),
           ),
-        if (!downloads.running && downloads.pendingSave?.role == role) ...[
+        if (!downloads.canSaveToComputer)
           HintText(
-            '${downloads.pendingSave!.name} was not finished. Resume writes '
-            'only the missing parts into the same file.',
-            key: ValueKey('pendingOtaSave-$role'),
+            'This browser cannot save files. Open the app in a current '
+            'Chromium browser over HTTPS or localhost.',
+            key: ValueKey('otaSaveUnavailable-$role'),
           ),
-          Wrap(
-            spacing: 8,
-            children: [
-              TextButton.icon(
-                key: ValueKey('resumeOtaSave-$role'),
-                onPressed: setup.resumeOtaSave,
-                icon: const Icon(Icons.play_arrow, size: 18),
-                label: const Text('Resume save'),
-              ),
-              TextButton(
-                key: ValueKey('discardOtaSave-$role'),
-                onPressed: downloads.discardSave,
-                child: const Text('Discard'),
-              ),
-            ],
-          ),
-        ],
         if (mine && downloads.notice != null)
           HintText(downloads.notice!, key: ValueKey('otaDownloadNotice-$role')),
         if (mine && downloads.error != null)
@@ -835,100 +811,7 @@ class _OtaDownload extends StatelessWidget {
     ];
     final rate = downloads.rate(label);
     if (rate != null) parts.add('${formatBytes(rate.round())}/s');
-    final resumed = downloads.resumedFrom(label);
-    if (resumed > 0) {
-      parts.add('resumed with ${formatBytes(resumed)} already saved');
-    }
     return parts.join(' · ');
-  }
-
-  Future<void> _choose(BuildContext context) async {
-    final target = await showDialog<OtaDownloadTarget>(
-      context: context,
-      builder: (context) => _OtaDownloadDialog(setup: setup, entry: entry),
-    );
-    switch (target) {
-      case OtaDownloadTarget.computer:
-        // The dialog's tap is the gesture the save picker needs.
-        await setup.downloadOtaToComputer(role);
-      case OtaDownloadTarget.cache:
-        await setup.downloadOtaToCache(role);
-      case null:
-        break;
-    }
-  }
-}
-
-/// Asks where a catalog OTA goes: onto this computer or into the app cache.
-class _OtaDownloadDialog extends StatelessWidget {
-  const _OtaDownloadDialog({required this.setup, required this.entry});
-
-  final SetupState setup;
-  final Map<String, dynamic> entry;
-
-  @override
-  Widget build(BuildContext context) {
-    final downloads = setup.otaDownloads;
-    final cached = setup.isOtaCached(entry);
-    final fits = setup.otaFitsCache(entry);
-    final String cacheText;
-    if (cached) {
-      cacheText = 'Already cached; a flash of this version reads it.';
-    } else if (fits) {
-      cacheText =
-          'Keep it in browser storage, under the app storage cap '
-          '(${formatBytes(setup.budgetAvailable)} free). A flash of this '
-          'version then reads it instead of the network; an interrupted '
-          'download resumes.';
-    } else if (setup.budget == null) {
-      cacheText = 'The app storage budget is unknown, so nothing is cached.';
-    } else {
-      cacheText =
-          'Does not fit the remaining ${formatBytes(setup.budgetAvailable)} '
-          'under the app storage cap. Evict a cached OTA from Environment '
-          'first.';
-    }
-    final computerText = !downloads.canSaveToComputer
-        ? 'This browser cannot save files.'
-        : downloads.savesIntoPickedFile
-        ? 'Save the ZIP where you choose, outside the app storage cap. The '
-              'app then reads it as the local OTA.'
-        : 'Download the ZIP to the browser downloads, outside the app '
-              'storage cap. Choose it under Local file afterwards.';
-    return AlertDialog(
-      title: const Text('Download OTA'),
-      content: SizedBox(
-        width: 460,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              key: const ValueKey('downloadOtaComputer'),
-              enabled: downloads.canSaveToComputer,
-              leading: const Icon(Icons.computer_outlined),
-              title: const Text('This computer'),
-              subtitle: Text(computerText),
-              onTap: () =>
-                  Navigator.of(context).pop(OtaDownloadTarget.computer),
-            ),
-            ListTile(
-              key: const ValueKey('downloadOtaCache'),
-              enabled: fits && !cached,
-              leading: const Icon(Icons.download_for_offline_outlined),
-              title: const Text('App cache'),
-              subtitle: Text(cacheText),
-              onTap: () => Navigator.of(context).pop(OtaDownloadTarget.cache),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-      ],
-    );
   }
 }
 

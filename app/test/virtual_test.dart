@@ -755,26 +755,13 @@ void main() {
     });
   });
 
-  testWidgets('the environment page shows the budget and evicts a cached OTA', (
-    tester,
-  ) async {
-    const digest =
-        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  testWidgets('the environment page shows the storage budget', (tester) async {
     final harness = Harness();
     harness.api.storageBudgetResult = const {
       'cap': 10 * 1024 * 1024 * 1024,
       'usage': 3 * 1024 * 1024 * 1024,
       'quota': 64 * 1024 * 1024 * 1024,
       'available': 7 * 1024 * 1024 * 1024,
-      'items': [
-        {
-          'key': digest,
-          'label': 'OP 13 / GLO / CPH2647_11.A.30',
-          'bytes': 4 * 1024 * 1024 * 1024,
-          'complete': true,
-          'lastUsed': '2026-11-01T00:00:00Z',
-        },
-      ],
     };
     await pumpApp(tester, harness: harness);
 
@@ -782,48 +769,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('storageBudgetBar')), findsOneWidget);
-    expect(find.textContaining('OP 13 / GLO'), findsOneWidget);
-    expect(find.textContaining('complete'), findsWidgets);
-
-    final evict = find.byKey(const ValueKey('evict-$digest'));
-    await tester.ensureVisible(evict);
-    await tester.tap(evict);
-    await tester.pumpAndSettle();
-
-    expect(harness.api.evictCalls, 1);
-    expect(harness.api.lastEvictRequest?['key'], digest);
-    expect(harness.api.lastEvictRequest?['store'], {'kind': 'opfs'});
-  });
-
-  testWidgets('a catalog OTA downloads into the app cache from the dialog', (
-    tester,
-  ) async {
-    final harness = Harness();
-    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
-    harness.api.cacheOtaStream = (_) => Stream.fromIterable(const [
-      {
-        'type': 'result',
-        'key': 'b',
-        'label': 'OP 13 / GLO',
-        'bytes': 4 * 1024 * 1024 * 1024,
-        'complete': true,
-      },
-    ]);
-    await pumpApp(tester, harness: harness);
-    await _chooseRegional(tester);
-    await tester.tap(find.text('Version catalog'));
-    await tester.pumpAndSettle();
-
-    await _openDownloadDialog(tester);
-    await tester.tap(find.byKey(const ValueKey('downloadOtaCache')));
-    await tester.pumpAndSettle();
-
-    final request = harness.api.lastCacheOtaRequest!;
-    expect(request['store'], {'kind': 'opfs'});
-    final ota = Map<String, Object?>.from(request['ota']! as Map);
-    expect(ota['kind'], 'catalog');
-    expect((ota['entry']! as Map)['id'], 'regional-1');
-    expect(harness.bridge.keepAwake, 0, reason: 'the wake lock is released');
+    final bar = tester.widget<LinearProgressIndicator>(
+      find.byKey(const ValueKey('storageBudgetBar')),
+    );
+    expect(bar.value, closeTo(0.3, 0.001), reason: '3 of the 10 GiB cap');
+    expect(find.textContaining('CACHED OTAs'), findsNothing);
   });
 
   testWidgets('a download that fails before it starts shows the failure', (
@@ -832,7 +782,7 @@ void main() {
     final harness = Harness();
     harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
     // A worker stream reports the error, then closes.
-    harness.api.cacheOtaStream = (_) async* {
+    harness.api.saveOtaStream = (_) async* {
       throw StateError('8608804980 bytes needed but only 3137600630 free');
     };
     await pumpApp(tester, harness: harness);
@@ -840,39 +790,11 @@ void main() {
     await tester.tap(find.text('Version catalog'));
     await tester.pumpAndSettle();
 
-    await _openDownloadDialog(tester);
-    await tester.tap(find.byKey(const ValueKey('downloadOtaCache')));
-    await tester.pumpAndSettle();
+    await _startDownload(tester);
 
     expect(find.textContaining('3137600630 free'), findsOneWidget);
     expect(find.textContaining('without a result'), findsNothing);
     expect(harness.bridge.keepAwake, 0);
-  });
-
-  testWidgets('a cached OTA that does not fit is not offered', (tester) async {
-    final harness = Harness();
-    harness.api.storageBudgetResult = const {
-      'cap': 10 * 1024 * 1024 * 1024,
-      'usage': 9 * 1024 * 1024 * 1024,
-      'quota': 64 * 1024 * 1024 * 1024,
-      'available': 1 * 1024 * 1024 * 1024,
-      'items': <Map<String, Object?>>[],
-    };
-    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
-    await pumpApp(tester, harness: harness);
-    await _chooseRegional(tester);
-    await tester.tap(find.text('Version catalog'));
-    await tester.pumpAndSettle();
-
-    await _openDownloadDialog(tester);
-    final cache = tester.widget<ListTile>(
-      find.byKey(const ValueKey('downloadOtaCache')),
-    );
-    expect(cache.enabled, isFalse);
-    expect(find.textContaining('Does not fit the remaining'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('downloadOtaCache')));
-    await tester.pumpAndSettle();
-    expect(harness.api.lastCacheOtaRequest, isNull);
   });
 
   testWidgets('a catalog OTA saved to this computer becomes the local OTA', (
@@ -897,9 +819,7 @@ void main() {
     await tester.tap(find.text('Version catalog'));
     await tester.pumpAndSettle();
 
-    await _openDownloadDialog(tester);
-    await tester.tap(find.byKey(const ValueKey('downloadOtaComputer')));
-    await tester.pumpAndSettle();
+    await _startDownload(tester);
 
     expect(harness.bridge.saveFileNames, ['regional.zip']);
     final request = harness.api.lastSaveOtaRequest!;
@@ -913,109 +833,6 @@ void main() {
     });
     expect(find.text('regional.zip'), findsWidgets);
     expect(harness.bridge.keepAwake, 0, reason: 'the wake lock is released');
-    expect(
-      harness.bridge.otaSave,
-      isNull,
-      reason: 'a finished save is forgotten',
-    );
-  });
-
-  testWidgets('an unfinished save resumes into the same file after a reload', (
-    tester,
-  ) async {
-    final harness = Harness();
-    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
-    harness.api.inspectResult = _inspection();
-    harness.api.saveOtaStream = (_) async* {
-      yield {'type': 'started', 'label': 'OP 13 / GLO', 'total': 10};
-      yield {
-        'type': 'progress',
-        'label': 'OP 13 / GLO',
-        'done': 4,
-        'total': 10,
-      };
-      throw StateError('network gone');
-    };
-    await pumpApp(tester, harness: harness);
-    await _chooseRegional(tester);
-    await tester.tap(find.text('Version catalog'));
-    await tester.pumpAndSettle();
-    await _openDownloadDialog(tester);
-    await tester.tap(find.byKey(const ValueKey('downloadOtaComputer')));
-    await tester.pumpAndSettle();
-
-    expect(harness.bridge.otaSave?.destination, harness.bridge.saveFileResult);
-    expect(find.byKey(const ValueKey('otaDownloadError-ota')), findsOneWidget);
-
-    // A reload: a fresh app over the same browser state.
-    await tester.pumpWidget(const SizedBox());
-    harness.api.lastSaveOtaRequest = null;
-    const saved = PickedFile(
-      handle: 'saved-file',
-      name: 'regional.zip',
-      size: 10,
-    );
-    harness.bridge.savedOta = saved;
-    harness.api.saveOtaStream = (_) => Stream.fromIterable(const [
-      {
-        'type': 'started',
-        'label': 'OP 13 / GLO',
-        'total': 10,
-        'resumedFrom': 4,
-      },
-      {'type': 'result', 'label': 'OP 13 / GLO', 'bytes': 10, 'sha256': 'a'},
-    ]);
-    await pumpApp(tester, harness: harness);
-    await _chooseRegional(tester);
-    await tester.tap(find.text('Version catalog'));
-    await tester.pumpAndSettle();
-
-    final resume = find.byKey(const ValueKey('resumeOtaSave-ota'));
-    await tester.ensureVisible(resume);
-    await tester.tap(resume);
-    await tester.pumpAndSettle();
-
-    expect(harness.bridge.pickSaveFileCalls, 1, reason: 'no second picker');
-    final request = harness.api.lastSaveOtaRequest!;
-    expect(request['destination'], harness.bridge.saveFileResult);
-    expect((request['ota']! as Map)['kind'], 'catalog');
-    expect(harness.bridge.otaSave, isNull);
-    expect(harness.bridge.rememberedOta, same(saved));
-    expect(find.byKey(const ValueKey('resumeOtaSave-ota')), findsNothing);
-  });
-
-  testWidgets('a refused write permission does not start the resumed save', (
-    tester,
-  ) async {
-    final harness = Harness();
-    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
-    harness.bridge.otaSave = (
-      destination: 'old-file',
-      request: {
-        'role': 'ota',
-        'ota': {'kind': 'catalog'},
-        'suggestedName': 'regional.zip',
-      },
-    );
-    harness.bridge.grantOtaSave = false;
-    await pumpApp(tester, harness: harness);
-    await _chooseRegional(tester);
-    await tester.tap(find.text('Version catalog'));
-    await tester.pumpAndSettle();
-
-    final resume = find.byKey(const ValueKey('resumeOtaSave-ota'));
-    await tester.ensureVisible(resume);
-    await tester.tap(resume);
-    await tester.pumpAndSettle();
-
-    expect(harness.api.lastSaveOtaRequest, isNull);
-    expect(find.textContaining('did not allow writing'), findsOneWidget);
-    expect(harness.bridge.otaSave, isNotNull, reason: 'still resumable');
-
-    await tester.tap(find.byKey(const ValueKey('discardOtaSave-ota')));
-    await tester.pumpAndSettle();
-    expect(harness.bridge.otaSave, isNull);
-    expect(find.byKey(const ValueKey('resumeOtaSave-ota')), findsNothing);
   });
 
   testWidgets('a cancelled save picker starts no download', (tester) async {
@@ -1027,9 +844,7 @@ void main() {
     await tester.tap(find.text('Version catalog'));
     await tester.pumpAndSettle();
 
-    await _openDownloadDialog(tester);
-    await tester.tap(find.byKey(const ValueKey('downloadOtaComputer')));
-    await tester.pumpAndSettle();
+    await _startDownload(tester);
 
     expect(harness.bridge.pickSaveFileCalls, 1);
     expect(harness.api.lastSaveOtaRequest, isNull);
@@ -1053,7 +868,7 @@ Map<String, dynamic> _catalogOf(int size) => {
   ],
 };
 
-Future<void> _openDownloadDialog(WidgetTester tester) async {
+Future<void> _startDownload(WidgetTester tester) async {
   final download = find.byKey(const ValueKey('downloadOta-ota'));
   expect(download, findsOneWidget);
   await tester.ensureVisible(download);

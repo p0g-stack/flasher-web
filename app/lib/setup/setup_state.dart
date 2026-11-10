@@ -65,7 +65,6 @@ final class SetupState extends ChangeNotifier {
     });
     unawaited(_restoreStores());
     unawaited(_restoreOtaFile());
-    unawaited(otaDownloads.loadPendingSave());
     unawaited(refreshBloat());
     unawaited(refreshBudget());
   }
@@ -78,7 +77,7 @@ final class SetupState extends ChangeNotifier {
   /// Streams the same package to a save-picker file.
   final ExportController exports;
 
-  /// Copies a catalog OTA into the app cache or onto this computer.
+  /// Copies a catalog OTA onto this computer.
   final OtaDownloadController otaDownloads;
 
   late String _device;
@@ -952,7 +951,6 @@ final class SetupState extends ChangeNotifier {
 
   // ------------------------------------------------------- storage budget
 
-  Map<String, Object?>? get budget => _budget;
   bool get budgetLoading => _budgetLoading;
   String? get budgetError => _budgetError;
 
@@ -960,52 +958,6 @@ final class SetupState extends ChangeNotifier {
   int get budgetUsage => (_budget?['usage'] as num? ?? 0).toInt();
   int get budgetQuota => (_budget?['quota'] as num? ?? 0).toInt();
   int get budgetAvailable => (_budget?['available'] as num? ?? 0).toInt();
-
-  List<Map<String, Object?>> get cachedOtas {
-    final items = _budget?['items'];
-    if (items is! List) return const [];
-    return [
-      for (final item in items)
-        if (item is Map) Map<String, Object?>.from(item),
-    ];
-  }
-
-  /// The cache key of a catalog entry, or null when the entry is not
-  /// cacheable.
-  String? cacheKeyFor(Map<String, dynamic> entry) {
-    try {
-      return otaEntryDigest(entry);
-    } on Object {
-      return null;
-    }
-  }
-
-  bool isOtaCached(Map<String, dynamic> entry) {
-    final key = cacheKeyFor(entry);
-    if (key == null) return false;
-    return cachedOtas.any(
-      (item) => item['key'] == key && item['complete'] == true,
-    );
-  }
-
-  /// Whether the additional file extent fits under the cap and platform quota.
-  /// An existing allocation is credited only to the same catalog entry.
-  bool otaFitsCache(Map<String, dynamic> entry) {
-    if (_budget == null || _budgetError != null) return false;
-    final size = entry['size'];
-    if (size is! num || size <= 0) return false;
-    final key = cacheKeyFor(entry);
-    var allocated = 0;
-    for (final item in cachedOtas) {
-      if (key == null || item['key'] != key) continue;
-      final value = item['allocated'];
-      if (value is num && value > 0) {
-        allocated = value.toInt().clamp(0, size.toInt());
-      }
-      break;
-    }
-    return size.toInt() - allocated <= budgetAvailable;
-  }
 
   /// Whether the catalog [role] may be downloaded now.
   bool canDownloadOta(String role) =>
@@ -1022,7 +974,6 @@ final class SetupState extends ChangeNotifier {
     try {
       final result = await runtime.service.storageBudget({
         'store': _bloatStore.toService(),
-        'apiBase': runtime.apiBase,
       });
       if (_disposed) return;
       _budget = result;
@@ -1036,22 +987,6 @@ final class SetupState extends ChangeNotifier {
         _notify();
       }
     }
-  }
-
-  /// Downloads the catalog [role] into `ota-cache/` in the bloat store, where
-  /// a later flash of the same catalog version finds it.
-  Future<void> downloadOtaToCache(String role) async {
-    final entry = _selectedReleases[role];
-    final ota = otaInput(role);
-    if (entry == null || ota == null || !canDownloadOta(role)) return;
-    if (!otaFitsCache(entry) || isOtaCached(entry)) return;
-    await otaDownloads.toCache(
-      role: role,
-      ota: ota,
-      store: _bloatStore.toService(),
-      apiBase: runtime.apiBase,
-      onCached: () => unawaited(refreshBudget()),
-    );
   }
 
   /// Saves the catalog [role] onto this computer and, where the browser can
@@ -1069,35 +1004,6 @@ final class SetupState extends ChangeNotifier {
       suggestedName: otaFileName(entry),
       onSaved: (file) => setLocalFile(role, file),
     );
-  }
-
-  /// Continues an unfinished save into the file picked for it.
-  ///
-  /// Call from the click handler: renewing write permission needs the
-  /// gesture.
-  Future<void> resumeOtaSave() async {
-    final role = otaDownloads.pendingSave?.role;
-    if (role == null) return;
-    await otaDownloads.resumeSave(
-      apiBase: runtime.apiBase,
-      onSaved: (file) => setLocalFile(role, file),
-    );
-  }
-
-  /// Removes one cached OTA from the store the budget covers.
-  Future<void> evictCachedOta(String key) async {
-    try {
-      await runtime.service.evictCachedOta({
-        'store': _bloatStore.toService(),
-        'apiBase': runtime.apiBase,
-        'key': key,
-      });
-      _budgetError = null;
-    } on Object catch (error) {
-      _budgetError = '$error';
-      _notify();
-    }
-    await refreshBudget();
   }
 
   /// The file name a saved catalog OTA gets: the CDN's own name when it is a
