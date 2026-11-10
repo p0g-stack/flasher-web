@@ -7,11 +7,15 @@
 
 import { handleBloat } from "./bloat";
 import { handleCatalog } from "./catalog";
-import { jsonError, methodNotAllowed } from "./http";
+import { handleBlock } from "./blocks";
+import type { BucketEnv } from "./bucket";
+import { json, jsonError, methodNotAllowed } from "./http";
 import { handleOta } from "./ota";
 import { handleResolve } from "./resolve";
+import { CatalogError, ProxyError } from "./upstream";
+import { warmCache } from "./warm";
 
-export interface Env {
+export interface Env extends BucketEnv {
   ASSETS: Fetcher;
 }
 
@@ -25,6 +29,14 @@ export default {
       return env.ASSETS.fetch(request);
     }
     try {
+      if (path === "/api/block-config") {
+        if (request.method !== "GET") return methodNotAllowed("GET");
+        return json({ publicBase: env.OTA_PUBLIC_BASE || null });
+      }
+      if (path === "/api/manifest" || path === "/api/block") {
+        if (request.method !== "GET") return methodNotAllowed("GET");
+        return await handleBlock(url, env);
+      }
       if (path === "/api/catalog") {
         if (request.method !== "GET") {
           return methodNotAllowed("GET");
@@ -50,8 +62,15 @@ export default {
         return await handleBloat(request, path);
       }
       return jsonError(404, "Unknown API route.");
-    } catch {
+    } catch (error) {
+      if (error instanceof ProxyError) return jsonError(error.status, error.message);
+      if (error instanceof CatalogError) return jsonError(502, error.message);
       return jsonError(502, "The edge worker could not complete this request.");
     }
+  },
+  async scheduled(event, env, ctx): Promise<void> {
+    ctx.waitUntil(warmCache(env, event.scheduledTime).then(result => {
+      console.log("OTA cache warm", JSON.stringify(result));
+    }));
   },
 } satisfies ExportedHandler<Env>;

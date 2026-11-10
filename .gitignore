@@ -16,4 +16,5 @@ rust/src/frb_generated.rs
 rust/target/
 worker/node_modules/
 worker/.wrangler/
+worker/.dev.vars
 

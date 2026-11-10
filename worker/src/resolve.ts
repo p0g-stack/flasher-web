@@ -192,6 +192,8 @@ interface SiteResponse {
 class OtaSession {
   private readonly cookies = new Map<string, string>();
 
+  constructor(private readonly beforeFetch?: () => void) {}
+
   private cookieHeader(): string | null {
     if (this.cookies.size === 0) {
       return null;
@@ -228,14 +230,32 @@ class OtaSession {
       body = form.toString();
       headers["Content-Type"] = "application/x-www-form-urlencoded";
     }
-    let response: Response;
+    let response!: Response;
     try {
-      response = await fetch(url, {
-        method: body === undefined ? "GET" : "POST",
-        headers,
-        body,
-        signal: sessionSignal(),
-      });
+      let target = new URL(url);
+      let method = body === undefined ? "GET" : "POST";
+      for (let hop = 0; ; hop++) {
+        this.beforeFetch?.();
+        response = await fetch(target.toString(), {
+          method, headers, body, signal: sessionSignal(),
+          ...(this.beforeFetch ? { redirect: "manual" as const } : {}),
+        });
+        if (!this.beforeFetch || ![301, 302, 303, 307, 308].includes(response.status)) break;
+        this.absorbCookies(response.headers);
+        const location = response.headers.get("Location");
+        await response.body?.cancel();
+        if (!location || hop >= 5) throw new CatalogError(OTA_SERVICE_UNREACHABLE);
+        const next = new URL(location, target);
+        if (next.origin !== new URL(url).origin) throw new CatalogError(OTA_SERVICE_UNREACHABLE);
+        if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === "POST")) {
+          method = "GET";
+          body = undefined;
+          delete headers["Content-Type"];
+        }
+        const cookies = this.cookieHeader();
+        if (cookies) headers["Cookie"] = cookies;
+        target = next;
+      }
     } catch {
       throw new CatalogError(OTA_SERVICE_UNREACHABLE);
     }
@@ -381,7 +401,7 @@ function boundsOf(url: URL | null): {
 }
 
 /** Port of upstream `resolve_link`. */
-export async function resolveLink(entry: CatalogEntry): Promise<string> {
+export async function resolveLink(entry: CatalogEntry, beforeFetch?: () => void): Promise<string> {
   const source = entry.source_url;
   let parsedSource: URL | null = null;
   try {
@@ -414,7 +434,7 @@ export async function resolveLink(entry: CatalogEntry): Promise<string> {
     return source;
   }
 
-  const session = new OtaSession();
+  const session = new OtaSession(beforeFetch);
   const page = await parsePage((await session.request(SITE)).body);
   let index: number;
   try {

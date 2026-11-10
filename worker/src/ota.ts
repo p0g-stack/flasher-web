@@ -12,6 +12,7 @@ import { ProxyError, fetchFollowing } from "./upstream";
 
 const OTA_HOST_SUFFIXES = [
   "allawnofs.com",
+  "allawnfs.com",
   "allawnos.com",
   "oneplus.com",
   "oneplus.net",

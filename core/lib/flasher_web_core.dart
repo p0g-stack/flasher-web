@@ -50,6 +50,7 @@ export 'src/service/flasher_service.dart';
 export 'src/strategy/objective.dart';
 export 'src/strategy/store.dart';
 export 'src/strategy/strategy.dart' hide Selection;
+export 'src/storage/block_ota_source.dart';
 export 'src/storage/budget.dart';
 export 'src/storage/catalog_ota_source.dart';
 export 'src/storage/estimate.dart';

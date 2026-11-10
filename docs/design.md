@@ -50,13 +50,16 @@ Pinned in `upstream.lock` (repository + commit `bdea12a`). Produced by
 |---|---|
 | `GET /api/catalog?na=0\|1` | Proxy `https://roms.danielspringer.at/api/ota.php` (or `/api/na.php`), passing `If-None-Match`/`ETag`; cache 15 min. |
 | `POST /api/resolve` body = catalog release entry JSON | Port of `ota_catalog.resolve_link`; returns `{"url": "..."}` (a fresh signed link). Never cached or logged. |
-| `GET\|HEAD /api/ota?u=<url>` | Range proxy for a resolved OTA link. Allowlisted hosts only (`*.allawnofs.com`, `*.allawnos.com`, `roms.danielspringer.at/download.php`, `*.oneplus.com`, `*.oppo.com`, `*.coloros.com`); `Range` required; passes 206/Content-Range/Content-Length; adds upstream's OTA request headers. |
+| `GET /api/block-config` | `{publicBase: string \| null}` from `OTA_PUBLIC_BASE`. Null selects Worker-only access through the same block reader. |
+| `GET /api/manifest?id=<catalog-id>` | Discover/probe a catalog release and publish its pinned block manifest; no signed URL reaches the client. |
+| `GET /api/block?id=<catalog-id>&v=<identity>&n=<block>` | Read/fill one aligned block through the authenticated Garage S3 API. Reject a different manifest identity with 409. |
+| `GET\|HEAD /api/ota?u=<url>` | Legacy Range proxy for explicit URL inputs, not catalog reads. Allowlisted hosts and validated redirects only; retained while explicit URL input exists. |
 | `GET /api/bloat/<asset_name>` | Proxy `https://github.com/koaaN/Flasher_Builder/releases/download/bloat-assets-v1/<asset_name>` (following the redirect); `Range` passed through. Asset names validated against `[A-Za-z0-9._-]+`. |
 
-The worker never sees OTA or bloat bytes at rest; it streams them. Everything
-else on the origin is served by the static asset binding, and the app's own
-service worker serves the page shell and the streamed export download
-(`download/<id>`, described below).
+The Worker stores validated catalog OTA blocks in the owner's Garage bucket;
+bloat still streams without an edge copy. Everything else on the origin is
+served by the static asset binding, and the app's own service worker serves
+the page shell and streamed export download (`download/<id>`, below).
 
 ## Storage (core `lib/src/storage/`)
 
@@ -117,47 +120,120 @@ shortfall is reported rather than guessed. `BudgetException` names `needed`,
 For a picked bloat folder the browser cannot measure free disk space, so the
 store uses an unknown estimate: only the app cap applies, not the origin quota.
 
-### Catalog OTA cache (`storage/ota_cache.dart`)
+### Catalog OTA edge byte cache (authoritative contract)
 
-Optional and disposable. Per catalog entry: `ota-cache/<digest>.json` (the
-inventory: label, catalog size, ETag, bytes written, complete flag, full-file
-SHA-256, use timestamps), `<digest>.downloadx.part` while downloading, `<digest>.zip`
-when complete, and `<digest>.downloadx.json`, the chunk layout of the
-[`downloadx`](https://pub.dev/packages/downloadx) engine. `<digest>` is a
-canonical digest of the catalog entry with signed-URL query strings and ranking
-hints removed, so two releases never share a key.
+Catalog reads never download or retain a whole OTA in browser storage.
+`storage/block_ota_source.dart` is the same `ByteSource` on browser and
+native/CLI hosts. Local files remain read-in-place. Legacy local-cache and
+download code is not part of this reader and is removed in the UI cutover.
 
-A download fetches 8 ranges of 8 MiB at once through `/api/ota` and writes
-them positionally; downloadx splits slow ranges so fast connections keep
-working. Every response must carry exactly the requested `Content-Range` and
-the same strong ETag, and the length is pinned to the catalog size, so a server
-that changed the file is refused, not mixed in. An expired signed link is
-resolved once for all connections. The chunk layout is written only after its
-bytes are flushed (at most once per second in OPFS or a folder, every 512 MiB
-in a file picked with the save picker, where each flush copies the file), so a cancel,
-crash or reload resumes with only the missing ranges. Before resuming, every
-recorded range must still be inside the file; a shorter file restarts from
-zero. A server without a strong ETag gets one connection and no resume across
-sessions. The full-file SHA-256 is read back once at the end. A complete cache
-hit is transparent — same catalog identity, same archive — and payload
-operation hashes are still checked while it is read, so a corrupt cache cannot
-corrupt a flash. A cache that cannot be read is a miss and the OTA streams
-instead.
+**Identity.** A generation is `(catalog id, upstream strong ETag, byte length)`.
+The catalog documents `id` as stable, but it is not a byte validator: pin the
+CDN's strong ETag and observed length as well, checking the declared catalog
+size when present. `identity` is lowercase SHA-256 of UTF-8 compact JSON
+`[id, etag, length]`, including the ETag's quotes. Signed URLs never enter
+object names, manifests or logs. Blocks are **8 MiB**, aligned at `n * 8388608`;
+the final block is exactly the remaining length.
 
-**Download OTA → This computer** uses the same engine into the file the save
-picker returned. The page remembers that file handle before the first byte, as
-a `file_picker` token in `shared_preferences` (the patched `file_picker_web`
-keeps the handle itself in IndexedDB); a save that stops offers **Resume save**
-after a reload, which renews the handle's `readwrite` permission and fetches
-only the missing ranges into the same file. Picking the file again cannot
-resume: Chromium truncates an existing file chosen in the
-save picker. On Android Chrome, which has no save picker, the OTA streams to the
-browser's downloads in file order with 8 ranges in flight (at most 64 MiB
-buffered); that download is faster but cannot resume.
+**Bucket objects.** All paths below are relative to the bucket's public base:
 
-Through the local proxy on one 5.3 GB OTA (256 MiB measured, including link
-resolution and the final hash): one connection 9.3 MiB/s, eight 47.6 MiB/s.
-A process killed after 64 MiB resumed by fetching exactly the 192 MiB missing.
+- `ota/v1/releases/<id>/manifest.json`: discovery manifest, `no-store`.
+- `ota/v1/releases/<id>/<identity>/manifest.json`: immutable generation
+  manifest, written once when discovered. JSON is
+  `{id, identity, etag, length, blockSize: 8388608, created: <UTC ISO-8601>}`.
+- `ota/v1/releases/<id>/<identity>/<n>`: immutable full block, with
+  `x-amz-meta-ota-etag` equal to the manifest's upstream ETag, and
+  `Cache-Control: public, max-age=31536000, immutable`. Garage's own `ETag`
+  validates the bucket object, not the source OTA; do not confuse the two.
+- `ota/v1/complete/<id>/<catalog-fingerprint>/<identity>`: automatic completion
+  proof, written only after LIST proves every generation block exists.
+- `ota/v1/catalog/{ota.php,na.php}.json`: last successful catalog snapshots and
+  HTTP ETags for conditional polling. These contain only public catalog data.
+
+`OTA_S3_ENDPOINT`, `OTA_S3_BUCKET`, `OTA_S3_REGION` configure the path-style
+S3 API; `OTA_S3_ACCESS_KEY_ID` and `OTA_S3_SECRET_ACCESS_KEY` are Worker
+secrets. Only that bucket-scoped key may write. `aws4fetch` signs requests
+with SigV4 and `UNSIGNED-PAYLOAD` over HTTPS (HTTP is only for the local proof).
+There is no R2, KV, Durable Object, manual release registry or browser write
+credential. The bucket's anonymous **website endpoint**, enabled with
+`garage bucket website --allow`, is `OTA_PUBLIC_BASE`; Garage's S3 endpoint
+does not provide anonymous public reads. PutBucketCors allows origin `*`,
+methods GET/HEAD and exposes `ETag`, `Content-Length`, `Content-Range` and
+`x-amz-meta-ota-etag`. Anonymous writes must remain disabled.
+
+**Read/fill.** The client takes explicit `bucketBase` and `apiBase`, or discovers
+the bucket base once via `/api/block-config`. It tries the public manifest
+first and uses `/api/manifest` on 404 or network/CORS failure. Each block is
+also a direct public GET first; only a 404 or network failure uses
+`/api/block`. Other HTTP errors, bad lengths, malformed manifests or a block
+ETag mismatch fail closed, not a silent refill. Arbitrary reads assemble
+aligned blocks with an eight-block parallel/LRU window (64 MiB resident block
+data, in addition to caller-owned output and transport buffers). No decoded
+image or OTA copy is written to browser storage.
+
+The Worker resolves catalog IDs itself, never a caller-supplied URL. Signed
+links are reused in memory for at most two minutes and only while safely
+unexpired. A miss fetches exactly one CDN range, requires 206, exact
+`Content-Range`, unchanged strong ETag and exact body length, then PUTs and
+serves the block. The HTTP body is not served before the bucket write succeeds.
+In-isolate duplicate misses share a promise; different isolates may duplicate
+a fetch/PUT, but identical generation keys can only receive identical pinned
+bytes. Garage 2.5.0 ignores conditional PUT `If-None-Match: *`, so it is not a
+distributed lock. There is no extra coordinator.
+
+A CDN ETag change/412 during a miss publishes a newly probed generation and
+retires old completion markers; that old pinned read fails with 409. A new
+open gets the new discovery manifest. Old generation objects are retired by
+cron, marker first, then bounded data batches. An already complete old
+generation remains a byte-exact official OTA until a miss observes upstream
+mutation; cron does not repeatedly probe completed generations.
+
+**Scheduled warming/retirement.** The same Worker runs every minute; it
+checks the stored catalog snapshots every invocation but polls both upstream
+feeds with `If-None-Match` no more than once per 900 s. Failed feeds
+never authorize deletion. Supported labels come from the static
+`ASSETS` binding's `/upstream/tables.json` `devices` keys, normalized
+case/spacing and `Oneplus` → `OP` (no hand-maintained supported list).
+Select one latest release per device/region, and retire other release
+prefixes: remove completion markers first, then DeleteObjects batches of at
+most 1000 keys. Old generation prefixes are retired the same way.
+LIST-derived completion proofs prevent spending every invocation re-proving
+finished releases. Changed catalog fingerprints invalidate them. Incomplete
+releases rotate by scheduled time, and fill their first missing blocks through
+the exact on-demand fill path; a failed release does not starve other devices.
+There is no persisted cursor: a crash simply leaves less work done.
+
+Each invocation hard-counts outbound S3/catalog/resolver/CDN requests and asset
+binding fetches, stops at 48 (below Free's 50), and has a 12-minute work
+deadline plus the final bounded 35-second request. Once a generation has
+been LISTed, its missing blocks require only one CDN GET and one S3 PUT each;
+the shared on-demand fill path omits only the redundant S3 existence GET for
+these proven misses. Free also imposes 10 ms CPU and 100,000 requests/day:
+bounded subrequests alone do not prove CPU fit. A one-minute cron consumes at
+most 1,440 invocations/day; Cloudflare's pricing lists scheduled invocations
+as Worker requests, so budget them rather than assuming they are free.
+Local proof and CPU measurements are recorded with the implementation handoff;
+production CPU accounting must be checked before enabling a Free deployment.
+
+On the local Garage 2.5.0 + real OnePlus CDN proof, the first minute-cron
+invocation warmed 13 blocks with 45 subrequests; the next, using stored
+catalog snapshots and a generation LIST, warmed 15 blocks with 46
+subrequests in 23.5 s. That steady rate is 120 MiB/minute. The 42 supported
+latest releases with catalog sizes total 354.27 GiB / 45,368 aligned blocks,
+so a cold cache takes at least 45,368 / 15 ≈ 3,025 minutes (50.4 hours,
+about 2.1 days). Two additional selected NA releases lack catalog sizes,
+and make the actual 44-release backfill longer; this estimate excludes CDN
+outages and other traffic. A new 8 GiB release needs about 1,024 / 15 ≈
+69 minutes at the measured steady rate. Browser readers can fill missing
+blocks immediately while cron catches up.
+
+After deployment, qualify **one real miss and one scheduled warm invocation**
+using Workers Logs' `cpuTime` (or `npx wrangler tail --format json`).
+Miniflare's local `cpu_time_ms` is zero and is not billing evidence; OS
+`perf stat` measures a wider workerd CPU upper bound, including native I/O/TLS.
+If either real invocation exceeds Free's 10 ms, use Workers Paid ($5/month);
+the cache code and object contract do not change. No deployment or Cloudflare
+login is needed for local development/proof.
 
 ## The virtual package (one pass)
 
@@ -239,9 +315,9 @@ An OTA input is one of:
 - `{"kind": "url", "url": …}` — HTTP ranges, direct on the VM and through
   `/api/ota` in the browser (a browser needs the proxy for CORS and CDN
   headers; the VM sends OnePlus's OTA headers itself).
-- `{"kind": "catalog", "entry": <release>}` — a complete cache hit is used,
-  otherwise `/api/resolve` supplies a signed link that is resolved again when
-  it expires, and the catalog's declared size must equal the observed length.
+- `{"kind": "catalog", "entry": <release>}` — `BlockOtaSource` reads the pinned
+  generation through the public Garage endpoint, filling misses through the
+  Worker; the catalog's declared size must equal the observed manifest length.
 
 Only ZIP metadata, `META-INF/com/android/metadata` and the payload manifest are
 read before streaming; each image's bytes are verified against its partition

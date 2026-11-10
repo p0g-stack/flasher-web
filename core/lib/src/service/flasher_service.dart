@@ -3,7 +3,6 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:device_link/device_link.dart';
-import 'package:logging/logging.dart';
 import 'package:squadron/squadron.dart';
 
 import '../bloat/bloat_store.dart';
@@ -45,7 +44,6 @@ import 'storage_stats.dart';
 
 part 'flasher_service.worker.g.dart';
 
-final _log = Logger('service.flasher');
 
 /// The upstream commit of the last snapshot this service read.
 String _upstreamCommit = '';
@@ -152,7 +150,6 @@ base class FlasherService {
     final cache = _otaCache(
       workspace,
       apiBase,
-      proxied: await _useOtaProxy(),
     );
     final store = BloatStore(
       workspace: workspace,
@@ -207,7 +204,6 @@ base class FlasherService {
     final cache = _otaCache(
       workspace,
       req['apiBase'] as String? ?? '',
-      proxied: await _useOtaProxy(),
     );
     final report = await _budgetFor(req['store']).snapshot();
     final entries = await cache.entries();
@@ -253,7 +249,6 @@ base class FlasherService {
     final cache = _otaCache(
       workspace,
       apiBase,
-      proxied: await _useOtaProxy(),
     );
     final budget = _budgetFor(
       req['store'],
@@ -318,7 +313,6 @@ base class FlasherService {
     final streamed = destination is Map && destination['kind'] == 'stream';
     final sources = _catalogSources(
       req['apiBase'] as String? ?? '',
-      proxied: await _useOtaProxy(),
     );
     if (!streamed) {
       final workspace = await openOtaDestination(
@@ -412,7 +406,6 @@ base class FlasherService {
     final cache = _otaCache(
       workspace,
       req['apiBase'] as String? ?? '',
-      proxied: await _useOtaProxy(),
     );
     final matching = (await cache.entries()).where(
       (entry) => entry.key == key,
@@ -879,7 +872,7 @@ Future<VirtualFlashPackage> _openVirtualPackage(
         'catalog' => <String, Object?>{'kind': 'catalog', 'entry': input['entry']},
         _ => throw flash_model.FlashException('Unknown virtual OTA input: ${input['kind']}.'),
       };
-      final archive = await _openOtaArchive({...req, 'ota': input}, otaCacheWorkspace: bloat);
+      final archive = await _openOtaArchive({...req, 'ota': input});
       opened.add(archive);
       final catalogEntry = input['entry'];
       if (input['kind'] == 'catalog' && catalogEntry is Map) {
@@ -991,34 +984,15 @@ Future<Workspace> _openStoreWorkspace(Object? value) async {
 /// bloat images, so a user who picks one folder gets one place for app data.
 OtaCache _otaCache(
   Workspace workspace,
-  String apiBase, {
-  required bool proxied,
-}) => OtaCache(workspace: workspace, sources: _catalogSources(apiBase, proxied: proxied));
+  String apiBase,
+) => OtaCache(workspace: workspace, sources: _catalogSources(apiBase));
 
-/// Catalog OTAs resolved through `/api/resolve` and read through ranges.
-CatalogOtaSourceFactory _catalogSources(
-  String apiBase, {
-  required bool proxied,
-}) => CatalogOtaSourceFactory(
-  client: CatalogClient(
-    transport: HttpCatalogTransport(),
-    base: _base(apiBase),
-  ),
-  apiBase: apiBase,
-  proxyOta: proxied,
-);
+/// Catalog OTA bytes use the same edge block source on every host.
+CatalogOtaSourceFactory _catalogSources(String apiBase) =>
+    CatalogOtaSourceFactory(apiBase: apiBase);
 
 /// Bytes per ranged read while a catalog OTA is copied to a file.
 const int _saveChunkBytes = 8 << 20;
-
-/// Whether reads go through the same-origin `/api/ota` proxy.
-///
-/// A browser host needs it for CORS and CDN headers; the VM reads the direct
-/// link and sends OnePlus's headers itself.
-Future<bool> _useOtaProxy() async {
-  final place = await PlaceInfo.current();
-  return place.facts.has(Fact.fsOpfs) || place.facts.has(Fact.fsPicker);
-}
 
 /// The storage budget for [store].
 ///
@@ -1055,37 +1029,12 @@ String _storePath(Object? store) {
   return path is String && path.isNotEmpty ? path : '.';
 }
 
-/// A complete cached OTA for [release], or null when this release is not
-/// cached.
-///
-/// A cache that cannot be read is a miss: it must never fail a flash that
-/// could stream the same bytes.
-Future<ByteSource?> _openCachedOta(
-  Workspace workspace,
-  Map<String, dynamic> release,
-  String apiBase,
-) async {
-  try {
-    return await _otaCache(
-      workspace,
-      apiBase,
-      proxied: await _useOtaProxy(),
-    ).openCachedCatalogOta(release);
-  } on Object catch (error) {
-    _log.warning('the cached OTA is unusable; streaming instead: $error');
-    return null;
-  }
-}
-
 ByteSource _bloatAssetSource(String apiBase, String asset, int length) {
   final uri = _apiUri(apiBase, 'api/bloat/${Uri.encodeComponent(asset)}');
   return _RangeAsset(uri, length);
 }
 
-Future<OtaArchive> _openOtaArchive(
-  Map<String, Object?> req, {
-  Workspace? otaCacheWorkspace,
-}) async {
+Future<OtaArchive> _openOtaArchive(Map<String, Object?> req) async {
   final input = req['ota'];
   if (input is! Map) {
     throw const BuildException('Select a full OTA file or enter its URL.');
@@ -1117,37 +1066,13 @@ Future<OtaArchive> _openOtaArchive(
         throw const BuildException('Select an OTA catalog version.');
       }
       final release = Map<String, dynamic>.from(entry);
-      if (otaCacheWorkspace != null) {
-        final cached = await _openCachedOta(otaCacheWorkspace, release, apiBase);
-        if (cached != null) {
-          // A complete cache hit is transparent: same catalog identity, same
-          // archive; payload op hashes are still checked while it is read.
-          try {
-            return await OtaArchive.open(cached, remote: false);
-          } on Object catch (error) {
-            await closeByteSource(cached);
-            _log.warning(
-              'the cached OTA cannot be opened; streaming instead: $error',
-            );
-          }
-        }
-      }
-      final client = CatalogClient(
-        transport: HttpCatalogTransport(),
-        base: _base(apiBase),
-      );
-      Future<ByteSource> openFresh() async => HttpRangeSource.open(
-        _otaUri(
-          apiBase,
-          await client.resolveLink(release),
-          proxied: proxied,
-        ),
-        headers: proxied ? const {} : otaRequestHeaders,
-      );
-      final source = await openFresh();
+      final remote = await CatalogOtaSourceFactory(
+        apiBase: apiBase,
+        bucketBase: req['otaBucketBase'] as String?,
+      ).open(release);
       return _guarded(
-        source,
-        () => OtaArchive.open(source, remote: true, refresh: openFresh),
+        remote.source,
+        () => OtaArchive.open(remote.source, remote: true),
       );
     default:
       throw BuildException('Unknown OTA input: $kind.');
