@@ -38,7 +38,11 @@ fastboot-link = { path = "crates/fastboot-link" }
 # Session handles are serialized with an async mutex that works on wasm too.
 futures = "0.3"
 
-# Local proof branch only: merge after nusb releases the WebUSB evidence and
-# lifecycle APIs, replacing this patch with the released minimum version.
+# Pinned to our fork until nusb releases these three WebUSB changes: owned
+# rejection evidence for operations and endpoints, chooser cancellation
+# distinguished from refusal, and the follow-up to #221 whose shared lease
+# closes a failed or cancelled open and the last dropped handle. Carrying the
+# revision here makes this a plain version bump to the released minimum once
+# those land upstream.
 [patch.crates-io]
-nusb = { path = "/home/vivy/Projects/tools/nusb" }
+nusb = { git = "https://github.com/p0g-stack/nusb", rev = "84890ce3774d1749905aef0b98a84fef0b70114b" }

@@ -693,6 +693,7 @@ dependencies = [
 [[package]]
 name = "nusb"
 version = "0.2.9"
+source = "git+https://github.com/p0g-stack/nusb?rev=84890ce3774d1749905aef0b98a84fef0b70114b#84890ce3774d1749905aef0b98a84fef0b70114b"
 dependencies = [
  "core-foundation",
  "core-foundation-sys",

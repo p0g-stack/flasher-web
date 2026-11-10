@@ -265,12 +265,13 @@ and the expected images.
   Each place loads the library itself (`loadNative()`); this is the `native`
   fact. `FlasherService` loads it before Rust work. USB belongs to
   `fastboot-link`, not `squadron_process`; the process package only carries
-  service calls. This local `nusb-webusb-cutover` proof branch patches nusb
-  0.2.9 to `/home/vivy/Projects/tools/nusb`, branch
-  `webusb-device-lifecycle-followup` at `84890ce` (rebased #232 error evidence,
-  chooser refusals and the #221 shared-lease follow-up). It must not merge
-  until those APIs are released; then replace the path patch with the released
-  minimum version. `fastboot-protocol` remains published 0.4.0.
+  service calls. `nusb` is pinned in `rust/Cargo.toml`'s `[patch.crates-io]` to
+  revision `84890ce` of `https://github.com/p0g-stack/nusb`, a fork that carries
+  three changes not yet released: owned WebUSB rejection evidence for
+  operations and endpoints, chooser cancellation distinguished from refusal,
+  and the `#221` shared-lease follow-up. The pin becomes a plain version bump to
+  the released minimum once nusb ships them. `fastboot-protocol` remains
+  published 0.4.0.
 - **Patched Squadron.** squadron_process needs Squadron with its
   channel-factory patch; bootstrap runs `squadron_process:squadron_patch`,
   which puts it under `.dart_tool/` and writes `pubspec_overrides.yaml`.
