@@ -425,9 +425,13 @@ pub async fn open(serial: &str, open_limit: Duration, io_limit: Duration) -> Res
             bounded(async { device.set_configuration(selected.config_value).await }, "open", open_limit, false).await?;
         }
         let interface = bounded(async { device.claim_interface(selected.interface).await }, "open", open_limit, false).await?;
-        // Always select the descriptor's alternate, including zero; a previous
-        // independently opened handle may have selected a nonzero alternate.
-        bounded(async { interface.set_alt_setting(selected.alternate).await }, "open", open_limit, false).await?;
+        // Like AOSP fastboot and fastboot.js, only claim: never send
+        // SET_INTERFACE for alternate 0. Some bootloaders reset their endpoint
+        // data toggles on it and then drop the host's next packet, so every
+        // command times out until the phone re-enumerates.
+        if selected.alternate != 0 {
+            bounded(async { interface.set_alt_setting(selected.alternate).await }, "open", open_limit, false).await?;
+        }
         let (Some(out), Some(input)) = (selected.out, selected.input) else {
             return Err(TransportError::new("browser", "MissingEndpoints",
                 format!("{serial} lacks a bulk OUT/IN pair on interface {}", selected.interface), false));
