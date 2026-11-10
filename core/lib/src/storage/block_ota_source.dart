@@ -115,8 +115,21 @@ final class BlockOtaSource implements StreamingByteSource {
   /// Bound the response before buffering it, including error responses. Never
   /// accidentally turn an ignored Range / wrong endpoint into a whole OTA GET.
   static Future<http.Response> _get(http.Client client, Uri uri, int limit, {Future<void>? abort}) async {
-    final request = http.AbortableRequest('GET', uri, abortTrigger: abort);
-    final response = await client.send(request).timeout(const Duration(seconds: 35));
+    final finished = Completer<void>();
+    final request = http.AbortableRequest(
+      'GET', uri,
+      abortTrigger: abort == null ? finished.future : Future.any([abort, finished.future]),
+    );
+    try {
+      // Bound headers AND the response body, and abort transport on timeout.
+      return await _receive(client, request, limit).timeout(const Duration(seconds: 10));
+    } finally {
+      finished.complete();
+    }
+  }
+
+  static Future<http.Response> _receive(http.Client client, http.BaseRequest request, int limit) async {
+    final response = await client.send(request);
     final expected = response.contentLength;
     final reader = StreamIterator(response.stream);
     if (response.statusCode != 200) limit = 4096;
@@ -152,6 +165,27 @@ final class BlockOtaSource implements StreamingByteSource {
       // Non-JSON bucket errors are not useful UI text.
     }
     return StateError('$fallback (HTTP ${response.statusCode}).');
+  }
+
+  Future<http.Response> _workerBlock(int n, int expected) async {
+    final uri = _apiBase.resolve('api/block').replace(
+      queryParameters: {'id': id, 'v': identity, 'n': '$n'},
+    );
+    for (var attempt = 0; ; attempt++) {
+      _checkOpen();
+      try {
+        final response = await _get(_client, uri, expected, abort: _closed.future);
+        final transient = response.statusCode == 408 ||
+            response.statusCode == 429 || response.statusCode >= 500;
+        if (!transient || attempt == 2) return response;
+      } on http.ClientException {
+        if (attempt == 2) rethrow;
+      } on TimeoutException {
+        if (attempt == 2) rethrow;
+      }
+      // These are read-only, generation-pinned GETs, never device writes.
+      await Future<void>.delayed(Duration(milliseconds: 250 << attempt));
+    }
   }
 
   void _checkOpen() {
@@ -206,7 +240,7 @@ final class BlockOtaSource implements StreamingByteSource {
         }
       }
       if (response == null || response.statusCode == 404) {
-        response = await _get(_client, _apiBase.resolve('api/block').replace(queryParameters: {'id': id, 'v': identity, 'n': '$n'}), expected, abort: _closed.future);
+        response = await _workerBlock(n, expected);
       }
       if (response.statusCode != 200) throw _failure(response, 'Could not read OTA block $n.');
       if (response.headers['x-amz-meta-ota-etag'] != etag) throw StateError('The OTA block ETag differs from its manifest.');

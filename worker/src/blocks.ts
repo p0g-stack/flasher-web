@@ -43,25 +43,9 @@ export function validateManifest(value: BlockManifest, id: string): BlockManifes
   return value;
 }
 
-// These maps hold only in-flight promises / short-lived signed links, never
-// a release registry. Separate isolates may PUT the same immutable block.
-const manifests = new Map<string, Promise<BlockManifest>>();
-const fills = new Map<string, Promise<Uint8Array>>();
+// Only completed, immutable values may cross Worker request contexts. Never
+// cache promises, streams or resolvers here: another request cannot own them.
 const links = new Map<string, { url: string; until: number }>();
-let activeFills = 0;
-const fillWaiters: Array<() => void> = [];
-async function withFillSlot<T>(operation: () => Promise<T>): Promise<T> {
-  // readBounded holds input chunks plus one 8 MiB output while validating.
-  // Four fills leave room within the isolate's 128 MiB memory ceiling.
-  if (activeFills === 4) await new Promise<void>(resolve => fillWaiters.push(resolve));
-  else activeFills++;
-  try { return await operation(); }
-  finally {
-    const next = fillWaiters.shift();
-    if (next) next();
-    else activeFills--;
-  }
-}
 function scope(bucket: Bucket, id: string): string {
   return `${bucket.env.OTA_S3_ENDPOINT}/${bucket.env.OTA_S3_BUCKET}/${id}`;
 }
@@ -142,59 +126,45 @@ async function createManifest(bucket: Bucket, id: string, release?: Release, ref
   return pinned;
 }
 
-export async function getManifest(bucket: Bucket, id: string, release?: Release): Promise<BlockManifest> {
-  const key = scope(bucket, id);
-  let pending = manifests.get(key);
-  if (!pending) {
-    pending = createManifest(bucket, id, release);
-    manifests.set(key, pending);
-  }
-  try { return await pending; } finally { if (manifests.get(key) === pending) manifests.delete(key); }
+export function getManifest(bucket: Bucket, id: string, release?: Release): Promise<BlockManifest> {
+  return createManifest(bucket, id, release);
 }
 
 export async function fillBlock(bucket: Bucket, manifest: BlockManifest, n: number, release?: Release, knownMissing = false): Promise<Uint8Array> {
   const key = blockKey(manifest, n);
-  const flightKey = scope(bucket, key);
-  let pending = fills.get(flightKey);
-  if (!pending) {
-    pending = withFillSlot(async () => {
-      const start = n * BLOCK_SIZE;
-      const end = Math.min(start + BLOCK_SIZE, manifest.length) - 1;
-      // Cron has already LISTed this generation; missing blocks cost one CDN
-      // GET and one authenticated PUT, with no duplicate S3 existence check.
-      if (!knownMissing) {
-        const existing = await bucket.get(key);
-        if (existing) {
-          if (existing.headers.get("x-amz-meta-ota-etag") !== manifest.etag) {
-            await existing.body?.cancel();
-            throw new ProxyError(502, "The cached block identity does not match its manifest.");
-          }
-          const body = await readBounded(existing, end - start + 1);
-          if (body.byteLength !== end - start + 1) throw new ProxyError(502, "The cached OTA block is truncated.");
-          return body;
-        }
+  const start = n * BLOCK_SIZE;
+  const end = Math.min(start + BLOCK_SIZE, manifest.length) - 1;
+  // LIST-proven cron misses need only CDN GET + PUT. Every request owns its
+  // own I/O; concurrent writes to this immutable key contain identical bytes.
+  if (!knownMissing) {
+    const existing = await bucket.get(key);
+    if (existing) {
+      if (existing.headers.get("x-amz-meta-ota-etag") !== manifest.etag) {
+        await existing.body?.cancel();
+        throw new ProxyError(502, "The cached block identity does not match its manifest.");
       }
-      const response = await upstreamRange(bucket, await signedLink(bucket, manifest.id, release), start, end, manifest.etag);
-      if (response.status === 412 || (strongEtag(response.headers.get("ETag")) && response.headers.get("ETag") !== manifest.etag)) {
-        await response.body?.cancel();
-        links.delete(scope(bucket, manifest.id));
-        await createManifest(bucket, manifest.id, undefined, true);
-        throw new ProxyError(409, "The upstream OTA changed generation. Reopen the OTA.");
-      }
-      if (response.status !== 206 || response.headers.get("Content-Range") !== `bytes ${start}-${end}/${manifest.length}` ||
-          response.headers.get("ETag") !== manifest.etag ||
-          (response.headers.has("Content-Encoding") && response.headers.get("Content-Encoding") !== "identity")) {
-        await response.body?.cancel();
-        throw new ProxyError(502, "The OTA block changed identity or did not match the requested range.");
-      }
-      const body = await readBounded(response, end - start + 1);
-      if (body.byteLength !== end - start + 1) throw new ProxyError(502, "The OTA block is truncated.");
-      await bucket.put(key, body, { "Content-Type": "application/octet-stream", "Cache-Control": "public, max-age=31536000, immutable", "x-amz-meta-ota-etag": manifest.etag });
+      const body = await readBounded(existing, end - start + 1);
+      if (body.byteLength !== end - start + 1) throw new ProxyError(502, "The cached OTA block is truncated.");
       return body;
-    });
-    fills.set(flightKey, pending);
+    }
   }
-  try { return await pending; } finally { if (fills.get(flightKey) === pending) fills.delete(flightKey); }
+  const response = await upstreamRange(bucket, await signedLink(bucket, manifest.id, release), start, end, manifest.etag);
+  if (response.status === 412 || (strongEtag(response.headers.get("ETag")) && response.headers.get("ETag") !== manifest.etag)) {
+    await response.body?.cancel();
+    links.delete(scope(bucket, manifest.id));
+    await createManifest(bucket, manifest.id, undefined, true);
+    throw new ProxyError(409, "The upstream OTA changed generation. Reopen the OTA.");
+  }
+  if (response.status !== 206 || response.headers.get("Content-Range") !== `bytes ${start}-${end}/${manifest.length}` ||
+      response.headers.get("ETag") !== manifest.etag ||
+      (response.headers.has("Content-Encoding") && response.headers.get("Content-Encoding") !== "identity")) {
+    await response.body?.cancel();
+    throw new ProxyError(502, "The OTA block changed identity or did not match the requested range.");
+  }
+  const body = await readBounded(response, end - start + 1);
+  if (body.byteLength !== end - start + 1) throw new ProxyError(502, "The OTA block is truncated.");
+  await bucket.put(key, body, { "Content-Type": "application/octet-stream", "Cache-Control": "public, max-age=31536000, immutable", "x-amz-meta-ota-etag": manifest.etag });
+  return body;
 }
 
 export async function handleBlock(url: URL, env: BucketEnv): Promise<Response> {

@@ -128,6 +128,45 @@ void main() {
     );
   });
 
+  test('retries transient Worker failures then returns the pinned block', () async {
+    var attempts = 0;
+    final source = await BlockOtaSource.open(id: id, apiBase: api, bucketBase: '', client: MockClient((request) async {
+      if (request.url.path == '/api/manifest') return metadata(manifest());
+      attempts++;
+      if (attempts == 1) throw http.ClientException('connection reset');
+      if (attempts == 2) return http.Response('temporarily unavailable', 503);
+      return block(List.filled(12, 6));
+    }));
+    expect(await source.read(0, 1).timeout(const Duration(seconds: 3)), [6]);
+    expect(attempts, 3);
+    await source.close();
+  });
+
+  test('exhausted Worker retries surface an error instead of stalling a read', () async {
+    var attempts = 0;
+    final source = await BlockOtaSource.open(id: id, apiBase: api, bucketBase: '', client: MockClient((request) async {
+      if (request.url.path == '/api/manifest') return metadata(manifest());
+      attempts++;
+      return http.Response('{"error":"fill unavailable"}', 502);
+    }));
+    await expectLater(source.read(0, 1).timeout(const Duration(seconds: 3)),
+      throwsA(isA<StateError>().having((error) => error.message, 'message', contains('fill unavailable'))));
+    expect(attempts, 3);
+    await source.close();
+  });
+
+  test('generation conflicts are terminal and are not retried', () async {
+    var attempts = 0;
+    final source = await BlockOtaSource.open(id: id, apiBase: api, bucketBase: '', client: MockClient((request) async {
+      if (request.url.path == '/api/manifest') return metadata(manifest());
+      attempts++;
+      return http.Response('{"error":"changed generation"}', 409);
+    }));
+    await expectLater(source.read(0, 1), throwsStateError);
+    expect(attempts, 1);
+    await source.close();
+  });
+
   test('stalled parallel windows share the eight-block resident limit', () async {
     final size = BlockOtaSource.blockSize;
     final requested = <int>[];

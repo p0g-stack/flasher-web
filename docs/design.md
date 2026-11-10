@@ -175,10 +175,20 @@ links are reused in memory for at most two minutes and only while safely
 unexpired. A miss fetches exactly one CDN range, requires 206, exact
 `Content-Range`, unchanged strong ETag and exact body length, then PUTs and
 serves the block. The HTTP body is not served before the bucket write succeeds.
-In-isolate duplicate misses share a promise; different isolates may duplicate
-a fetch/PUT, but identical generation keys can only receive identical pinned
-bytes. Garage 2.5.0 ignores conditional PUT `If-None-Match: *`, so it is not a
-distributed lock. There is no extra coordinator.
+Worker requests never share promises, streams, queued resolvers or fill slots:
+Cloudflare cancels requests that wait on another request's I/O context.
+Concurrent misses independently fetch/PUT the same pinned bytes; harmless
+duplicates are preferable to a cross-request coordinator. Only completed
+signed-link strings are reused. Garage 2.5.0 ignores conditional PUT
+`If-None-Match: *`, so it is not a distributed lock.
+
+The client retries read-only Worker block GETs on network failures, 408, 429
+and 5xx at most three times, with 250/500 ms backoff. Every HTTP attempt has
+a ten-second whole-response deadline (headers and body), and timeout aborts
+the transport. A terminal error reaches the download/flash caller rather
+than leaving the window waiting forever. Generation conflicts and client-side
+length/ETag validation errors are not retried. Device writes are never retried
+by this mechanism.
 
 A CDN ETag change/412 during a miss publishes a newly probed generation and
 retires old completion markers; that old pinned read fails with 409. A new

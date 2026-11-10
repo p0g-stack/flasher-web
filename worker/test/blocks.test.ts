@@ -1,4 +1,4 @@
-import { createExecutionContext } from "cloudflare:test";
+import { createExecutionContext, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import worker, { type Env } from "../src/index";
 import { BLOCK_SIZE, blockKey, COMPLETE_PREFIX, manifestKey, RELEASE_PREFIX, type BlockManifest, type Release } from "../src/blocks";
@@ -21,9 +21,9 @@ class FakeCache {
   conditional = false;
   failCatalog = false;
   malformed: ((call: OutboundCall) => Response | null) | null = null;
-  constructor(releases = [release("test-id")]) {
+  asyncCdn = false;
+  constructor(releases = [release("test-id")], endpoint = `https://s3-${++serial}.example`) {
     this.regular = releases;
-    const endpoint = `https://s3-${++serial}.example`;
     this.env = {
       OTA_S3_ENDPOINT: endpoint, OTA_S3_BUCKET: "ota", OTA_S3_REGION: "garage",
       OTA_S3_ACCESS_KEY_ID: "local-key", OTA_S3_SECRET_ACCESS_KEY: "local-secret", OTA_PUBLIC_BASE: "https://public.example/",
@@ -48,6 +48,7 @@ class FakeCache {
         const range = /^bytes=(\d+)-(\d+)$/.exec(call.headers.get("Range") ?? "")!;
         const start = Number(range[1]), end = Number(range[2]);
         expect(end).toBeLessThan(entry.size!);
+        if (this.asyncCdn) await crypto.subtle.digest("SHA-256", new Uint8Array(1));
         return new Response("x".repeat(end - start + 1), { status: 206, headers: { "Content-Range": `bytes ${start}-${end}/${entry.size}`, "Content-Length": String(end - start + 1), ETag: tag } });
       }
       throw new Error(`Unexpected fake host ${url.hostname}`);
@@ -108,11 +109,11 @@ describe("edge byte cache", () => {
     } finally { fake.restore(); }
   });
 
-  it("pins one manifest and fills a block once for concurrent misses", async () => {
+  it("keeps concurrent immutable fills request-local and reuses stored bytes", async () => {
     const fake = new FakeCache();
     try {
       const [manifest, duplicate] = await Promise.all([open(fake), open(fake)]);
-      expect(duplicate).toEqual(manifest);
+      expect(duplicate.identity).toBe(manifest.identity);
       expect(manifest).toMatchObject({ id: "test-id", etag: '"upstream"', length: 12, blockSize: BLOCK_SIZE });
       expect(manifest.identity).toMatch(/^[a-f0-9]{64}$/);
       expect(fake.objects.has(`${RELEASE_PREFIX}test-id/${manifest.identity}/manifest.json`)).toBe(true);
@@ -121,13 +122,35 @@ describe("edge byte cache", () => {
       expect(await responses[0].text()).toBe("x".repeat(12));
       expect(await responses[1].text()).toBe("x".repeat(12));
       expect(responses[0].headers.get("x-amz-meta-ota-etag")).toBe(manifest.etag);
-      expect(fake.actions.filter(action => action === `put:${blockKey(manifest, 0)}`)).toHaveLength(1);
-      expect(fake.mock.calls.filter(call => new URL(call.url).hostname === "ota.oneplus.com")).toHaveLength(2);
+      expect(fake.actions.filter(action => action === `put:${blockKey(manifest, 0)}`).length).toBeGreaterThanOrEqual(1);
+      const cdnCalls = fake.mock.calls.filter(call => new URL(call.url).hostname === "ota.oneplus.com").length;
       const again = await fake.get(path);
       expect(again.status).toBe(200);
       expect(await again.text()).toBe("x".repeat(12));
-      expect(fake.mock.calls.filter(call => new URL(call.url).hostname === "ota.oneplus.com")).toHaveLength(2);
-      expect(await open(fake)).toEqual(manifest);
+      expect(fake.mock.calls.filter(call => new URL(call.url).hostname === "ota.oneplus.com")).toHaveLength(cdnCalls);
+      expect((await open(fake)).identity).toBe(manifest.identity);
+    } finally { fake.restore(); }
+  });
+
+  it("serves 20 parallel cold misses in independent Worker contexts, including duplicates", async () => {
+    const releases = Array.from({ length: 12 }, (_, n) => release(`parallel-${n}`));
+    const fake = new FakeCache(releases, "https://s3-pool.example");
+    fake.asyncCdn = true;
+    try {
+      const manifests = await Promise.all(releases.map(async entry => {
+        const reply = await SELF.fetch(`https://worker.example/api/manifest?id=${entry.id}`);
+        expect(reply.status).toBe(200);
+        return reply.json<BlockManifest>();
+      }));
+      const replies = await Promise.all(Array.from({ length: 20 }, (_, n) => {
+        const manifest = manifests[n % manifests.length]!;
+        return SELF.fetch(`https://worker.example/api/block?id=${manifest.id}&v=${manifest.identity}&n=0`);
+      }));
+      for (const reply of replies) {
+        expect(reply.status).toBe(200);
+        expect(new TextDecoder().decode(await reply.arrayBuffer())).toBe("x".repeat(12));
+      }
+      for (const manifest of manifests) expect(fake.objects.get(blockKey(manifest, 0))?.body).toBe("x".repeat(12));
     } finally { fake.restore(); }
   });
 
