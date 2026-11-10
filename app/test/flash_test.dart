@@ -199,7 +199,7 @@ void main() {
   testWidgets('the guided screens follow the core flow state', (tester) async {
     final harness = Harness();
     final events = StreamController<Map<String, Object?>>();
-    addTearDown(events.close);
+    addTearDown(() => unawaited(events.close()));
     harness.api.prepareFlashResult = (_) => resolvedPrepare();
     harness.api.flashStream = (_) => events.stream;
     final controller = await pumpFlash(tester, harness);
@@ -253,7 +253,7 @@ void main() {
   ) async {
     final harness = Harness();
     final events = StreamController<Map<String, Object?>>();
-    addTearDown(events.close);
+    addTearDown(() => unawaited(events.close()));
     harness.api.prepareFlashResult = (_) => resolvedPrepare();
     harness.api.flashStream = (_) => events.stream;
     final controller = await pumpFlash(tester, harness);
@@ -304,9 +304,9 @@ void main() {
   ) async {
     final harness = Harness();
     final events = StreamController<Map<String, Object?>>();
-    addTearDown(events.close);
+    addTearDown(() => unawaited(events.close()));
     final recovery = StreamController<Map<String, Object?>>();
-    addTearDown(recovery.close);
+    addTearDown(() => unawaited(recovery.close()));
     harness.api.prepareFlashResult = (_) => resolvedPrepare();
     harness.api.flashStream = (_) => events.stream;
     harness.api.recoveryStream = (_) => recovery.stream;
@@ -350,10 +350,7 @@ void main() {
     expect(controller.screen, FlashScreen.recover);
     expect(controller.certainty, WriteCertainty.uncertain);
     expect(find.byKey(const ValueKey('uncertainBanner')), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('failureMessage')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('failureMessage')), findsOneWidget);
     expect(find.text('Retry step'), findsNothing);
     expect(find.textContaining('Retry'), findsNothing);
     expect(
@@ -372,10 +369,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('recoverPrimary')));
     await pumpFrames(tester);
-    expect(
-      find.textContaining('rewrites'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('rewrites'), findsOneWidget);
     expect(
       tester
           .widget<FilledButton>(
@@ -402,9 +396,9 @@ void main() {
   ) async {
     final harness = Harness();
     final events = StreamController<Map<String, Object?>>();
-    addTearDown(events.close);
+    addTearDown(() => unawaited(events.close()));
     final recovery = StreamController<Map<String, Object?>>();
-    addTearDown(recovery.close);
+    addTearDown(() => unawaited(recovery.close()));
     harness.api.prepareFlashResult = (_) => resolvedPrepare();
     harness.api.flashStream = (_) => events.stream;
     harness.api.recoveryStream = (_) => recovery.stream;
@@ -452,7 +446,13 @@ void main() {
     // Declining sends nothing.
     await tester.tap(find.byKey(const ValueKey('recoverPrimary')));
     await pumpFrames(tester);
-    expect(find.textContaining('cannot boot'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.textContaining('cannot boot'),
+      ),
+      findsWidgets,
+    );
     await tester.tap(find.text('Cancel'));
     await pumpFrames(tester);
     expect(harness.api.lastRecoveryAction, isNull);
@@ -489,9 +489,9 @@ void main() {
   ) async {
     final harness = Harness();
     final events = StreamController<Map<String, Object?>>();
-    addTearDown(events.close);
+    addTearDown(() => unawaited(events.close()));
     final recovery = StreamController<Map<String, Object?>>();
-    addTearDown(recovery.close);
+    addTearDown(() => unawaited(recovery.close()));
     harness.api.prepareFlashResult = (_) => resolvedPrepare();
     harness.api.flashStream = (_) => events.stream;
     harness.api.recoveryStream = (_) => recovery.stream;
@@ -640,7 +640,7 @@ void main() {
   ) async {
     final harness = Harness();
     final events = StreamController<Map<String, Object?>>();
-    addTearDown(events.close);
+    addTearDown(() => unawaited(events.close()));
     harness.api.prepareFlashResult = (_) => resolvedPrepare();
     harness.api.flashStream = (_) => events.stream;
     final controller = await pumpFlash(tester, harness);
@@ -680,7 +680,7 @@ void main() {
   ) async {
     final harness = Harness();
     final events = StreamController<Map<String, Object?>>();
-    addTearDown(events.close);
+    addTearDown(() => unawaited(events.close()));
     harness.api.prepareFlashResult = (_) => resolvedPrepare();
     harness.api.flashStream = (_) => events.stream;
     final controller = await pumpFlash(tester, harness);
@@ -702,7 +702,10 @@ void main() {
     expect(controller.certainty, WriteCertainty.uncertain);
     expect(harness.api.flashCalls, 1);
     expect(harness.bridge.keepAwake, 0);
-    expect(controller.diagnosticsText, contains('the service worker terminated'));
+    expect(
+      controller.diagnosticsText,
+      contains('the service worker terminated'),
+    );
     expect(controller.diagnosticsText, contains('WorkerLost'));
     expect(find.byKey(const ValueKey('flashError')), findsOneWidget);
   });
@@ -714,7 +717,7 @@ void main() {
     final events = StreamController<Map<String, Object?>>(
       onCancel: () async {},
     );
-    addTearDown(events.close);
+    addTearDown(() => unawaited(events.close()));
     harness.api.prepareFlashResult = (_) => resolvedPrepare();
     harness.api.flashStream = (_) => events.stream;
     harness.api.stopResult = (request) async => {
@@ -751,7 +754,7 @@ void main() {
     harness.bridge.wakeLockSupported = false;
     harness.api.prepareFlashResult = (_) => resolvedPrepare();
     final events = StreamController<Map<String, Object?>>();
-    addTearDown(events.close);
+    addTearDown(() => unawaited(events.close()));
     harness.api.flashStream = (_) => events.stream;
     final controller = await pumpFlash(tester, harness);
     await selectDevice(tester, controller);

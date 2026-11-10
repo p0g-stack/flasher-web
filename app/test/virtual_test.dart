@@ -153,7 +153,7 @@ void main() {
     expect(setup.canFlashDirect, isFalse);
     expect(
       setup.directFlashRequirementsError,
-      'Select a full TARGET OTA ZIP before flashing directly.',
+      'Select a full TARGET OTA ZIP before continuing.',
     );
     expect(setup.directFlashHint, contains('decodes the whole super image'));
     expect(setup.directFlashHint, contains('several minutes'));
@@ -163,7 +163,7 @@ void main() {
     expect(setup.directFlashSupported, isTrue);
     expect(
       setup.directFlashRequirementsError,
-      'Select a full TARGET OTA ZIP before flashing directly.',
+      'Select a full TARGET OTA ZIP before continuing.',
     );
     expect(setup.directFlashHint, isNot(contains('several minutes')));
 
@@ -176,8 +176,7 @@ void main() {
     await setup.refreshBloat();
     expect(
       setup.directFlashRequirementsError,
-      'Required bloat files must be downloaded and verified before flashing '
-      'directly.',
+      'Required bloat files must be downloaded and verified before continuing.',
     );
 
     harness.api.bloatStatusResult = const {
@@ -226,7 +225,7 @@ void main() {
     );
     expect(
       setup.directFlashRequirementsError,
-      'Select a full BASE OTA ZIP before flashing directly.',
+      'Select a full BASE OTA ZIP before continuing.',
     );
     expect(setup.canFlashDirect, isFalse);
     expect(setup.directFlashBase, isNull);
@@ -287,44 +286,43 @@ void main() {
     expect(setup.canFlashDirect, isFalse);
   });
 
-  testWidgets(
-    'a Super selection shows Continue and explains the decode',
-    (tester) async {
-      final harness = Harness();
-      harness.api.inspectResult = _inspection();
-      final handle = Object();
-      harness.bridge.otaFile = PickedFile(
-        handle: handle,
-        name: 'super.zip',
-        size: 4096,
-      );
-      await pumpApp(tester, harness: harness);
+  testWidgets('a Super selection shows Continue and explains the decode', (
+    tester,
+  ) async {
+    final harness = Harness();
+    harness.api.inspectResult = _inspection();
+    final handle = Object();
+    harness.bridge.otaFile = PickedFile(
+      handle: handle,
+      name: 'super.zip',
+      size: 4096,
+    );
+    await pumpApp(tester, harness: harness);
 
-      expect(find.byKey(const ValueKey('flashDirectNotice')), findsNothing);
-      final button = find.byKey(const ValueKey('flashDirectButton'));
-      expect(button, findsOneWidget);
+    expect(find.byKey(const ValueKey('flashDirectNotice')), findsNothing);
+    final button = find.byKey(const ValueKey('flashDirectButton'));
+    expect(button, findsOneWidget);
 
-      final chooseOta = find.byKey(const ValueKey('chooseOtaFile'));
-      await tester.ensureVisible(chooseOta);
-      await tester.tap(chooseOta);
-      await tester.pumpAndSettle();
+    final chooseOta = find.byKey(const ValueKey('chooseOtaFile'));
+    await tester.ensureVisible(chooseOta);
+    await tester.tap(chooseOta);
+    await tester.pumpAndSettle();
 
-      final tooltip = tester.widget<Tooltip>(
-        find.byKey(const ValueKey('directFlashHint')),
-      );
-      expect(tooltip.message, contains('decodes the whole super image once'));
-      expect(tooltip.message, contains('several minutes'));
+    final tooltip = tester.widget<Tooltip>(
+      find.byKey(const ValueKey('directFlashHint')),
+    );
+    expect(tooltip.message, contains('decodes the whole super image once'));
+    expect(tooltip.message, contains('several minutes'));
 
-      final kind = find.byKey(const ValueKey('kindDropdown'));
-      await tester.ensureVisible(kind);
-      await tester.pumpAndSettle();
-      await _chooseRegional(tester);
-      final regional = tester.widget<Tooltip>(
-        find.byKey(const ValueKey('directFlashHint')),
-      );
-      expect(regional.message, isNot(contains('several minutes')));
-    },
-  );
+    final kind = find.byKey(const ValueKey('kindDropdown'));
+    await tester.ensureVisible(kind);
+    await tester.pumpAndSettle();
+    await _chooseRegional(tester);
+    final regional = tester.widget<Tooltip>(
+      find.byKey(const ValueKey('directFlashHint')),
+    );
+    expect(regional.message, isNot(contains('several minutes')));
+  });
 
   testWidgets('Continue opens the guided flow with the OTA and bloat', (
     tester,
