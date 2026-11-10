@@ -11,7 +11,7 @@ use nusb::{Device, Endpoint, Interface};
 
 use crate::error::{LinkError, TransportError};
 use crate::session::{BulkTransport, Session};
-use crate::{timeout, LinkDevice, Opened};
+use crate::{timeout, DisconnectWatch, Discovery, LinkDevice, Opened};
 
 const FASTBOOT_CLASS: u8 = 0xff;
 const FASTBOOT_SUBCLASS: u8 = 0x42;
@@ -64,6 +64,7 @@ pub struct NativeTransport {
     ep_out: Endpoint<Bulk, Out>,
     ep_in: Endpoint<Bulk, In>,
     _guard: SessionGuard,
+    disconnect: DisconnectWatch,
 }
 
 fn fastboot_interface(info: &nusb::DeviceInfo) -> Option<u8> {
@@ -102,8 +103,16 @@ fn link_device(info: &nusb::DeviceInfo, interface: u8) -> LinkDevice {
     }
 }
 
-fn usb_error(stage: &'static str, error: &dyn std::error::Error, uncertain: bool) -> LinkError {
-    LinkError::from_transport(stage, TransportError::native("usb", error, uncertain))
+fn usb_error(stage: &'static str, error: &nusb::Error, uncertain: bool) -> LinkError {
+    let mut evidence = TransportError::native("usb", error, uncertain);
+    evidence.causes.push(format!("nusb kind: {:?}, OS code: {:?}", error.kind(), error.os_error()));
+    evidence.name = match error.kind() {
+        nusb::ErrorKind::PermissionDenied => "PermissionDenied",
+        nusb::ErrorKind::Busy => "Busy",
+        nusb::ErrorKind::Disconnected => "Disconnected",
+        _ => "UsbError",
+    }.into();
+    LinkError::from_transport(stage, evidence)
 }
 
 fn usb_timeout(stage: &'static str, uncertain: bool) -> LinkError {
@@ -112,18 +121,18 @@ fn usb_timeout(stage: &'static str, uncertain: bool) -> LinkError {
     LinkError::from_transport(stage, error)
 }
 
-pub async fn devices(limit: Duration) -> Result<Vec<LinkDevice>, LinkError> {
+pub async fn devices(limit: Duration) -> Result<Discovery, LinkError> {
     let list = match timeout(limit, async { nusb::list_devices().await }).await {
         Some(Ok(list)) => list,
         Some(Err(error)) => return Err(usb_error("devices", &error, false)),
         None => return Err(usb_timeout("devices", false)),
     };
-    Ok(list
+    Ok(Discovery { devices: list
         .filter_map(|info| {
             let interface = fastboot_interface(&info)?;
             Some(link_device(&info, interface))
         })
-        .collect())
+        .collect(), failures: Vec::new() })
 }
 
 pub async fn open(
@@ -171,6 +180,7 @@ pub async fn open(
         ));
     };
     let guard = SessionGuard::acquire(format!("{serial}:{interface_number}"))?;
+    let disconnect = DisconnectWatch::new(info.id());
     let device = match timeout(open_limit, async { info.open().await }).await {
         Some(Ok(device)) => device,
         Some(Err(error)) => return Err(usb_error("open", &error, false)),
@@ -235,6 +245,7 @@ pub async fn open(
         ep_out,
         ep_in,
         _guard: guard,
+        disconnect,
     };
     let session = Session::new(transport, serial.to_string(), max_in, io_limit);
     Ok(Opened {
@@ -255,7 +266,8 @@ impl BulkTransport for NativeTransport {
         self.ep_out.submit(Buffer::from(data));
         let completion = self.ep_out.next_complete().await;
         if let Err(error) = completion.status {
-            return Err(TransportError::native("usb", &error, true));
+            let evidence = TransportError::native("usb", &error, true);
+            return Err(self.disconnect.correlate(evidence).await);
         }
         if completion.actual_len != expected {
             return Err(TransportError::new(
@@ -272,7 +284,8 @@ impl BulkTransport for NativeTransport {
         self.ep_in.submit(Buffer::new(max));
         let completion = self.ep_in.next_complete().await;
         if let Err(error) = completion.status {
-            return Err(TransportError::native("usb", &error, true));
+            let evidence = TransportError::native("usb", &error, true);
+            return Err(self.disconnect.correlate(evidence).await);
         }
         let bytes = completion.actual_len.min(max);
         let mut data = completion.buffer.into_vec();

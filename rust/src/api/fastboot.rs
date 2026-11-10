@@ -107,6 +107,7 @@ pub struct FastbootFailure {
     pub message: String,
     pub stage: String,
     pub uncertain: bool,
+    pub disconnect_observed: bool,
     pub stack: String,
     pub causes: Vec<String>,
     pub cleanup_errors: Vec<String>,
@@ -118,13 +119,14 @@ impl From<LinkError> for FastbootFailure {
     fn from(error: LinkError) -> Self {
         let session_retired = error.session_retired();
         Self {
-            blame: error.blame,
+            blame: error.blame.as_str().to_string(),
             source: error.source,
             session_retired,
             name: error.name,
             message: error.message,
             stage: error.stage.to_string(),
             uncertain: error.uncertain,
+            disconnect_observed: error.disconnect_observed,
             stack: error.stack,
             causes: error.causes,
             cleanup_errors: error.cleanup_errors,
@@ -150,9 +152,17 @@ pub struct FastbootDeviceInfo {
     pub interface_number: u8,
 }
 
+#[derive(Debug, Clone)]
+pub struct FastbootDiscoveryFailure {
+    pub serial: String,
+    pub label: String,
+    pub failure: FastbootFailure,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FastbootDeviceList {
     pub devices: Vec<FastbootDeviceInfo>,
+    pub discovery_failures: Vec<FastbootDiscoveryFailure>,
     pub failure: Option<FastbootFailure>,
 }
 
@@ -180,8 +190,8 @@ pub struct FastbootVoidReply {
 
 pub async fn fastboot_devices() -> FastbootDeviceList {
     match fastboot_link::devices().await {
-        Ok(devices) => FastbootDeviceList {
-            devices: devices
+        Ok(discovery) => FastbootDeviceList {
+            devices: discovery.devices
                 .into_iter()
                 .map(|device| FastbootDeviceInfo {
                     serial: device.serial,
@@ -193,9 +203,15 @@ pub async fn fastboot_devices() -> FastbootDeviceList {
                 })
                 .collect(),
             failure: None,
+            discovery_failures: discovery.failures.into_iter().map(|item| FastbootDiscoveryFailure {
+                serial: item.serial,
+                label: item.label,
+                failure: item.error.into(),
+            }).collect(),
         },
         Err(error) => FastbootDeviceList {
             devices: Vec::new(),
+            discovery_failures: Vec::new(),
             failure: Some(error.into()),
         },
     }

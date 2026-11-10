@@ -275,7 +275,14 @@ final class FlashController extends ChangeNotifier {
       ];
       _devicesLoading = false;
       final error = response['error'];
-      if (error != null) _devicesError = describeLinkFailure(error);
+      if (error != null) {
+        _log.add('Connection evidence: ${jsonEncode(error)}');
+        _devicesError = describeLinkFailure(error);
+      }
+      final discoveryFailures = response['discoveryFailures'];
+      if (discoveryFailures is List && discoveryFailures.isNotEmpty) {
+        _log.add('USB discovery evidence: ${jsonEncode(discoveryFailures)}');
+      }
       final current = _serial;
       if (current != null) {
         final known = _devices.where((device) => device['serial'] == current);
@@ -449,6 +456,7 @@ final class FlashController extends ChangeNotifier {
         _prepared = null;
         _preparedRequest = null;
         _prepareError = describeLinkFailure(linkError);
+        _log.add('Preparation evidence: ${jsonEncode(linkError)}');
         return;
       }
       final prepared = PreparedFlash.fromMap(response);

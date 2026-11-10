@@ -216,6 +216,60 @@ void main() {
     expect(state.flashCommands, isEmpty);
   });
 
+  test('preparation refuses differing complete answers and OKAY/FAIL pairs', () async {
+    for (final answers in <List<Object>>[
+      ['0x4000', '0x2000'],
+      ['0x4000', const LinkFailure(
+        blame: LinkBlame.device, name: 'FastbootFail', message: 'unknown variable', stage: 'command')],
+      [const LinkFailure(
+        blame: LinkBlame.device, name: 'FastbootFail', message: 'unknown variable', stage: 'command'), '0x4000'],
+    ]) {
+      final state = _State()..probeReplies['getvar:max-download-size'] = [...answers];
+      await expectLater(
+        prepareFlash(package: _package(), selection: _selection, answers: _answers,
+          serial: state.serial, transport: _Transport(state, state.serial), job: 'job'),
+        throwsA(isA<LinkFailure>()
+          .having((failure) => failure.name, 'name', 'InconsistentDeviceAnswers')
+          .having((failure) => failure.sessionRetired, 'retired', true)
+          .having((failure) => failure.causes.length, 'complete reply evidence', 2)),
+      );
+      expect(state.writeCommands, isEmpty);
+      expect(state.downloads, 0);
+    }
+  });
+
+  test('execution rechecks both variables before its first write or recovery reboot', () async {
+    for (final variable in ['max-download-size', 'is-userspace']) {
+      for (final rebootRetry in [false, true]) {
+        final state = _State();
+        final transport = _Transport(state, state.serial);
+        final prepared = await prepareFlash(package: _package(), selection: _selection,
+          answers: _answers, serial: state.serial, transport: transport, job: 'job');
+        state.probeReplies['getvar:$variable'] = variable == 'max-download-size'
+            ? ['0x4000', '0x2000'] : ['no', 'yes'];
+        final receipt = await executePreparedFlash(prepared, transport,
+          emit: (_) {}, rebootRetry: rebootRetry);
+        expect(receipt['status'], 'failed');
+        expect((receipt['failure'] as Map)['name'], 'InconsistentDeviceAnswers');
+        expect(state.writeCommands, isEmpty);
+        expect(state.downloads, 0);
+      }
+    }
+  });
+
+  test('post-reboot inconsistency stops before any write on the reopened session', () async {
+    final state = _State()..inconsistentAfterReboot = true;
+    final transport = _Transport(state, state.serial);
+    final prepared = await prepareFlash(package: _package(), selection: _selection,
+      answers: _answers, serial: state.serial, transport: transport, job: 'job');
+    final receipt = await executePreparedFlash(prepared, transport, emit: (_) {});
+    expect(receipt['status'], 'failed');
+    expect((receipt['failure'] as Map)['name'], 'InconsistentDeviceAnswers');
+    expect(state.writeCommands.last, 'reboot-fastboot');
+    final afterReboot = state.commands.skip(state.commands.indexOf('reboot-fastboot') + 1);
+    expect(afterReboot, ['getvar:max-download-size', 'getvar:max-download-size']);
+  });
+
   group('flash execution safety', () {
     test('a swapped cable at execution time sends no write', () async {
       final package = _package();
@@ -735,6 +789,10 @@ final class _State {
   String? loseRebootReply;
   int? partitionBytes;
   bool probeFailure = false;
+  bool inconsistentAfterReboot = false;
+  final probeReplies = <String, List<Object>>{};
+  final writeCommands = <String>[];
+  int downloads = 0;
 
   /// Switches the device to fastbootd after a successful `flash:` command, so
   /// a test can prove the post-step mode check.
@@ -771,15 +829,15 @@ final class _Transport implements FastbootTransport {
   final opened = <String>[];
 
   @override
-  Future<List<FastbootDevice>> devices() async => [
+  Future<FastbootDiscovery> devices() async => FastbootDiscovery(devices: [
     FastbootDevice(serial: connectedSerial, label: 'phone', transport: 'test'),
-  ];
+  ]);
 
   @override
   Future<FastbootSession> open(String serial) async {
     if (serial != connectedSerial) {
       throw const LinkFailure(
-        blame: 'host',
+        blame: LinkBlame.unknown,
         name: 'NoDevice',
         message: 'not connected',
         stage: 'open',
@@ -803,9 +861,16 @@ final class _Session implements FastbootSession {
   Future<String> command(String command, {bool write = false}) async {
     if (_closed) throw StateError('closed');
     state.commands.add(command);
+    if (write) state.writeCommands.add(command);
+    final replies = state.probeReplies[command];
+    if (replies != null && replies.isNotEmpty) {
+      final reply = replies.removeAt(0);
+      if (reply is LinkFailure) throw reply;
+      return reply as String;
+    }
     if (state.probeFailure && command == 'getvar:is-userspace') {
       throw const LinkFailure(
-        blame: 'host',
+        blame: LinkBlame.host,
         name: 'SecurityError',
         message: 'access denied',
         stage: 'probe',
@@ -822,6 +887,9 @@ final class _Session implements FastbootSession {
     if (command == 'reboot-fastboot' || command == 'reboot' || command == 'reboot-bootloader') {
       if (command == 'reboot-fastboot') {
         state.fastbootd = true;
+        if (state.inconsistentAfterReboot) {
+          state.probeReplies['getvar:max-download-size'] = ['0x4000', '0x2000'];
+        }
       } else if (command == 'reboot-bootloader') {
         state.fastbootd = false;
       } else {
@@ -829,7 +897,7 @@ final class _Session implements FastbootSession {
       }
       if (state.loseRebootReply == command) {
         throw const LinkFailure(
-          blame: 'host',
+          blame: LinkBlame.unknown,
           name: 'NetworkError',
           message: 'acknowledgement lost after reboot',
           stage: 'reboot',
@@ -847,7 +915,7 @@ final class _Session implements FastbootSession {
       }
       if (state.loseFlashReply) {
         throw const LinkFailure(
-          blame: 'host',
+          blame: LinkBlame.unknown,
           name: 'NetworkError',
           message: 'acknowledgement lost after flash',
           stage: 'flash',
@@ -856,7 +924,7 @@ final class _Session implements FastbootSession {
       }
       if (state.failFlash == partition) {
         throw const LinkFailure(
-          blame: 'device',
+          blame: LinkBlame.device,
           name: 'FastbootFail',
           message: 'flash failed',
           stage: 'flash',
@@ -872,6 +940,7 @@ final class _Session implements FastbootSession {
 
   @override
   Future<void> beginDownload(int length) async {
+    state.downloads++;
     state.begin();
   }
 

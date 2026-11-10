@@ -150,31 +150,44 @@ final class PreparedFlash {
   bool get hasToken => token != null && token!.isNotEmpty;
 }
 
-/// Renders a structured `LinkFailure.toMap()` without losing its evidence.
+/// Short guidance only. Original evidence stays in the log and receipt.
 String describeLinkFailure(Object? value) {
   if (value is! Map) return '$value';
-  final map = Map<String, Object?>.from(value);
-  final name = '${map['name'] ?? 'LinkFailure'}';
-  final message = '${map['message'] ?? ''}'.trim();
-  final blame = '${map['blame'] ?? ''}'.trim();
-  final stage = '${map['stage'] ?? ''}'.trim();
-  final uncertain = map['uncertain'] == true;
-  final causes = map['causes'];
-  final cleanup = map['cleanupErrors'];
-  final details = <String>[
-    if (blame.isNotEmpty) 'blame: $blame',
-    if (stage.isNotEmpty) 'stage: $stage',
-    'uncertain: ${uncertain ? 'yes' : 'no'}',
-  ];
-  final extra = [
-    if (causes is List && causes.isNotEmpty)
-      'causes: ${causes.map((cause) => '$cause').join('; ')}',
-    if (cleanup is List && cleanup.isNotEmpty)
-      'cleanup: ${cleanup.map((error) => '$error').join('; ')}',
-  ];
-  return [
-    message.isEmpty ? name : '$name: $message',
-    '(${details.join(', ')})',
-    ...extra,
-  ].join(' ');
+  final name = '${value['name'] ?? ''}';
+  final message = '${value['message'] ?? ''}'.trim();
+  final blame = '${value['blame'] ?? 'unknown'}';
+  if (value['uncertain'] == true) {
+    return 'The phone did not confirm completion and may still be writing. '
+        'Save the log and stop further commands; do not disconnect or retry '
+        'until it is safe.';
+  }
+  if (name == 'InconsistentDeviceAnswers') {
+    return 'The phone answers fastboot inconsistently. Unplug it, hold Power '
+        'for 15 seconds to turn it off, then hold Power + Volume Down to enter '
+        'fastboot, reconnect it and prepare again.';
+  }
+  if (name == 'FastbootFail' && blame == 'device') {
+    return 'The phone refused the command${message.isEmpty ? '.' : ': $message'} '
+        'Check the phone and the log before retrying.';
+  }
+  if (name == 'Busy' && blame == 'host') {
+    return 'The USB interface is already in use. Close other flashing tabs or '
+        'programs, then check the connection.';
+  }
+  if (blame == 'host' || name == 'SecurityError' || name == 'PermissionDenied') {
+    return 'USB access was refused. Allow this site to use the phone and check '
+        'your operating system’s USB permissions, then retry.';
+  }
+  if (blame == 'user' && name == 'NotFoundError') {
+    return 'No phone was selected. Choose the phone again.';
+  }
+  if (name == 'FlashException') return message;
+  if (const {'Timeout', 'TimeoutError', 'OperationDeadline', 'NoProgress',
+      'NetworkError', 'Disconnected', 'NotFoundError', 'ShortWrite', 'UsbError',
+      'NoDevice'}.contains(name)) {
+    return "The phone isn't answering fastboot. Replug it or hold Power + "
+        'Volume Down, then retry.';
+  }
+  return 'The connection could not be checked. Save the log, then check the '
+      'phone and retry.';
 }

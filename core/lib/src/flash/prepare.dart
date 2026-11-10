@@ -298,7 +298,11 @@ Future<PreparedFlash> prepareFlash({
     packageDigest: digest,
   );
 
-  final devices = await transport.devices();
+  final discovery = await transport.devices();
+  final devices = discovery.devices;
+  for (final item in discovery.failures) {
+    if (item.serial == serial) throw item.failure;
+  }
   if (!devices.any((device) => device.serial == serial)) {
     final granted = devices.isEmpty
         ? 'none'
@@ -320,10 +324,9 @@ Future<PreparedFlash> prepareFlash({
         'The transport opened ${opened.serial} instead of $serial.',
       );
     }
-    mode = await probeFlashMode(opened);
-    maxDownloadSize = parseDownloadSize(
-      await opened.command('getvar:max-download-size'),
-    );
+    final readiness = await probeFastbootConsistency(opened);
+    mode = readiness.mode;
+    maxDownloadSize = readiness.maxDownloadSize;
   } finally {
     if (session != null) {
       try {
@@ -452,6 +455,68 @@ Future<void> verifyPreparedImages(
       await source.close();
     }
   }
+}
+
+/// Complete, repeated read-only answers on the current connection. A USB
+/// open or a successful reconnect alone never grants permission to write.
+final class FastbootReadiness {
+  const FastbootReadiness({required this.mode, required this.maxDownloadSize});
+  final FlashMode mode;
+  final int maxDownloadSize;
+}
+
+/// Fail closed before writes, including recovery reboots. Compare complete
+/// payloads, not normalized values: an OKAY/FAIL disagreement is evidence too.
+/// Transport failures keep their original classification (silence is not an
+/// inconsistent answer). Only complete FAIL replies allow a second query.
+Future<FastbootReadiness> probeFastbootConsistency(FastbootSession session) async {
+  final values = <String, String>{};
+  final evidence = <String>[];
+  final messages = <Map<String, String>>[];
+  for (final name in const ['max-download-size', 'is-userspace']) {
+    final answers = <String?>[];
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      try {
+        final value = await session.command('getvar:$name');
+        answers.add(value);
+        evidence.add('getvar:$name #$attempt OKAY ${jsonEncode(value)}');
+      } on LinkFailure catch (failure) {
+        if (failure.name != 'FastbootFail' || failure.blame != LinkBlame.device ||
+            failure.uncertain || failure.sessionRetired) {
+          rethrow;
+        }
+        answers.add(null);
+        evidence.add('getvar:$name #$attempt ${jsonEncode(failure.toMap())}');
+        messages.addAll(failure.messages);
+      }
+    }
+    if (answers[0] == null || answers[1] == null || answers[0] != answers[1]) {
+      final cleanup = <String>[];
+      try {
+        await session.close();
+      } on Object catch (error) {
+        cleanup.add('$error');
+      }
+      throw LinkFailure(
+        blame: LinkBlame.unknown,
+        source: 'protocol',
+        name: 'InconsistentDeviceAnswers',
+        message: 'The device answers inconsistently; identical getvar:$name '
+            'queries did not return identical complete OKAY replies.',
+        stage: 'consistencyProbe',
+        sessionRetired: true,
+        causes: evidence,
+        messages: messages,
+        cleanupErrors: cleanup,
+      );
+    }
+    values[name] = answers[0]!;
+  }
+  return FastbootReadiness(
+    mode: _truthy(cleanGetvar(values['is-userspace']!, 'is-userspace'))
+        ? FlashMode.fastbootd : FlashMode.bootloader,
+    maxDownloadSize: parseDownloadSize(values['max-download-size']!),
+  );
 }
 
 /// Classifies the connected fastboot mode from `getvar:is-userspace`, the same
@@ -617,7 +682,7 @@ Future<String?> _optionalGetvar(FastbootSession session, String name) async {
   try {
     return cleanGetvar(await session.command('getvar:$name'), name);
   } on LinkFailure catch (failure) {
-    if (failure.blame != 'device' ||
+    if (failure.blame != LinkBlame.device ||
         failure.name != 'FastbootFail' ||
         failure.uncertain) {
       rethrow;

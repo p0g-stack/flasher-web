@@ -19,20 +19,30 @@ final class _NativeFastbootTransport implements FastbootTransport {
   const _NativeFastbootTransport();
 
   @override
-  Future<List<FastbootDevice>> devices() async {
+  Future<FastbootDiscovery> devices() async {
     await _requireNative('devices');
     try {
       final reply = await rust.fastbootDevices();
       final failure = reply.failure;
       if (failure != null) throw _failure(failure);
-      return [
-        for (final device in reply.devices)
-          FastbootDevice(
-            serial: device.serial,
-            label: device.label,
-            transport: device.transport,
-          ),
-      ];
+      return FastbootDiscovery(
+        devices: [
+          for (final device in reply.devices)
+            FastbootDevice(
+              serial: device.serial,
+              label: device.label,
+              transport: device.transport,
+            ),
+        ],
+        failures: [
+          for (final item in reply.discoveryFailures)
+            FastbootDiscoveryFailure(
+              serial: item.serial,
+              label: item.label,
+              failure: _failure(item.failure),
+            ),
+        ],
+      );
     } on LinkFailure {
       rethrow;
     } on Object catch (error, stack) {
@@ -44,7 +54,7 @@ final class _NativeFastbootTransport implements FastbootTransport {
   Future<FastbootSession> open(String serial) async {
     if (serial.isEmpty) {
       throw const LinkFailure(
-        blame: 'user',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'EmptySerial',
         message: 'Refusing an empty fastboot serial.',
@@ -58,7 +68,7 @@ final class _NativeFastbootTransport implements FastbootTransport {
       if (failure != null || reply.handle == 0) {
         throw failure == null
             ? const LinkFailure(
-                blame: 'host',
+                blame: LinkBlame.unknown,
                 source: 'frb',
                 name: 'EmptyHandle',
                 message: 'The native transport returned no session handle.',
@@ -70,7 +80,7 @@ final class _NativeFastbootTransport implements FastbootTransport {
       if (reply.serial != serial) {
         await _closeQuietly(reply.handle);
         throw LinkFailure(
-          blame: 'host',
+          blame: LinkBlame.unknown,
           source: 'native',
           name: 'SerialMismatch',
           message: 'The transport opened ${reply.serial} instead of $serial.',
@@ -117,7 +127,7 @@ final class _NativeFastbootSession implements FastbootSession {
   Future<void> beginDownload(int length) {
     if (length <= 0 || length > 0xFFFFFFFF) {
       throw LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'InvalidLength',
         message: 'Download length $length is outside 1..0xFFFFFFFF.',
@@ -126,7 +136,7 @@ final class _NativeFastbootSession implements FastbootSession {
     }
     if (_downloading) {
       throw const LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'Busy',
         message: 'A download is already in progress.',
@@ -149,7 +159,7 @@ final class _NativeFastbootSession implements FastbootSession {
   Future<void> writeDownload(Uint8List bytes) {
     if (bytes.isEmpty) {
       throw const LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'EmptyChunk',
         message: 'An empty download chunk is not sent.',
@@ -158,7 +168,7 @@ final class _NativeFastbootSession implements FastbootSession {
     }
     if (bytes.length > _maxChunk) {
       throw LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'ChunkTooLarge',
         message: 'Chunk is ${bytes.length} bytes; the maximum is $_maxChunk.',
@@ -167,7 +177,7 @@ final class _NativeFastbootSession implements FastbootSession {
     }
     if (!_downloading) {
       throw const LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'NotDownloading',
         message: 'writeDownload requires beginDownload first.',
@@ -176,7 +186,7 @@ final class _NativeFastbootSession implements FastbootSession {
     }
     if (_sent + bytes.length > _expected) {
       throw LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'Overrun',
         message:
@@ -199,7 +209,7 @@ final class _NativeFastbootSession implements FastbootSession {
   Future<String> endDownload() async {
     if (!_downloading) {
       throw const LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'NotDownloading',
         message: 'endDownload requires beginDownload first.',
@@ -208,7 +218,7 @@ final class _NativeFastbootSession implements FastbootSession {
     }
     if (_sent != _expected) {
       final failure = LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'Incomplete',
         message: 'Only $_sent of $_expected download bytes were sent.',
@@ -241,7 +251,7 @@ final class _NativeFastbootSession implements FastbootSession {
     if (_closed) return;
     if (_busy) {
       throw const LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'Busy',
         message: 'Cannot close while another operation is in flight.',
@@ -268,7 +278,7 @@ final class _NativeFastbootSession implements FastbootSession {
   ) async {
     if (_closed) {
       throw LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'native',
         name: 'Closed',
         message: 'This fastboot session is retired; open the device again.',
@@ -278,7 +288,7 @@ final class _NativeFastbootSession implements FastbootSession {
     }
     if (_busy) {
       throw LinkFailure(
-        blame: 'unknown',
+        blame: LinkBlame.unknown,
         source: 'caller',
         name: 'Busy',
         message: 'Another fastboot operation is already in flight.',
@@ -313,7 +323,7 @@ Future<void> _requireNative(String stage) async {
   if (await loadNative()) return;
   final load = nativeLoadFailure;
   throw LinkFailure(
-    blame: 'host',
+    blame: LinkBlame.unknown,
     source: 'native',
     name: load?.name ?? 'Unavailable',
     message:
@@ -340,13 +350,14 @@ void _throwIfFailure(rust.FastbootFailure? failure) {
 LinkFailure _failure(rust.FastbootFailure failure) {
   _logMessages(failure.messages);
   return LinkFailure(
-    blame: failure.blame,
+    blame: LinkBlame.values.byName(failure.blame),
     source: failure.source,
     sessionRetired: failure.sessionRetired,
     name: failure.name,
     message: failure.message,
     stage: failure.stage,
     uncertain: failure.uncertain,
+    disconnectObserved: failure.disconnectObserved,
     stack: failure.stack,
     causes: failure.causes,
     cleanupErrors: failure.cleanupErrors,
@@ -365,7 +376,7 @@ void _logMessages(List<rust.FastbootMessage> messages) {
 
 LinkFailure _bridgeFailure(String stage, Object error, StackTrace stack) =>
     LinkFailure(
-      blame: 'host',
+      blame: LinkBlame.unknown,
       source: 'frb',
       name: 'Bridge',
       message: '$error',

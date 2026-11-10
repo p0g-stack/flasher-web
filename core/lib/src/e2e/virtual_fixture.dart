@@ -606,15 +606,15 @@ final class FixtureTransport implements FastbootTransport {
   final opened = <String>[];
 
   @override
-  Future<List<FastbootDevice>> devices() async => [
+  Future<FastbootDiscovery> devices() async => FastbootDiscovery(devices: [
     FastbootDevice(serial: device.serial, label: 'phone', transport: 'fixture'),
-  ];
+  ]);
 
   @override
   Future<FastbootSession> open(String serial) async {
     if (serial != device.serial) {
       throw const LinkFailure(
-        blame: 'host',
+        blame: LinkBlame.unknown,
         name: 'NoDevice',
         message: 'not connected',
         stage: 'open',
@@ -665,7 +665,7 @@ final class _FixtureSession implements FastbootSession {
       }
       if (device.failFlash == partition) {
         throw const LinkFailure(
-          blame: 'device',
+          blame: LinkBlame.device,
           name: 'FastbootFail',
           message: 'flash failed',
           stage: 'flash',

@@ -98,7 +98,9 @@ Future<Map<String, Object?>> executePreparedFlash(
     check();
     final first = await _openExact(transport, prepared.serial);
     session = first;
-    var mode = await probeFlashMode(first);
+    final readiness = await probeFastbootConsistency(first);
+    var mode = readiness.mode;
+    maxDownloadSize = readiness.maxDownloadSize;
     _log.info('flash ${prepared.serial}: mode ${mode.name}');
     modeEnd = mode.name;
     if (!rebootRetry && mode != requiredMode) {
@@ -107,13 +109,12 @@ Future<Map<String, Object?>> executePreparedFlash(
     if (rebootRetry) {
       await first.command(requiredMode == FlashMode.fastbootd ? 'reboot-fastboot' : 'reboot-bootloader', write: true);
       await first.close();
-      session = await _waitForSerial(transport, prepared, requiredMode, check, reconnectTimeout, reconnectPoll);
-      mode = await probeFlashMode(session);
+      final reopened = await _waitForSerial(transport, prepared, requiredMode, check, reconnectTimeout, reconnectPoll);
+      session = reopened.session;
+      mode = reopened.readiness.mode;
+      maxDownloadSize = reopened.readiness.maxDownloadSize;
       modeEnd = mode.name;
     }
-    maxDownloadSize = parseDownloadSize(
-      await session.command('getvar:max-download-size'),
-    );
     emit({
       'type': 'log',
       'text':
@@ -154,15 +155,8 @@ Future<Map<String, Object?>> executePreparedFlash(
               reconnectTimeout,
               reconnectPoll,
             );
-            try {
-              maxDownloadSize = parseDownloadSize(
-                await reopened.command('getvar:max-download-size'),
-              );
-              return reopened;
-            } on Object {
-              await reopened.close();
-              rethrow;
-            }
+            maxDownloadSize = reopened.readiness.maxDownloadSize;
+            return reopened.session;
           },
           (isFinal) {
             if (isFinal) modeEnd = 'android (unverified)';
@@ -553,7 +547,7 @@ Future<void> _flashImage(
   }
 }
 
-Future<FastbootSession> _waitForSerial(
+Future<({FastbootSession session, FastbootReadiness readiness})> _waitForSerial(
   FastbootTransport transport,
   PreparedFlash prepared,
   FlashMode expectedMode,
@@ -566,8 +560,11 @@ Future<FastbootSession> _waitForSerial(
   while (DateTime.now().isBefore(deadline)) {
     check();
     try {
-      final devices = await transport.devices();
-      if (devices.any((device) => device.serial == prepared.serial)) {
+      final discovery = await transport.devices();
+      for (final item in discovery.failures) {
+        if (item.serial == prepared.serial) throw item.failure;
+      }
+      if (discovery.devices.any((device) => device.serial == prepared.serial)) {
         final session = await transport.open(prepared.serial);
         if (session.serial != prepared.serial) {
           await session.close();
@@ -577,8 +574,8 @@ Future<FastbootSession> _waitForSerial(
           );
         }
         try {
-          final mode = await probeFlashMode(session);
-          if (mode == expectedMode) return session;
+          final readiness = await probeFastbootConsistency(session);
+          if (readiness.mode == expectedMode) return (session: session, readiness: readiness);
           await session.close();
         } on Object {
           await session.close();
@@ -587,7 +584,7 @@ Future<FastbootSession> _waitForSerial(
       }
     } on LinkFailure catch (error) {
       last = error;
-      if (error.uncertain) rethrow;
+      if (error.uncertain || error.name == 'InconsistentDeviceAnswers') rethrow;
     }
     await Future<void>.delayed(poll);
   }

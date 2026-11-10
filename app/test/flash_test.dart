@@ -511,8 +511,8 @@ void main() {
     final harness = Harness();
     harness.api.prepareFlashResult = (_) => {
       'error': {
-        'blame': 'transport',
-        'name': 'LinkFailure',
+        'blame': 'unknown',
+        'name': 'Disconnected',
         'message': 'Device disappeared during getvar',
         'stage': 'prepare',
         'uncertain': false,
@@ -525,12 +525,9 @@ void main() {
     await selectDevice(tester, controller);
 
     expect(controller.prepared, isNull);
-    expect(
-      controller.prepareError,
-      contains('Device disappeared during getvar'),
-    );
-    expect(controller.prepareError, contains('stage: prepare'));
-    expect(controller.prepareError, contains('cleanup: close after prepare'));
+    expect(controller.prepareError, contains("The phone isn't answering fastboot"));
+    expect(controller.logText, contains('Device disappeared during getvar'));
+    expect(controller.logText, contains('close after prepare failed'));
     expect(find.byKey(const ValueKey('prepareError')), findsOneWidget);
     expect(find.byKey(const ValueKey('flashConfirmation')), findsNothing);
     expect(harness.api.flashCalls, 0);
@@ -543,7 +540,7 @@ void main() {
     harness.api.fastbootDevicesResponse = {
       'devices': <Map<String, Object?>>[],
       'error': {
-        'blame': 'transport',
+        'blame': 'host',
         'name': 'SecurityError',
         'message': 'Access denied by the browser',
         'stage': 'devices',
@@ -555,11 +552,10 @@ void main() {
     };
     final controller = await pumpFlash(tester, harness);
 
-    expect(controller.devicesError, contains('SecurityError'));
-    expect(controller.devicesError, contains('Access denied by the browser'));
-    expect(controller.devicesError, contains('blame: transport'));
-    expect(controller.devicesError, contains('stage: devices'));
-    expect(find.textContaining('Access denied by the browser'), findsOneWidget);
+    expect(controller.devicesError, contains('USB access was refused'));
+    expect(controller.logText, contains('Access denied by the browser'));
+    expect(controller.logText, contains('usb.requestDevice'));
+    expect(find.textContaining('USB access was refused'), findsOneWidget);
   });
 
   testWidgets('a failed step offers retry, reboot retry and stop', (

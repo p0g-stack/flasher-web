@@ -19,6 +19,34 @@ final class FastbootDevice {
   };
 }
 
+/// Reporting API and responsibility are independent. Silence, disappearance,
+/// malformed replies and generic transfer errors do not establish a cause.
+enum LinkBlame { host, user, device, unknown }
+
+/// One grant that discovery could not inspect. It is not a ready fastboot
+/// device, and must not hide other accessible grants.
+final class FastbootDiscoveryFailure {
+  const FastbootDiscoveryFailure({
+    required this.serial,
+    required this.label,
+    required this.failure,
+  });
+  final String serial;
+  final String label;
+  final LinkFailure failure;
+  Map<String, Object?> toMap() => {
+    'serial': serial,
+    'label': label,
+    'failure': failure.toMap(),
+  };
+}
+
+final class FastbootDiscovery {
+  const FastbootDiscovery({required this.devices, this.failures = const []});
+  final List<FastbootDevice> devices;
+  final List<FastbootDiscoveryFailure> failures;
+}
+
 /// Classification is additional evidence; the original error is retained.
 final class LinkFailure implements Exception {
   const LinkFailure({
@@ -27,6 +55,7 @@ final class LinkFailure implements Exception {
     required this.message,
     required this.stage,
     this.uncertain = false,
+    this.disconnectObserved = false,
     this.source = '',
     this.sessionRetired = false,
     this.stack = '',
@@ -34,7 +63,7 @@ final class LinkFailure implements Exception {
     this.cleanupErrors = const [],
     this.messages = const [],
   });
-  final String blame;
+  final LinkBlame blame;
 
   /// Producing layer, not a responsibility category.
   final String source;
@@ -45,6 +74,7 @@ final class LinkFailure implements Exception {
   final String message;
   final String stage;
   final bool uncertain;
+  final bool disconnectObserved;
   final String stack;
   final List<String> causes;
   final List<String> cleanupErrors;
@@ -52,13 +82,14 @@ final class LinkFailure implements Exception {
   /// Ordered device INFO/TEXT records; classification never replaces them.
   final List<Map<String, String>> messages;
   Map<String, Object?> toMap() => {
-    'blame': blame,
+    'blame': blame.name,
     'source': source,
     'sessionRetired': sessionRetired,
     'name': name,
     'message': message,
     'stage': stage,
     'uncertain': uncertain,
+    'disconnectObserved': disconnectObserved,
     'stack': stack,
     'causes': causes,
     'cleanupErrors': cleanupErrors,
@@ -70,7 +101,7 @@ final class LinkFailure implements Exception {
 
 abstract interface class FastbootTransport {
   /// Granted devices only on web. Never opens a chooser.
-  Future<List<FastbootDevice>> devices();
+  Future<FastbootDiscovery> devices();
 
   /// Requires exactly one fastboot device with this nonempty serial.
   Future<FastbootSession> open(String serial);

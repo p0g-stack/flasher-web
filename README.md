@@ -39,6 +39,35 @@ Design: [docs/design.md](docs/design.md). Service contract:
 | `rust/crates/fastboot-link/` | reusable USB discovery, serial-bound sessions and streaming fastboot | native nusb / browser WebUSB, no frb |
 | `worker/` | Cloudflare Worker: the static site plus `/api/catalog`, `/api/resolve`, `/api/manifest`, `/api/block`, `/api/bloat` | Cloudflare Workers (`wrangler dev` locally) |
 
+## Fastboot connection safety
+
+Responsibility (`LinkBlame`: host, user, device, unknown) is independent of
+the API in `source`. Access-denied and ownership evidence establish host
+responsibility; a complete fastboot FAIL establishes a device refusal.
+Timeouts, generic transfer errors, disconnects and malformed replies stay
+unknown. Original errors, INFO/TEXT, cleanup errors and correlated disconnect
+observations remain in logs/receipts. Discovery returns accessible devices
+alongside per-grant `discoveryFailures`; one inaccessible grant cannot hide
+the others.
+
+The first read-only command on a new session has a **5-second absolute
+deadline** (the research's 3–5-second candidate, allowing scheduling slack).
+Later reads/download handshakes have **15 seconds without new INFO/TEXT**
+and a **60-second absolute deadline**. Repeating an identical INFO/TEXT frame
+does not renew progress. Each streamed data call is bounded to **15 seconds**.
+Storage commands and the final download reply retain **180 seconds**, including
+silent processing; INFO/TEXT cannot extend that absolute bound. Cleanup has
+**2 seconds**. A failed transfer gets **100 ms** to correlate a matching USB
+disconnect (Tango's race allowance); the original error is kept, never resent.
+
+`probeFastbootConsistency` requires two identical complete OKAY answers each
+for `max-download-size` and `is-userspace`. Preparation, the start of every
+execution/retry (before even a recovery reboot), and each post-reboot reopen
+run it before permitting writes. A complete refusal or disagreement retires
+that connection with `InconsistentDeviceAnswers`; fully power-cycle the phone
+and prepare again. Silence retains its transport failure instead of being
+misreported as an inconsistent answer.
+
 ## Start
 
 Needs Flutter 3.47.5, flutter_p0g with its patched frb

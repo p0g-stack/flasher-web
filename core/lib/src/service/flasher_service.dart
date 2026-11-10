@@ -354,9 +354,10 @@ base class FlasherService {
   @squadronMethod
   Future<Map<String, Object?>> fastbootDevices() async {
     try {
-      final devices = await _fastbootTransport().devices();
+      final discovery = await _fastbootTransport().devices();
       return {
-        'devices': [for (final device in devices) device.toMap()],
+        'devices': [for (final device in discovery.devices) device.toMap()],
+        'discoveryFailures': [for (final item in discovery.failures) item.toMap()],
       };
     } on LinkFailure catch (error) {
       return {'devices': <Map<String, Object?>>[], 'error': error.toMap()};

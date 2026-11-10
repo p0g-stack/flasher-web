@@ -3,10 +3,14 @@
 //! bounded pieces; the transport never sees the whole image.
 
 use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use fastboot_protocol::protocol::FastBootResponse;
 
-use crate::error::{LinkError, LinkMessage, TransportError};
+use crate::error::{Blame, LinkError, LinkMessage, TransportError};
 use crate::timeout;
 
 /// The largest piece a caller may hand to [`Session::write_download`]. Fastboot
@@ -29,11 +33,46 @@ const MAX_COMMAND: usize = 64;
 /// bound so a chatty or broken device cannot loop forever.
 const MAX_RESPONSES: usize = 4096;
 
-/// A write command (`flash:`, `erase:`, reboot) can take minutes on the
-/// device while it writes storage and sends no INFO. Probes keep the shorter
-/// session timeout; the transport's own read bound is longer still, so this is
-/// the effective limit.
+/// Research §6.1 proposes 3–5 seconds for the first harmless probe, versus
+/// fastboot.js's 10 seconds. Five seconds allows host scheduling slack without
+/// making a silent freshly opened phone wait the normal 15 seconds.
+const FIRST_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Preserve the existing storage-processing allowance, including silent writes.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(180);
+/// Read-only commands can report useful INFO, but cannot extend forever.
+const READ_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+struct ResponseBudget {
+    started: Instant,
+    progress: Instant,
+    overall: Duration,
+    idle: Duration,
+}
+
+impl ResponseBudget {
+    fn new(overall: Duration, idle: Duration) -> Self {
+        let now = Instant::now();
+        Self { started: now, progress: now, overall, idle }
+    }
+
+    fn remaining(&self) -> (Duration, &'static str, Duration) {
+        let overall = self.overall.saturating_sub(self.started.elapsed());
+        let idle = self.idle.saturating_sub(self.progress.elapsed());
+        if overall <= idle {
+            (overall, "OperationDeadline", self.overall)
+        } else {
+            (idle, "NoProgress", self.idle)
+        }
+    }
+
+    // New, nonempty INFO/TEXT is activity, not proof a write completed.
+    // Repeating the same frame does not count as progress.
+    fn observe(&mut self, messages: &[LinkMessage], kind: &str, text: &str) {
+        if !text.is_empty() && !messages.last().is_some_and(|last| last.kind == kind && last.text == text) {
+            self.progress = Instant::now();
+        }
+    }
+}
 
 #[allow(async_fn_in_trait)]
 pub trait BulkTransport {
@@ -74,6 +113,7 @@ pub struct Session<T: BulkTransport> {
     max_in: usize,
     timeout: Duration,
     retired: bool,
+    first_probe_done: bool,
 }
 
 impl<T: BulkTransport> Session<T> {
@@ -86,6 +126,7 @@ impl<T: BulkTransport> Session<T> {
             max_in: max_in.max(64),
             timeout,
             retired: false,
+            first_probe_done: false,
         }
     }
 
@@ -128,8 +169,18 @@ impl<T: BulkTransport> Session<T> {
                 "fastboot commands are 1..=64 printable ASCII bytes",
             ));
         }
-        let limit = if write { WRITE_TIMEOUT } else { self.timeout };
-        let outcome = self.command_inner(stage, command, limit).await;
+        let first_probe = !write && !self.first_probe_done;
+        if !write { self.first_probe_done = true; }
+        let idle = if write { WRITE_TIMEOUT } else if first_probe {
+            self.timeout.min(FIRST_PROBE_TIMEOUT)
+        } else { self.timeout };
+        let overall = if write || first_probe { idle } else {
+            self.timeout.saturating_mul(4).min(READ_OPERATION_TIMEOUT)
+        };
+        let mut outcome = self.command_inner(stage, command, ResponseBudget::new(overall, idle)).await;
+        if !write {
+            if let Err(error) = &mut outcome { error.uncertain = false; }
+        }
         self.finish(outcome).await
     }
 
@@ -137,18 +188,24 @@ impl<T: BulkTransport> Session<T> {
         &mut self,
         stage: &'static str,
         command: &str,
-        limit: Duration,
+        mut budget: ResponseBudget,
     ) -> Result<CommandOutcome, LinkError> {
-        self.send(stage, command.as_bytes().to_vec(), limit).await?;
+        self.send(stage, command.as_bytes().to_vec(), budget.remaining().0).await?;
         let mut messages = Vec::new();
         for _ in 0..MAX_RESPONSES {
-            let response = match self.read_response(stage, limit).await {
+            let response = match self.read_budgeted(stage, &budget).await {
                 Ok(response) => response,
                 Err(error) => return Err(error.with_messages(messages)),
             };
             match response {
-                FastBootResponse::Info(message) => record(&mut messages, "INFO", message),
-                FastBootResponse::Text(message) => record(&mut messages, "TEXT", message),
+                FastBootResponse::Info(message) => {
+                    budget.observe(&messages, "INFO", &message);
+                    record(&mut messages, "INFO", message);
+                }
+                FastBootResponse::Text(message) => {
+                    budget.observe(&messages, "TEXT", &message);
+                    record(&mut messages, "TEXT", message);
+                }
                 FastBootResponse::Okay(value) => {
                     return Ok(CommandOutcome { value, messages })
                 }
@@ -200,16 +257,24 @@ impl<T: BulkTransport> Session<T> {
         length: u32,
     ) -> Result<CommandOutcome, LinkError> {
         let command = format!("download:{length:08x}");
+        let mut budget = ResponseBudget::new(
+            self.timeout.saturating_mul(4).min(READ_OPERATION_TIMEOUT), self.timeout);
         self.send(stage, command.into_bytes(), self.timeout).await?;
         let mut messages = Vec::new();
         for _ in 0..MAX_RESPONSES {
-            let response = match self.read_response(stage, self.timeout).await {
+            let response = match self.read_budgeted(stage, &budget).await {
                 Ok(response) => response,
                 Err(error) => return Err(error.with_messages(messages)),
             };
             match response {
-                FastBootResponse::Info(message) => record(&mut messages, "INFO", message),
-                FastBootResponse::Text(message) => record(&mut messages, "TEXT", message),
+                FastBootResponse::Info(message) => {
+                    budget.observe(&messages, "INFO", &message);
+                    record(&mut messages, "INFO", message);
+                }
+                FastBootResponse::Text(message) => {
+                    budget.observe(&messages, "TEXT", &message);
+                    record(&mut messages, "TEXT", message);
+                }
                 FastBootResponse::Data(actual) => {
                     if actual != length {
                         return Err(LinkError::protocol(
@@ -330,6 +395,7 @@ impl<T: BulkTransport> Session<T> {
             let cleanup = self.retire().await;
             return Err(error.with_cleanup(cleanup));
         }
+        let budget = ResponseBudget::new(WRITE_TIMEOUT, WRITE_TIMEOUT);
         if !self.pending.is_empty() {
             let tail = std::mem::take(&mut self.pending);
             if let Err(error) = self.send("writeDownload", tail, self.timeout).await {
@@ -337,24 +403,30 @@ impl<T: BulkTransport> Session<T> {
                 return Err(error.with_cleanup(cleanup));
             }
         }
-        let outcome = self.end_inner(stage, WRITE_TIMEOUT).await;
+        let outcome = self.end_inner(stage, budget).await;
         self.finish(outcome).await
     }
 
     async fn end_inner(
         &mut self,
         stage: &'static str,
-        limit: Duration,
+        mut budget: ResponseBudget,
     ) -> Result<CommandOutcome, LinkError> {
         let mut messages = Vec::new();
         for _ in 0..MAX_RESPONSES {
-            let response = match self.read_response(stage, limit).await {
+            let response = match self.read_budgeted(stage, &budget).await {
                 Ok(response) => response,
                 Err(error) => return Err(error.with_messages(messages)),
             };
             match response {
-                FastBootResponse::Info(message) => record(&mut messages, "INFO", message),
-                FastBootResponse::Text(message) => record(&mut messages, "TEXT", message),
+                FastBootResponse::Info(message) => {
+                    budget.observe(&messages, "INFO", &message);
+                    record(&mut messages, "INFO", message);
+                }
+                FastBootResponse::Text(message) => {
+                    budget.observe(&messages, "TEXT", &message);
+                    record(&mut messages, "TEXT", message);
+                }
                 FastBootResponse::Okay(value) => {
                     self.state = State::Idle;
                     return Ok(CommandOutcome { value, messages });
@@ -387,12 +459,13 @@ impl<T: BulkTransport> Session<T> {
             Ok(())
         } else {
             Err(LinkError {
-                blame: "host".to_string(),
+                blame: Blame::Unknown,
                 source: "transport".to_string(),
                 name: "Close".to_string(),
                 message: "the device did not close cleanly".to_string(),
                 stage: "close",
                 uncertain: true,
+                disconnect_observed: false,
                 stack: String::new(),
                 causes: Vec::new(),
                 cleanup_errors: cleanup,
@@ -417,10 +490,31 @@ impl<T: BulkTransport> Session<T> {
         match result {
             Some(Ok(())) => Ok(()),
             Some(Err(error)) => Err(LinkError::from_transport(stage, error)),
-            None => Err(LinkError::from_transport(
-                stage,
-                TransportError::timeout(blame, stage),
-            )),
+            None => {
+                let mut error = TransportError::timeout(blame, stage);
+                error.message = format!("{stage} transfer exceeded {} ms", limit.as_millis());
+                Err(LinkError::from_transport(stage, error))
+            }
+        }
+    }
+
+    async fn read_budgeted(
+        &mut self,
+        stage: &'static str,
+        budget: &ResponseBudget,
+    ) -> Result<FastBootResponse, LinkError> {
+        let (remaining, kind, allowance) = budget.remaining();
+        let source = self.transport.as_ref().map_or("transport", |transport| transport.blame());
+        let deadline_error = || {
+            let mut error = TransportError::timeout(source, stage);
+            error.name = kind.into();
+            error.message = format!("{stage} exceeded {kind} deadline of {} ms", allowance.as_millis());
+            LinkError::from_transport(stage, error)
+        };
+        if remaining.is_zero() { return Err(deadline_error()); }
+        match self.read_response(stage, remaining).await {
+            Err(error) if error.name == "Timeout" => Err(deadline_error()),
+            result => result,
         }
     }
 
@@ -499,6 +593,8 @@ mod tests {
     struct Recorder {
         writes: Vec<usize>,
         replies: VecDeque<Vec<u8>>,
+        delays: VecDeque<Duration>,
+        write_delay: Duration,
     }
 
     impl BulkTransport for Recorder {
@@ -506,11 +602,18 @@ mod tests {
             "usb"
         }
         async fn write_all(&mut self, data: Vec<u8>) -> Result<(), TransportError> {
+            tokio::time::sleep(self.write_delay).await;
             self.writes.push(data.len());
             Ok(())
         }
         async fn read(&mut self, _max: usize) -> Result<Vec<u8>, TransportError> {
-            Ok(self.replies.pop_front().expect("unexpected read"))
+            if let Some(delay) = self.delays.pop_front() {
+                tokio::time::sleep(delay).await;
+            }
+            match self.replies.pop_front() {
+                Some(reply) => Ok(reply),
+                None => std::future::pending().await,
+            }
         }
         async fn close(&mut self) -> Result<(), TransportError> {
             Ok(())
@@ -526,6 +629,8 @@ mod tests {
         let transport = Recorder {
             writes: Vec::new(),
             replies: VecDeque::from([format!("DATA{total:08x}").into_bytes(), b"OKAY".to_vec()]),
+            delays: VecDeque::new(),
+            write_delay: Duration::ZERO,
         };
         let mut session = Session::new(transport, "S".into(), 64, Duration::from_secs(5));
         tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async {
@@ -542,5 +647,52 @@ mod tests {
         let (last, body) = data.split_last().unwrap();
         assert!(body.iter().all(|len| len % TRANSPORT_CHUNK == 0), "{data:?}");
         assert!(*last > 0);
+    }
+    #[test]
+    fn first_probe_and_silent_writes_have_separate_absolute_deadlines() {
+        tokio::runtime::Builder::new_current_thread().enable_time()
+            .start_paused(true).build().unwrap().block_on(async {
+                for (write, expected) in [(false, FIRST_PROBE_TIMEOUT), (true, WRITE_TIMEOUT)] {
+                    let transport = Recorder {
+                        writes: Vec::new(), replies: VecDeque::new(), delays: VecDeque::new(),
+                        write_delay: if write { Duration::ZERO } else { Duration::from_secs(3) },
+                    };
+                    let mut session = Session::new(transport, "S".into(), 64, Duration::from_secs(15));
+                    let start = Instant::now();
+                    let error = session.command(if write { "flash:boot" } else { "getvar:product" }, write).await.unwrap_err();
+                    assert_eq!(start.elapsed(), expected);
+                    assert_eq!(error.name, "OperationDeadline");
+                    assert_eq!(error.blame, Blame::Unknown);
+                    assert_eq!(error.uncertain, write);
+                    assert!(session.is_retired());
+                }
+            });
+    }
+
+    #[test]
+    fn info_stream_cannot_extend_absolute_or_no_progress_deadlines() {
+        tokio::runtime::Builder::new_current_thread().enable_time()
+            .start_paused(true).build().unwrap().block_on(async {
+                for (repeat, expected, name) in [
+                    (false, Duration::from_secs(60), "OperationDeadline"),
+                    (true, Duration::from_secs(20), "NoProgress"),
+                ] {
+                    let transport = Recorder {
+                        writes: Vec::new(),
+                        write_delay: Duration::ZERO,
+                        replies: std::iter::once(b"OKAY".to_vec()).chain((0..100).map(|i|
+                            format!("INFO{}", if repeat { 0 } else { i }).into_bytes())).collect(),
+                        delays: std::iter::once(Duration::ZERO).chain(std::iter::repeat_n(Duration::from_secs(5), 100)).collect(),
+                    };
+                    let mut session = Session::new(transport, "S".into(), 64, Duration::from_secs(15));
+                    session.command("getvar:product", false).await.unwrap();
+                    let start = Instant::now();
+                    let error = session.command("getvar:all", false).await.unwrap_err();
+                    assert_eq!(start.elapsed(), expected);
+                    assert_eq!(error.name, name);
+                    assert!(!error.messages.is_empty());
+                    assert!(session.is_retired());
+                }
+            });
     }
 }

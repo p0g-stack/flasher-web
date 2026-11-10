@@ -18,7 +18,7 @@ use nusb::{Device, Endpoint, Interface};
 
 use crate::error::{LinkError, TransportError};
 use crate::session::{BulkTransport, Session};
-use crate::{timeout, LinkDevice, Opened};
+use crate::{timeout, DisconnectWatch, Discovery, DiscoveryFailure, LinkDevice, Opened};
 
 const FASTBOOT_CLASS: u8 = 0xff;
 const FASTBOOT_SUBCLASS: u8 = 0x42;
@@ -27,7 +27,7 @@ const FASTBOOT_PROTOCOL: u8 = 0x03;
 /// 64-byte protocol limit and for a USB 3 bulk packet.
 const RESPONSE_MAX: usize = 1024;
 /// Backup bound inside one WebUSB transfer. Session owns the real operation
-/// timeout (15 s for probes, 180 s for destructive commands), which is smaller;
+/// timeout (5 s first probe, 15 s idle, 180 s writes), which is smaller;
 /// this only stops a stuck transfer from outliving every caller.
 const TRANSPORT_IO_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -258,6 +258,7 @@ pub struct WebUsbTransport {
     claimed: Option<Claimed>,
     local: Option<WebGuard>,
     lock: Option<BrowserLock>,
+    disconnect: DisconnectWatch,
 }
 
 /// Keep the browser's own name/message/stack; do not re-describe a DOMException.
@@ -279,6 +280,7 @@ fn js_error(value: &JsValue, uncertain: bool) -> TransportError {
         stack: field("stack").unwrap_or_default(),
         causes: Vec::new(),
         uncertain,
+        disconnect_observed: false,
     }
 }
 
@@ -296,6 +298,7 @@ fn evidence(detail: &nusb::WebUsbError, uncertain: bool) -> TransportError {
         stack: detail.stack.clone(),
         causes: Vec::new(),
         uncertain,
+        disconnect_observed: false,
     }
 }
 
@@ -386,22 +389,31 @@ async fn failed_open(device: &Device, mut error: LinkError) -> LinkError {
     error
 }
 
-pub async fn devices(limit: Duration) -> Result<Vec<LinkDevice>, LinkError> {
+pub async fn devices(limit: Duration) -> Result<Discovery, LinkError> {
     let granted = bounded(async { nusb::list_devices().await }, "devices", limit, false)
         .await.map_err(|error| LinkError::from_transport("devices", error))?;
-    let mut devices = Vec::new();
+    let mut result = Discovery::default();
     for info in granted {
         // DeviceInfo::interfaces may be empty before open on WebUSB. Do not
         // mistake that for absence of a fastboot interface.
-        let device = bounded(async { info.open().await }, "devices", limit, false)
-            .await.map_err(|error| LinkError::from_transport("devices", error))?;
+        let device = match bounded(async { info.open().await }, "devices", limit, false).await {
+            Ok(device) => device,
+            Err(error) => {
+                result.failures.push(DiscoveryFailure {
+                    serial: info.serial_number().unwrap_or("").into(),
+                    label: info.product_string().unwrap_or("").into(),
+                    error: LinkError::from_transport("devices", error),
+                });
+                continue;
+            }
+        };
         if let Some(selection) = selection(&device) {
-            devices.push(link_device(&info, selection.interface));
+            result.devices.push(link_device(&info, selection.interface));
         }
         // nusb's shared lease closes only its last handle; discovery must not
         // force-close another independently opened session.
     }
-    Ok(devices)
+    Ok(result)
 }
 
 pub async fn open(serial: &str, open_limit: Duration, io_limit: Duration) -> Result<Opened, LinkError> {
@@ -413,6 +425,7 @@ pub async fn open(serial: &str, open_limit: Duration, io_limit: Duration) -> Res
         [] => return Err(open_error("NoDevice", format!("no granted WebUSB device with serial {serial}"))),
         _ => return Err(open_error("Ambiguous", format!("{serial} names {} granted WebUSB devices", matches.len()))),
     };
+    let disconnect = DisconnectWatch::new(info.id());
     let device = bounded(async { info.open().await }, "open", open_limit, false)
         .await.map_err(|error| LinkError::from_transport("open", error))?;
     let selected = selection(&device).ok_or_else(|| open_error("MissingInterface", format!("{serial} has no ff/42/03 interface")))?;
@@ -448,6 +461,7 @@ pub async fn open(serial: &str, open_limit: Duration, io_limit: Duration) -> Res
     let transport = WebUsbTransport {
         claimed: Some(Claimed { device, interface, out, input }),
         local: Some(local), lock: Some(lock),
+        disconnect,
     };
     Ok(Opened {
         session: Session::new(transport, serial.to_string(), response_max, io_limit),
@@ -465,7 +479,8 @@ impl BulkTransport for WebUsbTransport {
         let completion = timeout(TRANSPORT_IO_TIMEOUT, endpoint.next_complete()).await
             .ok_or_else(|| browser_timeout("write", true))?;
         if let Err(error) = completion.status {
-            return Err(transfer_error(error, endpoint.take_webusb_error()));
+            let evidence = transfer_error(error, endpoint.take_webusb_error());
+            return Err(self.disconnect.correlate(evidence).await);
         }
         if completion.actual_len != expected {
             return Err(TransportError::new("browser", "ShortWrite",
@@ -480,7 +495,8 @@ impl BulkTransport for WebUsbTransport {
         let completion = timeout(TRANSPORT_IO_TIMEOUT, endpoint.next_complete()).await
             .ok_or_else(|| browser_timeout("read", true))?;
         if let Err(error) = completion.status {
-            return Err(transfer_error(error, endpoint.take_webusb_error()));
+            let evidence = transfer_error(error, endpoint.take_webusb_error());
+            return Err(self.disconnect.correlate(evidence).await);
         }
         let mut data = completion.buffer.into_vec();
         data.truncate(completion.actual_len.min(max));

@@ -138,19 +138,19 @@ final class _FakeTransport implements FastbootTransport {
   final _FakeDevice device;
 
   @override
-  Future<List<FastbootDevice>> devices() async => [
+  Future<FastbootDiscovery> devices() async => FastbootDiscovery(devices: [
     FastbootDevice(
       serial: device.serial,
       label: 'Fake fastboot phone',
       transport: 'fake',
     ),
-  ];
+  ]);
 
   @override
   Future<FastbootSession> open(String serial) async {
     if (serial != device.serial) {
       throw const LinkFailure(
-        blame: 'host',
+        blame: LinkBlame.unknown,
         name: 'NoDevice',
         message: 'The fake device is not connected.',
         stage: 'open',
@@ -217,7 +217,7 @@ final class _FakeSession implements FastbootSession {
           'partition': partition,
         });
         throw LinkFailure(
-          blame: 'device',
+          blame: LinkBlame.device,
           name: 'FastbootFail',
           message: 'Injected e2e failure on $partition.',
           stage: 'flash',

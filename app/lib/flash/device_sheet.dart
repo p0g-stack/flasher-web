@@ -65,9 +65,7 @@ class _FastbootDeviceSheetState extends State<_FastbootDeviceSheet> {
                 Map<String, Object?>.from(device),
         ];
         _loading = false;
-        _error = error == null
-            ? null
-            : 'Could not list granted devices: ${describeLinkFailure(error)}';
+        _error = error == null ? null : describeLinkFailure(error);
       });
     } on Object catch (error) {
       if (!mounted) return;

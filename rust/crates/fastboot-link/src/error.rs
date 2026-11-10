@@ -12,6 +12,26 @@ pub struct LinkMessage {
     pub text: String,
 }
 
+/// Responsibility is evidence-based and independent of the reporting API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blame {
+    Host,
+    User,
+    Device,
+    Unknown,
+}
+
+impl Blame {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::User => "user",
+            Self::Device => "device",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// A failure below the fastboot protocol: bulk I/O, a rejected WebUSB call,
 /// a USB open, or a timeout.
 #[derive(Debug, Clone)]
@@ -29,6 +49,9 @@ pub struct TransportError {
     /// True when the device may still be acting (a write or read was in
     /// flight when this failed).
     pub uncertain: bool,
+    /// A matching attachment removal observed after a failed transfer.
+    /// This does not establish its cause or whether a write applied.
+    pub disconnect_observed: bool,
 }
 
 impl TransportError {
@@ -40,6 +63,7 @@ impl TransportError {
             stack: String::new(),
             causes: Vec::new(),
             uncertain,
+            disconnect_observed: false,
         }
     }
 
@@ -58,6 +82,7 @@ impl TransportError {
             stack: String::new(),
             causes,
             uncertain,
+            disconnect_observed: false,
         }
     }
 
@@ -69,6 +94,7 @@ impl TransportError {
             stack: String::new(),
             causes: Vec::new(),
             uncertain: true,
+            disconnect_observed: false,
         }
     }
 }
@@ -87,7 +113,7 @@ impl std::error::Error for TransportError {}
 pub struct LinkError {
     /// Who is responsible: `host`, `user`, `device`, or `unknown`. This is a
     /// closed set; the producing layer is kept in [`Self::source`].
-    pub blame: String,
+    pub blame: Blame,
     /// The layer that produced the failure (`caller`, `protocol`, `usb`,
     /// `browser`, `tcp`, `transport`). Evidence, never responsibility.
     pub source: String,
@@ -95,6 +121,7 @@ pub struct LinkError {
     pub message: String,
     pub stage: &'static str,
     pub uncertain: bool,
+    pub disconnect_observed: bool,
     pub stack: String,
     pub causes: Vec<String>,
     pub cleanup_errors: Vec<String>,
@@ -111,12 +138,13 @@ impl LinkError {
     /// that is already gone. Unknown to the user, and non-retiring by itself.
     pub fn caller(stage: &'static str, name: &str, message: impl Into<String>) -> Self {
         Self {
-            blame: "unknown".to_string(),
+            blame: Blame::Unknown,
             source: "caller".to_string(),
             name: name.to_string(),
             message: message.into(),
             stage,
             uncertain: false,
+            disconnect_observed: false,
             stack: String::new(),
             causes: Vec::new(),
             cleanup_errors: Vec::new(),
@@ -128,7 +156,7 @@ impl LinkError {
     /// The user's own input, such as an empty serial. Non-retiring.
     pub fn user(stage: &'static str, name: &str, message: impl Into<String>) -> Self {
         let mut error = Self::caller(stage, name, message);
-        error.blame = "user".to_string();
+        error.blame = Blame::User;
         error
     }
 
@@ -136,12 +164,13 @@ impl LinkError {
     /// so mode probes can continue on the same link.
     pub fn device(stage: &'static str, reason: impl Into<String>) -> Self {
         Self {
-            blame: "device".to_string(),
+            blame: Blame::Device,
             source: "protocol".to_string(),
             name: "FastbootFail".to_string(),
             message: reason.into(),
             stage,
             uncertain: false,
+            disconnect_observed: false,
             stack: String::new(),
             causes: Vec::new(),
             cleanup_errors: Vec::new(),
@@ -163,16 +192,17 @@ impl LinkError {
         error
     }
 
-    /// An invalid device reply. It is the device's answer, so it is blamed on
-    /// the device, but an unparseable stream retires the session.
+    /// An invalid reply does not establish responsibility. An unparseable
+    /// stream retires the session.
     pub fn protocol(stage: &'static str, message: impl Into<String>) -> Self {
         Self {
-            blame: "device".to_string(),
+            blame: Blame::Unknown,
             source: "protocol".to_string(),
             name: "Protocol".to_string(),
             message: message.into(),
             stage,
             uncertain: true,
+            disconnect_observed: false,
             stack: String::new(),
             causes: Vec::new(),
             cleanup_errors: Vec::new(),
@@ -181,16 +211,21 @@ impl LinkError {
         }
     }
 
-    /// A bulk I/O or browser failure. `error.blame` records the producing layer
-    /// as `source`; the public blame is the host this app runs on.
+    /// Preserve the producing API separately. Only explicit access/ownership
+    /// evidence establishes host responsibility; generic I/O stays unknown.
     pub fn from_transport(stage: &'static str, error: TransportError) -> Self {
         Self {
-            blame: "host".to_string(),
+            blame: match error.name.as_str() {
+                "SecurityError" | "PermissionDenied" | "Busy" | "ClaimRefused" => Blame::Host,
+                "NotFoundError" if stage == "choose" => Blame::User,
+                _ => Blame::Unknown,
+            },
             source: error.blame,
             name: error.name,
             message: error.message,
             stage,
             uncertain: error.uncertain,
+            disconnect_observed: error.disconnect_observed,
             stack: error.stack,
             causes: error.causes,
             cleanup_errors: Vec::new(),
@@ -239,12 +274,12 @@ mod tests {
     #[test]
     fn public_blame_is_closed_and_source_is_evidence() {
         let misuse = LinkError::caller("command", "Busy", "another operation is in flight");
-        assert_eq!(misuse.blame, "unknown");
+        assert_eq!(misuse.blame, Blame::Unknown);
         assert_eq!(misuse.source, "caller");
         assert!(!misuse.session_retired());
 
-        let input = LinkError::user("open", "EmptySerial", "refusing an empty serial");
-        assert_eq!(input.blame, "user");
+        let input = LinkError::user("choose", "NotFoundError", "no device selected");
+        assert_eq!(input.blame, Blame::User);
         assert_eq!(input.source, "caller");
         assert!(!input.session_retired());
 
@@ -256,43 +291,68 @@ mod tests {
                 text: "probe".to_string(),
             }],
         );
-        assert_eq!(fail.blame, "device");
+        assert_eq!(fail.blame, Blame::Device);
         assert_eq!(fail.name, "FastbootFail");
         assert_eq!(fail.messages.len(), 1);
         assert!(!fail.session_retired());
     }
 
     #[test]
-    fn protocol_replies_are_the_devices_and_retire() {
+    fn malformed_replies_do_not_establish_responsibility_and_retire() {
         let error = LinkError::protocol("command", "unparseable fastboot response: junk");
-        assert_eq!(error.blame, "device");
+        assert_eq!(error.blame, Blame::Unknown);
         assert_eq!(error.source, "protocol");
         assert_eq!(error.name, "Protocol");
         assert!(error.session_retired());
     }
 
     #[test]
-    fn transport_evidence_survives_host_blame() {
+    fn transport_evidence_survives_unknown_responsibility() {
         let mut transport =
             TransportError::new("browser", "NetworkError", "transfer failed".to_string(), true);
         transport.stack = "at send (webusb.js:9)".to_string();
         transport.causes = vec!["inner".to_string()];
+        transport.disconnect_observed = true;
         let error = LinkError::from_transport("writeDownload", transport);
-        assert_eq!(error.blame, "host");
+        assert_eq!(error.blame, Blame::Unknown);
         assert_eq!(error.source, "browser");
         assert_eq!(error.name, "NetworkError");
         assert_eq!(error.message, "transfer failed");
         assert_eq!(error.stack, "at send (webusb.js:9)");
         assert_eq!(error.causes, vec!["inner".to_string()]);
         assert!(error.uncertain);
+        assert!(error.disconnect_observed);
         assert!(error.session_retired());
+    }
+
+    #[test]
+    fn transport_classification_requires_evidence() {
+        for (stage, name, expected) in [
+            ("command", "Timeout", Blame::Unknown),
+            ("command", "NetworkError", Blame::Unknown),
+            ("command", "NotFoundError", Blame::Unknown),
+            ("command", "Disconnected", Blame::Unknown),
+            ("command", "ShortWrite", Blame::Unknown),
+            ("open", "UsbError", Blame::Unknown),
+            ("open", "SecurityError", Blame::Host),
+            ("open", "PermissionDenied", Blame::Host),
+            ("open", "Busy", Blame::Host),
+            ("open", "ClaimRefused", Blame::Host),
+            ("choose", "NotFoundError", Blame::User),
+        ] {
+            let error = LinkError::from_transport(stage,
+                TransportError::new("browser", name, "original".into(), false));
+            assert_eq!(error.blame, expected, "{stage}/{name}");
+            assert_eq!(error.source, "browser");
+            assert_eq!(error.message, "original");
+        }
     }
 
     #[test]
     fn a_missing_handle_reports_a_retired_session() {
         let error = LinkError::unknown_session(7);
         assert_eq!(error.name, "UnknownSession");
-        assert_eq!(error.blame, "unknown");
+        assert_eq!(error.blame, Blame::Unknown);
         assert!(error.session_retired());
     }
 }

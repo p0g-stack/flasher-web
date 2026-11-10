@@ -43,6 +43,56 @@ pub struct LinkDevice {
     pub interface: u8,
 }
 
+/// Discovery failures belong to individual grants, not the whole list.
+#[derive(Debug)]
+pub struct DiscoveryFailure {
+    pub serial: String,
+    pub label: String,
+    pub error: LinkError,
+}
+
+#[derive(Debug, Default)]
+pub struct Discovery {
+    pub devices: Vec<LinkDevice>,
+    pub failures: Vec<DiscoveryFailure>,
+}
+
+/// Subscribe before any transfer so a Windows-style error/disconnect race
+/// cannot lose the later observation. Tango uses the same 100 ms allowance.
+pub(crate) struct DisconnectWatch {
+    watch: Result<nusb::hotplug::HotplugWatch, String>,
+    id: nusb::DeviceId,
+}
+
+impl DisconnectWatch {
+    pub(crate) fn new(id: nusb::DeviceId) -> Self {
+        Self { watch: nusb::watch_devices().map_err(|error| error.to_string()), id }
+    }
+
+    pub(crate) async fn correlate(&mut self, mut error: error::TransportError) -> error::TransportError {
+        use futures_lite::StreamExt;
+        match &mut self.watch {
+            Ok(watch) => {
+                let id = self.id;
+                let observed = timeout(Duration::from_millis(100), async {
+                    while let Some(event) = watch.next().await {
+                        if matches!(event, nusb::hotplug::HotplugEvent::Disconnected(seen) if seen == id) {
+                            return true;
+                        }
+                    }
+                    false
+                }).await.unwrap_or(false);
+                error.disconnect_observed = observed;
+                if observed {
+                    error.causes.push("USB disconnect observed for this attachment within 100 ms of transfer failure".into());
+                }
+            }
+            Err(reason) => error.causes.push(format!("USB disconnect observation unavailable: {reason}")),
+        }
+        error
+    }
+}
+
 /// A session and the descriptor identity it was opened from.
 pub struct Opened {
     pub session: LinkSession,
@@ -55,7 +105,7 @@ const IO_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Fastboot devices this place may use. On the web this is only the granted
 /// list; opening a chooser is the page's job, not the transport's.
-pub async fn devices() -> Result<Vec<LinkDevice>, LinkError> {
+pub async fn devices() -> Result<Discovery, LinkError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         native::devices(OPEN_TIMEOUT).await
@@ -69,7 +119,7 @@ pub async fn devices() -> Result<Vec<LinkDevice>, LinkError> {
 /// Open the one fastboot device whose serial is exactly `serial`.
 pub async fn open(serial: &str) -> Result<Opened, LinkError> {
     if serial.is_empty() {
-        return Err(LinkError::user(
+        return Err(LinkError::caller(
             "open",
             "EmptySerial",
             "refusing an empty serial",
