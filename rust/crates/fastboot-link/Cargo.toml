@@ -14,12 +14,13 @@ description = "Reusable native USB / browser WebUSB fastboot transport with stre
 fastboot-protocol = { version = "0.4", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-nusb = { version = "0.2", features = ["tokio"] }
+nusb = { version = "0.2.9", features = ["tokio"] }
 # rt/time back the transport's bounded awaits. The TCP test seam enables the
 # network/io/macro features below; a normal build compiles no network code.
 tokio = { version = "1", features = ["rt", "time"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+nusb = "0.2.9"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -29,17 +30,6 @@ futures-timer = { version = "3", features = ["wasm-bindgen"] }
 # .cargo/config.toml sets that cfg for wasm32 only.
 web-sys = { version = "0.3", features = [
     "Navigator",
-    "Usb",
-    "UsbAlternateInterface",
-    "UsbConfiguration",
-    "UsbDevice",
-    "UsbDirection",
-    "UsbEndpoint",
-    "UsbEndpointType",
-    "UsbInTransferResult",
-    "UsbInterface",
-    "UsbOutTransferResult",
-    "UsbTransferStatus",
     "Window",
     "WorkerGlobalScope",
     "WorkerNavigator",

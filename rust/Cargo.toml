@@ -37,3 +37,8 @@ ota-payload = { path = "crates/ota-payload" }
 fastboot-link = { path = "crates/fastboot-link" }
 # Session handles are serialized with an async mutex that works on wasm too.
 futures = "0.3"
+
+# Local proof branch only: merge after nusb releases the WebUSB evidence and
+# lifecycle APIs, replacing this patch with the released minimum version.
+[patch.crates-io]
+nusb = { path = "/home/vivy/Projects/tools/nusb" }

@@ -281,6 +281,17 @@ the worker. The worker never opens a chooser: it lists granted devices, reopens
 that exact serial, and asks the page to regrant the same phone after a mode
 change. Native discovery matches the same interface from USB descriptors.
 
+On the local `nusb-webusb-cutover` proof branch, nusb also owns browser transport
+I/O. `Error::webusb_error()` and `Endpoint::take_webusb_error()` preserve owned
+name/message/stack fields without changing the copyable transfer-error category.
+Only Web Locks errors are decoded locally. nusb's shared JS-device lease
+closes failed/cancelled opens and the last independent handle; explicit
+`Device::force_close()` is used only while fastboot's exclusive lock is held.
+Open/configure/claim/alternate, bulk I/O and cleanup all have bounded awaits.
+The branch depends on a local nusb patch and must not merge until those APIs
+are released. No phone has qualified discovery, configuration/alternate
+selection, USB I/O, re-enumeration, real browser lock contention or cleanup.
+
 Real OTA flashing on a real phone remains unqualified. The synthetic fixture
 packages exercise streaming, sparse splitting, retries and uncertainty against
 a recording fake transport, not real USB or partition readback.

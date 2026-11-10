@@ -408,12 +408,19 @@ The reusable crates own their concerns:
 - `ota-payload` parses `CrAU` headers/manifests, decodes operations and hashes
   bytes. Callers pass the bytes they already read; it does no I/O and has no
   frb dependency. Gzip stream decoding stays app-local.
-- `fastboot-link` owns discovery (`ff/42/03`), exact-serial open, the command
-  and download state machine, and the per-session mutex. Native uses nusb 0.2.9;
-  browser uses WebUSB. Published `fastboot-protocol` 0.4.0 supplies the response
-  parser and command type. No fork rebase was performed for this work. Each
-  download chunk is owned by the session; native nusb moves that buffer into its
-  transfer without another copy.
+- `fastboot-link` owns discovery (`ff/42/03`), exact-serial open, alternate and
+  bulk-endpoint selection, Web Locks (`flasher-web-fastboot:{serial}:{interface}`),
+  bounded awaits, the fastboot state machine and the per-session mutex. Native
+  and browser both use nusb's device/interface/endpoint surface; the browser
+  selects from complete configuration descriptors after opening, not the
+  potentially empty pre-open `DeviceInfo::interfaces()` list.
+  This **local `nusb-webusb-cutover` proof branch is not ready to merge**:
+  `rust/Cargo.toml` patches nusb to `/home/vivy/Projects/tools/nusb`, with owned
+  browser error evidence, endpoint rejection evidence and shared open leases.
+  Remove that local patch and raise the minimum nusb version only after those
+  APIs are released. Published `fastboot-protocol` 0.4.0 supplies the response
+  parser and command type. Owned chunks move into nusb buffers without a
+  Rust-side copy; nusb owns WebUSB's required JS-buffer copy.
 - `device_link` defines the interfaces the core uses. Failure records keep the
   original name, message, stack, causes, cleanup errors and ordered INFO/TEXT
   records; classification is additional. Public `blame` is `host`, `user`,
