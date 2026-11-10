@@ -34,7 +34,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-
 import 'package:flasher_web_e2e/browser.dart';
 import 'package:flasher_web_e2e/expected.dart';
 import 'package:flasher_web_e2e/fixture.dart';
@@ -82,6 +81,7 @@ Future<void> main(List<String> args) async {
       final path = await page.screenshot('${shots.path}/$name.png');
       facts.add('screenshot $name: $path');
     }
+
     final bootstrap = bootstrapScript(bloatPaths: bloatManifestPaths(fixture));
 
     Future<HarnessBrowser> open() async {
@@ -106,17 +106,22 @@ Future<void> main(List<String> args) async {
     await shot(page, '3-check');
     await reviewPlan(page);
     await shot(page, '4-confirm');
-    await startFlash(page);
-    await shot(page, '5-flash');
+    try {
+      await startFlash(page);
+    } finally {
+      await shot(page, '5-flash');
+    }
     final status = await waitForResult(page);
     await shot(page, '6-done');
-    _check(status == 'succeeded', 'scenario 1: status is succeeded, not $status');
+    _check(
+      status == 'succeeded',
+      'scenario 1: status is succeeded, not $status',
+    );
     final receipt1 = await downloadReceipt(page, downloads);
     final state1 = await page.fakeState();
     _checkReceipt(receipt1, expected, 'scenario 1');
     _checkWrites(state1, expected, 'scenario 1');
-    final expectedParts =
-        ((state1['parts'] as Map)['super'] as List).length;
+    final expectedParts = ((state1['parts'] as Map)['super'] as List).length;
     facts.addAll(_describeWrites(state1, expected));
     timings['1 flash ok'] = watch.elapsedMilliseconds;
 
@@ -264,11 +269,12 @@ Future<void> main(List<String> args) async {
 /// Builds the app and its worker with the fake-device define.
 Future<void> buildDefine(String webRoot) async {
   stdout.writeln('building app/build/web with --dart-define=$define');
-  final app = await Process.run(
-    'flutter_p0g',
-    ['build', 'web', '--release', '--dart-define=$define'],
-    workingDirectory: 'app',
-  );
+  final app = await Process.run('flutter_p0g', [
+    'build',
+    'web',
+    '--release',
+    '--dart-define=$define',
+  ], workingDirectory: 'app');
   if (app.exitCode != 0) {
     stderr.write(app.stdout);
     stderr.write(app.stderr);
@@ -350,7 +356,10 @@ void _checkWrites(
   String label,
 ) {
   final flashCommands = (state['flashCommands'] as List).cast<String>();
-  _check(flashCommands.contains('super'), '$label: the super partition was written');
+  _check(
+    flashCommands.contains('super'),
+    '$label: the super partition was written',
+  );
   final delivered = state['delivered'] as Map;
   final checked = <String>{};
   for (final entry in delivered.entries) {
@@ -445,7 +454,9 @@ Future<(String, File)> exportZip(
     await Future<void>.delayed(const Duration(milliseconds: 200));
   }
   if (file == null) {
-    throw StateError('scenario 3: the download did not reach ${downloads.path}');
+    throw StateError(
+      'scenario 3: the download did not reach ${downloads.path}',
+    );
   }
   // The page's result card is below the fold and CanvasKit's semantics tree
   // does not expose it in headless Chrome, so the result the service produced

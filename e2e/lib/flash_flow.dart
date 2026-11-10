@@ -61,16 +61,13 @@ Future<void> connectPhone(HarnessBrowser browser) async {
   await browser.waitForText('Answers', seconds: 120);
 }
 
-/// Answers both plan prompts and waits for the resolved, question-free plan.
+/// Answers both plan prompts. The resolved plan enables Review plan, which
+/// [reviewPlan] waits for; answered prompts stay listed on the Check screen.
 Future<void> answerPrompts(HarnessBrowser browser) async {
   await browser.waitForText('flash-signal', seconds: 120);
   await browser.click('flash-signal');
   await browser.waitForText('reboot', seconds: 120);
   await browser.click('reboot');
-  await browser.waitForText(
-    'This plan has no remaining questions.',
-    seconds: 240,
-  );
 }
 
 /// Check → Confirm: the one primary action of the Check screen.
@@ -83,9 +80,16 @@ Future<void> reviewPlan(HarnessBrowser browser) async {
 /// Confirm: acknowledges the exact serial and starts the write.
 Future<void> startFlash(HarnessBrowser browser) async {
   await browser.click('I confirm serial', exact: false);
-  await browser.waitForText('Flash $fakeFastbootSerial', seconds: 120);
   await browser.click('Flash $fakeFastbootSerial');
-  await browser.waitForText('Flashing', seconds: 120);
+  // The fake device can finish before a frame shows the Flash screen.
+  await browser.waitFor(
+    "['Flashing', 'Save receipt', 'Recover'].some(t => "
+    "document.body.innerText.includes(t) || "
+    "Array.from(document.querySelectorAll('flt-semantics')).some(e => "
+    "(e.getAttribute('aria-label') || e.textContent || '').includes(t)))",
+    seconds: 120,
+    describe: 'the run to start',
+  );
 }
 
 /// The whole successful path up to the first write.
@@ -115,8 +119,9 @@ Future<String> waitForResult(HarnessBrowser browser) async {
 Future<void> waitForRecovery(HarnessBrowser browser) async {
   await browser.waitForText('Recover the run', seconds: 240);
   await browser.waitForText('Rewrite this step from byte zero', seconds: 60);
-  final rewrite =
-      await browser.controlCount('Rewrite this step from byte zero');
+  final rewrite = await browser.controlCount(
+    'Rewrite this step from byte zero',
+  );
   final stop = await browser.controlCount('Stop further commands');
   final retry = await browser.controlCount('Retry step');
   if (rewrite != 1 || stop != 1 || retry != 0) {
@@ -138,7 +143,7 @@ Future<void> performRewrite(HarnessBrowser browser) async {
   await browser.waitForText('Rewrite from byte zero', seconds: 60);
   await browser.click('I understand step', exact: false);
   await browser.click('Rewrite from byte zero', exact: true);
-  await browser.waitForText('Flashing', seconds: 120);
+  // The fake device finishes the rewrite before a Flash frame is guaranteed.
   await browser.waitForText('Save receipt', seconds: 240);
 }
 

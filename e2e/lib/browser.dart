@@ -29,7 +29,9 @@ final class HarnessBrowser {
     required String bootstrapScript,
     List<String> extraArgs = const [],
   }) async {
-    final profile = await Directory.systemTemp.createTemp('flasher-e2e-profile-');
+    final profile = await Directory.systemTemp.createTemp(
+      'flasher-e2e-profile-',
+    );
     final port = await _freePort();
     final chrome = await Process.start('google-chrome-stable', [
       '--headless=new',
@@ -227,7 +229,9 @@ final class HarnessBrowser {
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    throw TimeoutException('the fake device did not answer a configure request');
+    throw TimeoutException(
+      'the fake device did not answer a configure request',
+    );
   }
 
   /// Every message the fake device posted since the page loaded.
@@ -266,10 +270,9 @@ final class HarnessBrowser {
   /// The screens of the guided flow are captured so a run leaves visual
   /// evidence beside its assertions.
   Future<String> screenshot(String path) async {
-    final response = await _page.sendCommand(
-      'Page.captureScreenshot',
-      {'format': 'png'},
-    );
+    final response = await _page.sendCommand('Page.captureScreenshot', {
+      'format': 'png',
+    });
     final data = (response.result?['data'] as String?) ?? '';
     if (data.isEmpty) {
       throw StateError('the page did not produce a screenshot');
@@ -316,6 +319,7 @@ String _labelOf(String element) =>
     '(($element.getAttribute("aria-label") || $element.textContent || "").trim())';
 
 String _actionable(String element) =>
+    '$element.getAttribute("aria-disabled") !== "true" && '
     '($element.getAttribute("role") === "button" || '
     '$element.hasAttribute("flt-tappable") || '
     '$element.getAttribute("role") === "checkbox" || '
