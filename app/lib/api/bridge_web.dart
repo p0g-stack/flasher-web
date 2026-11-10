@@ -735,13 +735,13 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     _usbDisconnect = listener(false);
     usb.callMethod<JSAny?>(
       'addEventListener'.toJS,
-      _usbConnect!,
       'connect'.toJS,
+      _usbConnect!,
     );
     usb.callMethod<JSAny?>(
       'addEventListener'.toJS,
-      _usbDisconnect!,
       'disconnect'.toJS,
+      _usbDisconnect!,
     );
   }
 
@@ -920,15 +920,15 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
       if (connect != null) {
         (usb as JSObject).callMethod<JSAny?>(
           'removeEventListener'.toJS,
-          connect,
           'connect'.toJS,
+          connect,
         );
       }
       if (disconnect != null) {
         (usb as JSObject).callMethod<JSAny?>(
           'removeEventListener'.toJS,
-          disconnect,
           'disconnect'.toJS,
+          disconnect,
         );
       }
     }
