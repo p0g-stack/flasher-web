@@ -1,7 +1,8 @@
 .dart_tool/
 build/
-# Written by `dart run squadron_process:squadron_patch` (tool/bootstrap.sh):
-# points pub at the patched Squadron under .dart_tool/.
+# Written by `dart run squadron_process:squadron_patch` and
+# `dart run tool/third_party.dart` (tool/bootstrap.sh): points pub at the
+# patched packages under .dart_tool/.
 pubspec_overrides.yaml
 # Squadron codegen and compiled workers; tool/bootstrap.sh regenerates them.
 *.g.dart

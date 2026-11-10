@@ -722,6 +722,39 @@ void main() {
     expect(find.text('remembered.zip'), findsOneWidget);
   });
 
+  testWidgets('a cancelled OTA pick keeps the chosen OTA and reports nothing', (
+    tester,
+  ) async {
+    final harness = Harness();
+    harness.api.inspectResult = _inspection();
+    final handle = Object();
+    harness.bridge.otaFile = PickedFile(
+      handle: handle,
+      name: 'super.zip',
+      size: 4096,
+    );
+    await pumpApp(tester, harness: harness);
+
+    final chooseOta = find.byKey(const ValueKey('chooseOtaFile'));
+    await tester.ensureVisible(chooseOta);
+    await tester.tap(chooseOta);
+    await tester.pumpAndSettle();
+    expect(find.text('super.zip'), findsOneWidget);
+
+    // The browser's dialog was cancelled: the pick comes back null, so the
+    // page keeps what it had and nothing is reported as a failure.
+    harness.bridge.otaFile = null;
+    await tester.tap(chooseOta);
+    await tester.pumpAndSettle();
+
+    expect(find.text('super.zip'), findsOneWidget);
+    expect(find.textContaining('Could not inspect'), findsNothing);
+    expect(harness.api.lastInspectRequest?['ota'], {
+      'kind': 'file',
+      'file': handle,
+    });
+  });
+
   testWidgets('the environment page shows the budget and evicts a cached OTA', (
     tester,
   ) async {

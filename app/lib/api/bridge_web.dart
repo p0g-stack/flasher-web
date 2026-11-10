@@ -5,6 +5,8 @@ import 'dart:js_interop_unsafe';
 import 'dart:math' as math;
 
 import 'package:dir_picker/dir_picker.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:file_picker_web/file_picker_web.dart';
 import 'package:flasher_web_core/flasher_web_core.dart'
     show HandleWorkspace, fakeFastbootSerial;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -21,10 +23,12 @@ PlatformBridge createBridge() => WebPlatformBridge(
       : null,
 );
 
-/// The browser implementation: File System Access, IndexedDB, `fetch`,
+/// The browser implementation: the file system access handles, `fetch`,
 /// downloads, the screen wake lock, page-level drag and drop, and the WebUSB
-/// fastboot device chooser. Folder picking is `dir_picker`, preferences are
-/// `shared_preferences`, external links are `url_launcher`.
+/// fastboot device chooser. OTA files are picked with `file_picker`, whose
+/// patched web package keeps the handle a reload reopens; folder picking is
+/// `dir_picker`, preferences are `shared_preferences`, external links are
+/// `url_launcher`.
 final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   WebPlatformBridge({WebUsb? usb}) : _webUsb = usb ?? WebUsb() {
     _dragOver = ((web.Event event) {
@@ -70,7 +74,6 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   final _launchQueue = <JSObject>[];
   bool _draining = false;
 
-  web.IDBDatabase? _db;
   int _keepAlive = 0;
   web.WakeLockSentinel? _sentinel;
   JSFunction? _leaveGuard;
@@ -78,12 +81,33 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   Future<void>? _acquiring;
   late final _preferences = SharedPreferencesAsync();
 
-  static const _databaseName = 'flasher_web';
-  static const _store = 'handles';
-  static const _prefix = 'flasher_web.handles.';
+  /// The OTA ZIP the page remembered, and the unfinished save, each as the
+  /// `file_picker` token of its handle.
+  static const _otaTokenKey = 'flasher_web.ota-token';
+  static const _otaSaveKey = 'flasher_web.ota-save';
   static const _preferencesKey = 'flasher_web.preferences';
   static const _directoryPrefix = 'flasher_web.directory.';
-  static const _otaSaveKey = 'ota-save';
+
+  /// The OTA pick: the browser's file system access dialog where it has one, so
+  /// the pick carries a handle a reload can reopen, and `<input type="file">`
+  /// everywhere else.
+  ///
+  /// `withData: false` keeps the pick from reading an OTA into memory; the
+  /// page streams ranges from the `File` instead.
+  static const _otaPicker = FilePickerWebOptions(
+    // ignore: deprecated_member_use
+    withData: false,
+    dialog: WebFileDialog.auto,
+    pickerId: 'ota',
+    types: [
+      WebFileTypeFilter(
+        description: 'Full OTA ZIP',
+        accept: {
+          'application/zip': ['.zip'],
+        },
+      ),
+    ],
+  );
 
   @override
   bool get available => true;
@@ -238,64 +262,15 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
 
   @override
   Future<PickedFile?> pickOtaFile() async {
-    final picker = _globalFunction('showOpenFilePicker');
-    if (picker != null) {
-      final options = <String, Object?>{
-        'id': 'ota',
-        'multiple': false,
-        'types': [
-          {
-            'description': 'Full OTA ZIP',
-            'accept': {
-              'application/zip': ['.zip'],
-            },
-          },
-        ],
-      }.jsify();
-      final JSAny? value;
-      try {
-        final promise = picker.callAsFunction(globalContext, options);
-        value = await (promise as JSPromise<JSAny?>).toDart;
-      } on Object catch (error) {
-        if (_jsString(_toJSAny(error), 'name') == 'AbortError') return null;
-        rethrow;
-      }
-      if (value == null) return null;
-      final handles = (value as JSArray<web.FileSystemFileHandle>).toDart;
-      if (handles.isEmpty) return null;
-      final handle = handles.first;
-      final file = await handle.getFile().toDart;
-      // Remember the handle, not just the File: a reload can reopen it with a
-      // read-permission prompt, while a File object cannot be persisted.
-      await _putHandle('ota', handle);
-      return PickedFile(handle: file, name: file.name, size: file.size);
-    }
-    return _pickWithInput();
-  }
-
-  Future<PickedFile?> _pickWithInput() {
-    final completer = Completer<PickedFile?>();
-    final input = web.HTMLInputElement()
-      ..type = 'file'
-      ..accept = '.zip,application/zip';
-    input.style.display = 'none';
-    web.document.body?.append(input);
-    input.onchange = ((web.Event event) {
-      final file = input.files?.item(0);
-      web.document.body?.removeChild(input);
-      if (file == null) {
-        completer.complete(null);
-        return;
-      }
-      // An <input> pick has no handle to reopen, so a stale remembered OTA
-      // must not come back after a reload.
-      unawaited(forgetRememberedOta());
-      completer.complete(
-        PickedFile(handle: file, name: file.name, size: file.size),
-      );
-    }).toJS;
-    input.click();
-    return completer.future;
+    final picked = await FilePicker.pickFile(webOptions: _otaPicker);
+    if (picked is! WebPlatformFile) return null;
+    final file = picked.file;
+    if (file == null) return null;
+    // Remember the handle, not just the File: a reload can reopen it with a
+    // read-permission prompt, while a File object cannot be persisted. An
+    // input pick has no handle, so it clears what a reload would reopen.
+    await _rememberOtaToken(await picked.persist());
+    return PickedFile(handle: file, name: file.name, size: file.size);
   }
 
   @override
@@ -344,57 +319,80 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
 
   @override
   Future<PickedFile?> rememberedOtaFile() async {
-    final handle = await _getHandle('ota');
-    if (handle == null || !handle.has('getFile')) return null;
-    if (await _permission(handle, request: false) != 'granted') {
-      return null;
-    }
-    return _otaFileFrom(handle);
+    final file = await _rememberedOta();
+    if (file == null || !await file.hasAccess()) return null;
+    return _pickedOta(file);
   }
 
   @override
-  Future<String?> rememberedOtaFileName() async {
-    final handle = await _getHandle('ota');
-    if (handle == null) return null;
-    final name = handle.getProperty<JSAny?>('name'.toJS);
-    return name != null && name.isA<JSString>()
-        ? (name as JSString).toDart
-        : null;
-  }
+  Future<String?> rememberedOtaFileName() async =>
+      (await _rememberedOta())?.name;
 
   @override
   Future<PickedFile?> requestRememberedOtaFile() async {
-    final handle = await _getHandle('ota');
-    if (handle == null || !handle.has('getFile')) return null;
-    if (await _permission(handle, request: true) != 'granted') {
+    final file = await _rememberedOta();
+    if (file == null) return null;
+    if (!await file.requestAccess()) return null;
+    try {
+      await file.getFile();
+    } on Object {
+      // Deleted or moved since it was picked; nothing is left to reopen.
+      await forgetRememberedOta();
       return null;
     }
-    return _otaFileFrom(handle);
+    return _pickedOta(file);
   }
 
   @override
-  Future<void> forgetRememberedOta() => _deleteHandle('ota');
-
-  Future<void> _deleteHandle(String key) async {
-    final database = await _database();
-    final completer = Completer<void>();
-    final transaction = database.transaction(_store.toJS, 'readwrite');
-    transaction.objectStore(_store).delete('$_prefix$key'.toJS);
-    transaction.oncomplete = ((web.Event event) {
-      completer.complete();
-    }).toJS;
-    transaction.onerror = ((web.Event event) {
-      completer.complete();
-    }).toJS;
-    await completer.future;
+  Future<void> forgetRememberedOta() async {
+    final token = await _preferences.getString(_otaTokenKey);
+    await _preferences.remove(_otaTokenKey);
+    await _forgetToken(token);
   }
 
-  Future<PickedFile?> _otaFileFrom(JSObject handle) async {
+  /// [file] as the core takes it: the browser `File` it slices, not the handle.
+  static PickedFile? _pickedOta(WebPlatformFile file) {
+    final browser = file.file;
+    return browser == null
+        ? null
+        : PickedFile(handle: browser, name: browser.name, size: browser.size);
+  }
+
+  /// The OTA the page remembered, or null when it has none left.
+  Future<WebPlatformFile?> _rememberedOta() async {
+    final token = await _preferences.getString(_otaTokenKey);
+    if (token == null) return null;
+    final file = await WebPlatformFile.restore(token);
+    if (file == null) {
+      // Cleared site data, another profile, or a file that moved away.
+      await _preferences.remove(_otaTokenKey);
+    }
+    return file;
+  }
+
+  /// Points the remembered OTA at [token]; a null token forgets it.
+  Future<void> _rememberOtaToken(String? token) async {
+    final previous = await _preferences.getString(_otaTokenKey);
+    if (previous == token) return;
+    if (token == null) {
+      await _preferences.remove(_otaTokenKey);
+    } else {
+      await _preferences.setString(_otaTokenKey, token);
+    }
+    await _forgetToken(previous);
+  }
+
+  /// Drops [token] from the browser's store unless a remembered file still
+  /// uses it: the store keeps one record per file, so the OTA and the
+  /// unfinished save share a token when the OTA was saved to disk.
+  Future<void> _forgetToken(String? token) async {
+    if (token == null) return;
+    if (await _preferences.getString(_otaTokenKey) == token) return;
+    if ((await _savedRecord())?.token == token) return;
     try {
-      final file = await (handle as web.FileSystemFileHandle).getFile().toDart;
-      return PickedFile(handle: file, name: file.name, size: file.size);
+      await WebPlatformFile.forget(token);
     } on Object {
-      return null;
+      // Already gone.
     }
   }
 
@@ -594,7 +592,9 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   }) async {
     final handle = destination as web.FileSystemFileHandle;
     // The save picker granted read and write, so this needs no prompt.
-    if (remember) await _putHandle('ota', handle);
+    if (remember) {
+      await _rememberOtaToken(await WebPlatformFile.persistHandle(handle));
+    }
     return _otaFileFrom(handle);
   }
 
@@ -603,60 +603,77 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     Object destination,
     Map<String, Object?> request,
   ) async {
-    final record = JSObject()
-      ..['handle'] = destination as web.FileSystemFileHandle
-      ..['request'] = jsonEncode(request).toJS;
-    await _putHandle(_otaSaveKey, record);
+    final token = await WebPlatformFile.persistHandle(
+      destination as web.FileSystemFileHandle,
+    );
+    final previous = (await _savedRecord())?.token;
+    await _preferences.setString(
+      _otaSaveKey,
+      jsonEncode({'token': token, 'request': request}),
+    );
+    await _forgetToken(previous);
   }
 
   @override
   Future<({String name, Map<String, Object?> request})?>
   rememberedOtaSave() async {
-    final saved = await _otaSave();
-    if (saved == null) return null;
-    return (name: saved.handle.name, request: saved.request);
+    final record = await _savedRecord();
+    if (record == null) return null;
+    final file = await WebPlatformFile.restore(record.token);
+    if (file == null) {
+      // The browser dropped the file, so nothing is left to resume.
+      await _preferences.remove(_otaSaveKey);
+      return null;
+    }
+    return (name: file.name, request: record.request);
   }
 
   @override
   Future<Object?> requestRememberedOtaSave() async {
-    final saved = await _otaSave();
-    if (saved == null) return null;
-    final state = await _permission(
-      saved.handle,
-      request: true,
-      mode: 'readwrite',
+    final record = await _savedRecord();
+    if (record == null) return null;
+    final handle = (await WebPlatformFile.restore(record.token))?.handle;
+    if (handle == null) return null;
+    // Writing over it needs readwrite, which a reload drops like read.
+    final granted = await requestPermission(
+      handle,
+      mode: FilePermissionMode.readWrite,
     );
-    return state == 'granted' ? saved.handle : null;
+    return granted ? handle : null;
   }
 
   @override
-  Future<void> forgetOtaSave() => _deleteHandle(_otaSaveKey);
+  Future<void> forgetOtaSave() async {
+    final token = (await _savedRecord())?.token;
+    await _preferences.remove(_otaSaveKey);
+    await _forgetToken(token);
+  }
 
-  /// The remembered save, or null when absent or written by another build.
-  Future<({web.FileSystemFileHandle handle, Map<String, Object?> request})?>
-  _otaSave() async {
-    final record = await _getHandle(_otaSaveKey);
-    if (record == null) return null;
-    final handle = record['handle'];
-    final request = record['request'];
-    if (handle == null ||
-        !handle.isA<JSObject>() ||
-        !(handle as JSObject).has('createWritable') ||
-        request == null ||
-        !request.isA<JSString>()) {
-      return null;
-    }
+  /// The remembered unfinished save: the token of its file and the request
+  /// that describes the download.
+  Future<({String token, Map<String, Object?> request})?> _savedRecord() async {
+    final raw = await _preferences.getString(_otaSaveKey);
+    if (raw == null) return null;
     final Object? decoded;
     try {
-      decoded = jsonDecode((request as JSString).toDart);
+      decoded = jsonDecode(raw);
     } on FormatException {
       return null;
     }
     if (decoded is! Map<String, dynamic>) return null;
-    return (
-      handle: handle as web.FileSystemFileHandle,
-      request: Map<String, Object?>.from(decoded),
-    );
+    final token = decoded['token'];
+    final request = decoded['request'];
+    if (token is! String || request is! Map<String, dynamic>) return null;
+    return (token: token, request: Map<String, Object?>.from(request));
+  }
+
+  Future<PickedFile?> _otaFileFrom(web.FileSystemFileHandle handle) async {
+    try {
+      final file = await handle.getFile().toDart;
+      return PickedFile(handle: file, name: file.name, size: file.size);
+    } on Object {
+      return null;
+    }
   }
 
   @override
@@ -805,7 +822,6 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     web.window.removeEventListener('flasher-launch-files', _launchListener);
     _dropped.close();
     _launched.close();
-    _db?.close();
     final guard = _leaveGuard;
     if (guard != null) {
       web.window.removeEventListener('beforeunload', guard);
@@ -815,89 +831,6 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
       web.document.removeEventListener('visibilitychange', visibility);
     }
     _sentinel?.release();
-  }
-
-  Future<web.IDBDatabase> _database() async {
-    final cached = _db;
-    if (cached != null) return cached;
-    final completer = Completer<web.IDBDatabase>();
-    final request = web.window.indexedDB.open(_databaseName, 1);
-    request.onupgradeneeded = ((web.Event event) {
-      final database = request.result as web.IDBDatabase;
-      if (!database.objectStoreNames.contains(_store)) {
-        database.createObjectStore(_store);
-      }
-    }).toJS;
-    request.onsuccess = ((web.Event event) {
-      completer.complete(request.result as web.IDBDatabase);
-    }).toJS;
-    request.onerror = ((web.Event event) {
-      completer.completeError(
-        StateError('IndexedDB is unavailable in this browser context.'),
-      );
-    }).toJS;
-    final database = await completer.future;
-    _db = database;
-    return database;
-  }
-
-  Future<void> _putHandle(String key, JSObject handle) async {
-    final database = await _database();
-    final completer = Completer<void>();
-    final transaction = database.transaction(_store.toJS, 'readwrite');
-    transaction.objectStore(_store).put(handle as JSAny, '$_prefix$key'.toJS);
-    transaction.oncomplete = ((web.Event event) {
-      completer.complete();
-    }).toJS;
-    transaction.onerror = ((web.Event event) {
-      completer.completeError(
-        StateError('Could not remember the chosen OTA file.'),
-      );
-    }).toJS;
-    await completer.future;
-  }
-
-  Future<JSObject?> _getHandle(String key) async {
-    final database = await _database();
-    final completer = Completer<JSAny?>();
-    final request = database
-        .transaction(_store.toJS, 'readonly')
-        .objectStore(_store)
-        .get('$_prefix$key'.toJS);
-    request.onsuccess = ((web.Event event) {
-      completer.complete(request.result);
-    }).toJS;
-    request.onerror = ((web.Event event) {
-      completer.complete(null);
-    }).toJS;
-    final value = await completer.future;
-    return value != null && value.isA<JSObject>() ? value as JSObject : null;
-  }
-
-  Future<String> _permission(
-    JSObject handle, {
-    required bool request,
-    String mode = 'read',
-  }) async {
-    final options = <String, Object?>{'mode': mode}.jsify();
-    try {
-      final result = request
-          ? await handle
-                .callMethod<JSPromise<JSString>>(
-                  'requestPermission'.toJS,
-                  options,
-                )
-                .toDart
-          : await handle
-                .callMethod<JSPromise<JSString>>(
-                  'queryPermission'.toJS,
-                  options,
-                )
-                .toDart;
-      return result.toDart;
-    } catch (_) {
-      return 'denied';
-    }
   }
 }
 

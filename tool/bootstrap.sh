@@ -8,6 +8,8 @@ cd "$(dirname "$0")/.."
 # fetch the patched copy into .dart_tool and override to it, resolve again.
 flutter pub get
 (cd cli && dart run squadron_process:squadron_patch ..)
+# Every carried third-party patch series (third_party/*/PIN), the same way.
+dart run tool/third_party.dart
 flutter pub get
 
 # Upstream snapshot at the commit pinned in upstream.lock (app/web/upstream/).

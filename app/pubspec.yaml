@@ -17,6 +17,8 @@ dependencies:
   http: ^1.6.0
   flasher_web_core: any
   dir_picker: ^0.8.0
+  file_picker: ^13.3.2
+  file_picker_web: ^4.2.0
   shared_preferences: ^2.5.6
   url_launcher: ^6.3.3
   web_usb_grant:

@@ -144,10 +144,12 @@ corrupt a flash. A cache that cannot be read is a miss and the OTA streams
 instead.
 
 **Download OTA → This computer** uses the same engine into the file the save
-picker returned. The page remembers that file handle before the first byte; a
-save that stops offers **Resume save** after a reload, which renews write
-permission and fetches only the missing ranges into the same file. Picking the
-file again cannot resume: Chromium truncates an existing file chosen in the
+picker returned. The page remembers that file handle before the first byte, as
+a `file_picker` token in `shared_preferences` (the patched `file_picker_web`
+keeps the handle itself in IndexedDB); a save that stops offers **Resume save**
+after a reload, which renews the handle's `readwrite` permission and fetches
+only the missing ranges into the same file. Picking the file again cannot
+resume: Chromium truncates an existing file chosen in the
 save picker. On Android Chrome, which has no save picker, the OTA streams to the
 browser's downloads in file order with 8 ranges in flight (at most 64 MiB
 buffered); that download is faster but cannot resume.

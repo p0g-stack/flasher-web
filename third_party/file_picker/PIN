@@ -1,0 +1,10 @@
+# Upstream file_picker the web patch series applies to.
+#
+# `package` is the directory of the published package inside the repository;
+# the workspace overrides file_picker_web to it. The series is byte-identical
+# to branch web-file-system-access-handles on
+# https://github.com/p0g-stack/flutter_file_picker, which carries two commits
+# on top of this one, so upstreaming it stays a single pull request.
+repo=https://github.com/vicajilau/flutter_file_picker
+commit=bf434d234fc2686843cca7eae74db943a31fa6a2
+package=packages/file_picker_web
