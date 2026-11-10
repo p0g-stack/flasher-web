@@ -351,7 +351,10 @@ final class OtaDownloadController extends ChangeNotifier {
         }
       },
       onError: (Object error) {
-        if (_disposed || token != _token) return;
+        if (_disposed || token != _token || finished) return;
+        // The stream still closes after an error; that close must not
+        // replace the error with "ended without a result".
+        finished = true;
         _error = '$failure: $error';
         _abortStream(_error);
         _subscription = null;

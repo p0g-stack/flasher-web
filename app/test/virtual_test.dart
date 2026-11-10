@@ -793,6 +793,29 @@ void main() {
     expect(harness.bridge.keepAwake, 0, reason: 'the wake lock is released');
   });
 
+  testWidgets('a download that fails before it starts shows the failure', (
+    tester,
+  ) async {
+    final harness = Harness();
+    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
+    // A worker stream reports the error, then closes.
+    harness.api.cacheOtaStream = (_) async* {
+      throw StateError('8608804980 bytes needed but only 3137600630 free');
+    };
+    await pumpApp(tester, harness: harness);
+    await _chooseRegional(tester);
+    await tester.tap(find.text('Version catalog'));
+    await tester.pumpAndSettle();
+
+    await _openDownloadDialog(tester);
+    await tester.tap(find.byKey(const ValueKey('downloadOtaCache')));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('3137600630 free'), findsOneWidget);
+    expect(find.textContaining('without a result'), findsNothing);
+    expect(harness.bridge.keepAwake, 0);
+  });
+
   testWidgets('a cached OTA that does not fit is not offered', (tester) async {
     final harness = Harness();
     harness.api.storageBudgetResult = const {
