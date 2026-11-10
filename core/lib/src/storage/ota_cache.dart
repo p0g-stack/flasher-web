@@ -572,9 +572,11 @@ final class OtaCache {
           (end, c) => c.downloadedBytes == 0 ? end : max(end, c.offset + c.downloadedBytes),
         );
         if (await workspace.size(part) < requiredLength) {
-          throw const OtaCacheException(
-            'The interrupted OTA is shorter than its durable sidecar. Delete it and retry.',
-          );
+          // A save picker can return the same handle after truncating its
+          // file. Identity is not evidence that the recorded bytes survived.
+          await workspace.delete(part);
+          await workspace.delete(dlx.metaPath(io, locator));
+          meta = null;
         }
       }
       final resumed =

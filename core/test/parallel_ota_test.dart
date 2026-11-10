@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flasher_web_core/src/storage/ota_cache.dart';
+import 'package:flasher_web_core/src/storage/ota_destination_io.dart';
 import 'package:flasher_web_core/src/storage/storage.dart';
 import 'package:test/test.dart';
 
@@ -235,6 +236,34 @@ void main() {
       expect(peak, 1);
     },
   );
+
+  for (final truncatedLength in [0, 1]) {
+    test('same picked destination truncated to $truncatedLength restarts safely', () async {
+      final file = File('${temp.path}/picked-ota.zip');
+      var failing = true;
+      final reads = <int>[];
+      final factory = _Factory((_) => _Source(bytes, (offset, count) async {
+        reads.add(offset);
+        if (failing && offset >= 64) throw StateError('offline');
+      }));
+      Future<OtaCache> pickedCache() async => OtaCache(
+        workspace: await openOtaDestination(
+          {'kind': 'path', 'path': file.path}, otaEntryDigest(entry)),
+        sources: factory, chunkBytes: 32, connections: 1,
+      );
+      await expectLater((await pickedCache()).cache(entry), throwsA(isA<OtaCacheException>()));
+      expect(await file.length(), 64);
+      // The handle/path still identifies the same file, but bytes are gone.
+      await file.writeAsBytes(bytes.sublist(0, truncatedLength));
+      failing = false;
+      reads.clear();
+      final events = await (await pickedCache()).download(entry).toList();
+      expect((events.first as OtaCacheStarted).resumedFrom, 0);
+      expect(reads.first, 0);
+      expect(await file.readAsBytes(), bytes);
+      expect((events.last as OtaCacheFinished).entry.sha256, sha256.convert(bytes).toString());
+    });
+  }
 }
 
 class _Factory implements OtaSourceFactory {
