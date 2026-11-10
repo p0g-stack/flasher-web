@@ -130,6 +130,17 @@ Map<String, Object?> succeededResult() => {
   ),
 };
 
+/// Pumps a bounded number of frames.
+///
+/// A live run keeps an indeterminate progress bar animating, so
+/// `pumpAndSettle` can never settle; these tests only need pending microtasks
+/// and the next frames.
+Future<void> pumpFrames(WidgetTester tester, {int frames = 10}) async {
+  for (var i = 0; i < frames; i++) {
+    await tester.pump(const Duration(milliseconds: 20));
+  }
+}
+
 Future<FlashController> pumpFlash(
   WidgetTester tester,
   Harness harness, {
@@ -156,7 +167,7 @@ Future<FlashController> pumpFlash(
       ),
     ),
   );
-  await tester.pumpAndSettle();
+  await pumpFrames(tester);
   return controller;
 }
 
@@ -169,14 +180,14 @@ Future<void> selectDevice(
     'label': 'Realme NEO8',
     'transport': 'usb',
   });
-  await tester.pumpAndSettle();
+  await pumpFrames(tester);
 }
 
 Future<void> reviewAndFlash(WidgetTester tester) async {
   await tester.tap(find.byKey(const ValueKey('reviewPlan')));
-  await tester.pumpAndSettle();
+  await pumpFrames(tester);
   await tester.tap(find.byKey(const ValueKey('confirmFlashDevice')));
-  await tester.pumpAndSettle();
+  await pumpFrames(tester);
   await tester.tap(find.byKey(const ValueKey('startFlash')));
   // The guard and the checkpoint are awaited before the stream starts; the
   // flash screen then shows an indeterminate bar, so no settle.
@@ -206,14 +217,14 @@ void main() {
     expect(find.byKey(const ValueKey('reviewPlan')), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('reviewPlan')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(controller.screen, FlashScreen.confirm);
     expect(controller.phase, FlashRunPhase.confirming);
     expect(find.byKey(const ValueKey('screenConfirm')), findsOneWidget);
     expect(find.byKey(const ValueKey('startFlash')), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('confirmFlashDevice')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     await tester.tap(find.byKey(const ValueKey('startFlash')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
@@ -229,7 +240,7 @@ void main() {
       'title': 'Require bootloader',
     });
     events.add(succeededResult());
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(controller.screen, FlashScreen.done);
     expect(controller.phase, FlashRunPhase.done);
     expect(controller.certainty, WriteCertainty.confirmed);
@@ -269,11 +280,11 @@ void main() {
       'total': 2,
       'title': 'Require bootloader',
     });
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(harness.bridge.keepAwake, 1);
 
     events.add(succeededResult());
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(harness.bridge.keepAwake, 0);
     expect(controller.writing, isFalse);
     final checkpoint = harness.bridge.checkpoint!;
@@ -281,7 +292,7 @@ void main() {
 
     await tester.ensureVisible(find.byKey(const ValueKey('saveReceipt')));
     await tester.tap(find.byKey(const ValueKey('saveReceipt')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(
       harness.bridge.downloads,
       contains('flash-20260101-000000-abcdef-SERIAL123.json'),
@@ -334,7 +345,7 @@ void main() {
         ],
       ),
     );
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
 
     expect(controller.screen, FlashScreen.recover);
     expect(controller.certainty, WriteCertainty.uncertain);
@@ -360,7 +371,7 @@ void main() {
     expect((paused['receipt'] as Map?)?['uncertain'], isTrue);
 
     await tester.tap(find.byKey(const ValueKey('recoverPrimary')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(
       find.textContaining('rewrites'),
       findsOneWidget,
@@ -374,7 +385,7 @@ void main() {
       isNull,
     );
     await tester.tap(find.byKey(const ValueKey('confirmDestructive')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     await tester.tap(find.byKey(const ValueKey('confirmDestructiveAction')));
     // The recovery stream stays open, so the busy bar never settles.
     await tester.pump();
@@ -431,7 +442,7 @@ void main() {
         },
       ),
     );
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
 
     expect(controller.screen, FlashScreen.recover);
     expect(controller.needsWipeSuper, isTrue);
@@ -440,14 +451,14 @@ void main() {
 
     // Declining sends nothing.
     await tester.tap(find.byKey(const ValueKey('recoverPrimary')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(find.textContaining('cannot boot'), findsOneWidget);
     await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(harness.api.lastRecoveryAction, isNull);
 
     await tester.tap(find.byKey(const ValueKey('recoverPrimary')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(
       tester
           .widget<FilledButton>(
@@ -460,9 +471,9 @@ void main() {
       find.byKey(const ValueKey('confirmSerialField')),
       _serial,
     );
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     await tester.tap(find.byKey(const ValueKey('confirmDestructive')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     await tester.tap(find.byKey(const ValueKey('confirmDestructiveAction')));
     // The recovery stream stays open, so the busy bar never settles.
     await tester.pump();
@@ -513,7 +524,7 @@ void main() {
         ],
       ),
     );
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
 
     expect(find.byKey(const ValueKey('recoverPrimary')), findsOneWidget);
     expect(
@@ -521,7 +532,7 @@ void main() {
       findsOneWidget,
     );
     await tester.tap(find.byKey(const ValueKey('recoverPrimary')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(find.byKey(const ValueKey('confirmPowerCycle')), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('confirmPowerCycle')));
     await tester.pump();
@@ -610,7 +621,7 @@ void main() {
     final prepares = harness.api.prepareCalls;
 
     harness.bridge.attach(attached: false, serial: _serial);
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
 
     expect(controller.connection, FlashConnection.lost);
     expect(find.textContaining('left USB'), findsWidgets);
@@ -618,7 +629,7 @@ void main() {
     expect(harness.bridge.keepAwake, 0);
 
     harness.bridge.attach(attached: true, serial: _serial);
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(controller.connection, FlashConnection.waiting);
     // An arrival never prepares or probes on its own.
     expect(harness.api.prepareCalls, prepares);
@@ -642,10 +653,10 @@ void main() {
       'total': 2,
       'title': 'Require bootloader',
     });
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
 
     harness.bridge.announceUpdate('v3');
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(controller.updateReady, isTrue);
     expect(controller.canReloadNow, isFalse);
     expect(find.byKey(const ValueKey('updateBanner')), findsOneWidget);
@@ -657,10 +668,10 @@ void main() {
     );
 
     events.add(succeededResult());
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(controller.canReloadNow, isTrue);
     await tester.tap(find.byKey(const ValueKey('reloadForUpdate')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(harness.bridge.reloads, 1);
   });
 
@@ -684,7 +695,7 @@ void main() {
       'title': 'Require bootloader',
     });
     events.addError(StateError('the service worker terminated'));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
 
     expect(controller.workerLost, isTrue);
     expect(controller.screen, FlashScreen.done);
@@ -719,11 +730,11 @@ void main() {
       'total': 2,
       'title': 'Require bootloader',
     });
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(controller.canStop, isTrue);
 
     await tester.tap(find.byKey(const ValueKey('stopFlash')));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
 
     expect(harness.api.lastStopRequest, {'runId': 'run-1'});
     expect(controller.screen, FlashScreen.done);
@@ -752,7 +763,7 @@ void main() {
       'total': 2,
       'title': 'Require bootloader',
     });
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(controller.wakeLockSupported, isFalse);
     expect(find.byKey(const ValueKey('wakeLockMissing')), findsOneWidget);
   });
