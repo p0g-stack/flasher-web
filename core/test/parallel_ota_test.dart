@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:downloadx/downloadx.dart' show tempExt;
+import 'package:flasher_web_core/src/storage/budget.dart';
 import 'package:flasher_web_core/src/storage/ota_cache.dart';
 import 'package:flasher_web_core/src/storage/ota_destination_io.dart';
 import 'package:flasher_web_core/src/storage/storage.dart';
@@ -154,7 +156,7 @@ void main() {
       expect(partial.written, lessThan(bytes.length));
       block = false;
       gate.complete();
-      final events = await cache(factory).download(entry).toList();
+      final events = await downloaded.download(entry).toList();
       expect((events.first as OtaCacheStarted).resumedFrom, partial.written);
       expect(
         (events.last as OtaCacheFinished).entry.sha256,
@@ -264,6 +266,52 @@ void main() {
       expect((events.last as OtaCacheFinished).entry.sha256, sha256.convert(bytes).toString());
     });
   }
+
+  test('resume does not reserve already charged sparse file length again', () async {
+    var failing = true;
+    final factory = _Factory((_) => _Source(bytes, (offset, count) async {
+      if (failing && offset == 0) throw StateError('offline');
+    }));
+    final downloaded = cache(factory);
+    await expectLater(downloaded.cache(entry), throwsA(isA<OtaCacheException>()));
+    final key = otaEntryDigest(entry);
+    final part = File('${temp.path}/ota-cache/$key$tempExt');
+    expect(await part.length(), bytes.length);
+    expect((await downloaded.entries()).single.written, lessThan(bytes.length));
+    failing = false;
+    final budget = StorageBudget(
+      estimateSource: _Estimate(bytes.length), cap: bytes.length,
+    );
+    final result = await downloaded.cache(entry, budget: budget);
+    expect(result.sha256, sha256.convert(bytes).toString());
+  });
+
+  test('an error before started reaches the subscriber before stream done', () async {
+    final downloaded = cache(_Factory((_) => _Source(bytes, (_, _) async {})));
+    final events = <OtaCacheEvent>[];
+    final errors = <Object>[];
+    final done = Completer<void>();
+    downloaded.download(entry, budget: StorageBudget(
+      estimateSource: _Estimate(0), cap: 0,
+    )).listen(events.add, onError: errors.add, onDone: done.complete);
+    await done.future;
+    expect(events, isEmpty);
+    expect(errors, [isA<BudgetException>()]);
+  });
+
+  test('concurrent same-key download refuses with an error, not an empty stream', () async {
+    final started = Completer<void>();
+    final gate = Completer<void>();
+    final downloaded = cache(_Factory((_) => _Source(bytes, (_, _) async {
+      if (!started.isCompleted) started.complete();
+      await gate.future;
+    })));
+    final running = downloaded.cache(entry);
+    await started.future;
+    await expectLater(downloaded.download(entry).toList(), throwsStateError);
+    gate.complete();
+    expect((await running).complete, isTrue);
+  });
 }
 
 class _Factory implements OtaSourceFactory {
@@ -307,4 +355,11 @@ class _Source implements CancellableByteSource {
   Future<void> close() async {
     if (!closed.isCompleted) closed.complete();
   }
+}
+
+class _Estimate implements StorageEstimateSource {
+  _Estimate(this.usage);
+  final int usage;
+  @override
+  Future<StorageEstimate> estimate() async => StorageEstimate(usage: usage, quota: 1024);
 }

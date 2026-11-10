@@ -1,6 +1,6 @@
 /// Optional catalog OTA cache with parallel, positional downloads.
 ///
-/// `ota-cache/<digest>.part` holds in-progress bytes; downloadx's
+/// `ota-cache/<digest>.downloadx.part` holds in-progress bytes; downloadx's
 /// `<digest>.downloadx.json` records durable chunk prefixes, including gaps.
 /// Completed data is renamed to `<digest>.zip`; `<digest>.json` (schema 2)
 /// holds release identity, aggregate progress, timestamps and full-file SHA-256.
@@ -499,8 +499,11 @@ final class OtaCache {
       onPause: () => subscription?.pause(),
       onResume: () => subscription?.resume(),
       onCancel: () async {
-        await cancellation.cancel();
-        await subscription?.cancel();
+        try {
+          await cancellation.cancel();
+        } finally {
+          await subscription?.cancel();
+        }
       },
     );
     return controller.stream;
@@ -581,9 +584,12 @@ final class OtaCache {
       }
       final resumed =
           meta?.chunks.fold<int>(0, (sum, c) => sum + c.downloadedBytes) ?? 0;
-      if (budget != null && total > resumed) {
+      // OPFS charges a sparse file's logical length, including holes. Those
+      // bytes are already in the quota estimate, not new storage to reserve.
+      final allocated = meta == null ? 0 : await workspace.size(part);
+      if (budget != null && total > allocated) {
         await budget.ensure(
-          total - resumed,
+          total - allocated,
           evict: (needed) => evict(bytesNeeded: needed),
         );
       }
@@ -717,9 +723,15 @@ final class OtaCache {
       await _write(complete);
       yield OtaCacheFinished(complete);
     } finally {
-      await reader?.close();
-      await io?.close();
-      _active.remove(key);
+      try {
+        await reader?.close();
+      } finally {
+        try {
+          await io?.close();
+        } finally {
+          _active.remove(key);
+        }
+      }
     }
   }
 
@@ -781,6 +793,9 @@ final class OtaCache {
       try {
         if (await _exists(_archive(entry.key))) {
           bytes = await workspace.size(_archive(entry.key));
+        } else {
+          final part = '$_directory/${entry.key}${dlx.tempExt}';
+          if (await _exists(part)) bytes = await workspace.size(part);
         }
       } on Object {
         // Fall back to the recorded size; the delete below decides.
