@@ -14,7 +14,7 @@ import 'interop.dart';
 /// whose `Content-Range` names exactly the requested bytes and the same total;
 /// a server that ignores `Range`, shortens the body or changes the length is
 /// an error.
-final class HttpRangeSource implements ByteSource {
+final class HttpRangeSource implements CancellableByteSource {
   HttpRangeSource._(
     this._uri,
     this._headers, {
@@ -49,7 +49,7 @@ final class HttpRangeSource implements ByteSource {
       uri,
       Map<String, String>.unmodifiable(headers),
       length: probe.length,
-      etag: expectedEtag,
+      etag: expectedEtag ?? strongEtag(probe.etag),
       observedEtag: probe.etag,
     );
   }
@@ -64,56 +64,92 @@ final class HttpRangeSource implements ByteSource {
   /// download records it to refuse a server that swaps the same URL later.
   final String? observedEtag;
   bool _closed = false;
+  final Set<web.AbortController> _requests = {};
 
   @override
   final int length;
 
   @override
-  Future<Uint8List> read(int offset, int length) async {
+  Future<Uint8List> read(int offset, int length) =>
+      readCancellable(offset, length, null);
+
+  @override
+  Future<Uint8List> readCancellable(
+    int offset,
+    int length,
+    Future<void>? cancelled,
+  ) async {
     checkReadRange(offset, length, this.length);
     if (length == 0) return Uint8List(0);
     if (_closed) throw StateError('HTTP range source is closed: $_uri');
-
-    final response = await _send(
-      _uri,
-      _headers,
-      offset,
-      length,
-      ifRange: etag,
-    );
-    final contentLength = _contentLength(response);
+    final abort = web.AbortController();
+    _requests.add(abort);
+    cancelled?.then((_) {
+      if (_requests.contains(abort)) abort.abort();
+    });
     try {
-      validatePinnedEtag(
-        expected: etag,
-        actual: response.headers.get('etag'),
-        context: 'range $offset-$length of $_uri',
+      final response = await _send(
+        _uri,
+        _headers,
+        offset,
+        length,
+        ifRange: etag,
+        signal: abort.signal,
       );
-      validateRangeResponse(
-        status: response.status,
-        contentRange: response.headers.get('content-range'),
-        contentLength: contentLength,
-        offset: offset,
-        length: length,
-        expectedTotal: this.length,
-      );
-    } on Object {
-      await _cancel(response);
-      rethrow;
+      try {
+        validatePinnedEtag(
+          expected: etag,
+          actual: response.headers.get('etag'),
+          context: 'range $offset-$length of $_uri',
+        );
+        validateRangeResponse(
+          status: response.status,
+          contentRange: response.headers.get('content-range'),
+          contentLength: _contentLength(response),
+          offset: offset,
+          length: length,
+          expectedTotal: this.length,
+        );
+      } on Object {
+        await _cancel(response);
+        rethrow;
+      }
+      final body = response.body;
+      if (body == null) throw const RangeException('missing range body');
+      final stream = body.getReader() as web.ReadableStreamDefaultReader;
+      final bytes = Uint8List(length);
+      var received = 0;
+      try {
+        while (true) {
+          final item = await stream.read().toDart;
+          if (item.done) break;
+          final chunk = (item.value as JSUint8Array).toDart;
+          if (chunk.length > length - received) {
+            throw const RangeException('range body exceeds requested length');
+          }
+          bytes.setRange(received, received + chunk.length, chunk);
+          received += chunk.length;
+        }
+      } finally {
+        await stream.cancel().toDart;
+        stream.releaseLock();
+      }
+      if (received != length) {
+        throw RangeException('body is $received bytes, wanted $length');
+      }
+      return bytes;
+    } finally {
+      _requests.remove(abort);
     }
-
-    final bytes = (await response.arrayBuffer().toDart).toDart.asUint8List();
-    if (bytes.length != length) {
-      throw RangeException(
-        'body is ${bytes.length} bytes, wanted $length for '
-        '$_uri at $offset',
-      );
-    }
-    return bytes;
   }
 
-  /// The browser owns the connection pool; this only stops further reads.
+  /// Aborts active fetches and refuses further reads.
   Future<void> close() async {
     _closed = true;
+    for (final request in _requests) {
+      request.abort();
+    }
+    _requests.clear();
   }
 
   static Future<({int length, String? etag})> _probe(
@@ -180,6 +216,7 @@ final class HttpRangeSource implements ByteSource {
     int offset,
     int length, {
     String? ifRange,
+    web.AbortSignal? signal,
   }) {
     final requestHeaders = web.Headers();
     headers.forEach((name, value) => requestHeaders.set(name, value));
@@ -188,7 +225,7 @@ final class HttpRangeSource implements ByteSource {
     if (ifRange != null) requestHeaders.set('if-range', ifRange);
     return webFetch(
       uri.toString().toJS,
-      web.RequestInit(headers: requestHeaders),
+      web.RequestInit(headers: requestHeaders, signal: signal),
     ).toDart;
   }
 

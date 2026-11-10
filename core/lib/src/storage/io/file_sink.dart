@@ -12,14 +12,11 @@ import 'serial_queue.dart';
 /// and truncations are serialized on the file's single cursor.
 /// `RandomAccessFile.truncate` extends a file with zero bytes, and a write past
 /// the old end leaves a zero-filled hole.
-final class FileSink implements ByteSink {
+final class FileSink implements CheckpointByteSink {
   FileSink._(this._raf);
 
   /// Opens [file] for writing, truncating it unless [keepExisting] is true.
-  static Future<FileSink> open(
-    File file, {
-    bool keepExisting = false,
-  }) async {
+  static Future<FileSink> open(File file, {bool keepExisting = false}) async {
     await file.parent.create(recursive: true);
     final raf = await file.open(
       mode: keepExisting ? FileMode.append : FileMode.writeOnly,
@@ -51,9 +48,19 @@ final class FileSink implements ByteSink {
   }
 
   @override
+  int get checkpointBytes => 8 * 1024 * 1024;
+
+  @override
+  Future<void> checkpoint() => _queue.run(() async {
+    _checkOpen();
+    await _raf.flush();
+  });
+
+  @override
   Future<void> close() => _queue.run(() async {
     if (_closed) return;
     _closed = true;
+    await _raf.flush();
     await _raf.close();
   });
 

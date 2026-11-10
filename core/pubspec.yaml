@@ -9,6 +9,7 @@ environment:
 dependencies:
   device_link:
     path: ../packages/device_link
+  downloadx: ^0.3.0
   ffi: ^2.1.0
   logger: ^2.5.0
   logging: ^1.3.0

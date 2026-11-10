@@ -272,6 +272,8 @@ void main() {
     var badRange = false;
     var reportedTotal = -1;
     String? seenTestHeader;
+    String? etag = '"v1"';
+    String? seenIfRange;
 
     setUp(() async {
       payload = Uint8List.fromList(List<int>.generate(1000, (i) => i & 0xff));
@@ -279,12 +281,16 @@ void main() {
       badRange = false;
       reportedTotal = -1;
       seenTestHeader = null;
+      etag = '"v1"';
+      seenIfRange = null;
       server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       base = Uri.parse('http://127.0.0.1:${server.port}');
       unawaited(
         server.forEach((request) async {
           try {
             seenTestHeader = request.headers.value('x-test');
+            seenIfRange = request.headers.value('if-range');
+            if (etag != null) request.response.headers.set('etag', etag!);
             final path = request.uri.path;
             if (path == '/empty') {
               request.response.statusCode = 416;
@@ -349,6 +355,7 @@ void main() {
       expect(await source.read(999, 1), [payload[999]]);
       expect(await source.read(0, 0), isEmpty);
       expect(seenTestHeader, 'yes');
+      expect(seenIfRange, '"v1"');
     });
 
     test('an empty resource has length zero', () async {
@@ -379,6 +386,15 @@ void main() {
       reportedTotal = 999;
       await expectLater(source.read(10, 5), throwsA(isA<RangeException>()));
     });
+
+    for (final changed in <String?>['"v2"', null, 'W/"v1"']) {
+      test('rejects changed or missing per-response ETag: $changed', () async {
+        final source = await HttpRangeSource.open(base.resolve('/payload'));
+        addTearDown(source.close);
+        etag = changed;
+        await expectLater(source.read(10, 5), throwsA(isA<RangeException>()));
+      });
+    }
 
     test('reads outside the remote length are rejected', () async {
       final source = await HttpRangeSource.open(base.resolve('/payload'));

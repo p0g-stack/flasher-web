@@ -11,6 +11,15 @@ abstract interface class ByteSource {
   Future<Uint8List> read(int offset, int length);
 }
 
+/// A source which can abort an individual read without closing other reads.
+abstract interface class CancellableByteSource implements ByteSource {
+  Future<Uint8List> readCancellable(
+    int offset,
+    int length,
+    Future<void>? cancelled,
+  );
+}
+
 /// Positional writes to a byte range.
 ///
 /// Writes do not move a shared cursor: [write] puts [bytes] at [offset] and
@@ -22,6 +31,16 @@ abstract interface class ByteSink {
   Future<void> truncate(int length);
 
   Future<void> close();
+}
+
+/// A positional sink whose checkpoint makes preceding writes survive closing
+/// the worker/page. This is a platform commit/flush, not a power-loss promise.
+abstract interface class CheckpointByteSink implements ByteSink {
+  /// Preferred checkpoint interval; staged FSA files need larger intervals
+  /// because committing them closes and reopens the writable transaction.
+  int get checkpointBytes;
+
+  Future<void> checkpoint();
 }
 
 /// A directory tree with `/`-separated, relative paths.

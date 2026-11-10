@@ -49,12 +49,12 @@ final class HandleSink {
         rethrow;
       }
     }
-    return WritableSink(writable);
+    return WritableSink(writable, handle);
   }
 }
 
 /// Positional writes through a worker-only `FileSystemSyncAccessHandle`.
-final class SyncAccessSink implements ByteSink {
+final class SyncAccessSink implements CheckpointByteSink {
   SyncAccessSink(this._handle);
 
   final web.FileSystemSyncAccessHandle _handle;
@@ -81,6 +81,15 @@ final class SyncAccessSink implements ByteSink {
   }
 
   @override
+  int get checkpointBytes => 8 * 1024 * 1024;
+
+  @override
+  Future<void> checkpoint() async {
+    _checkOpen();
+    _handle.flush();
+  }
+
+  @override
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
@@ -97,10 +106,11 @@ final class SyncAccessSink implements ByteSink {
 }
 
 /// Positional writes through a `FileSystemWritableFileStream`.
-final class WritableSink implements ByteSink {
-  WritableSink(this._stream);
+final class WritableSink implements CheckpointByteSink {
+  WritableSink(this._stream, this._handle);
 
-  final web.FileSystemWritableFileStream _stream;
+  web.FileSystemWritableFileStream _stream;
+  final web.FileSystemFileHandle _handle;
   bool _closed = false;
   Future<void> _tail = Future<void>.value();
 
@@ -122,6 +132,20 @@ final class WritableSink implements ByteSink {
       await _stream.truncate(length).toDart;
     });
   }
+
+  @override
+  int get checkpointBytes => 512 * 1024 * 1024;
+
+  @override
+  Future<void> checkpoint() => _serial(() async {
+    _checkOpen();
+    await _stream.close().toDart;
+    _stream = await _handle
+        .createWritable(
+          web.FileSystemCreateWritableOptions(keepExistingData: true),
+        )
+        .toDart;
+  });
 
   @override
   Future<void> close() => _serial(() async {

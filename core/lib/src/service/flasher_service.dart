@@ -37,6 +37,7 @@ import '../storage/estimate.dart';
 import '../storage/export_sink.dart';
 import '../storage/hashing.dart';
 import '../storage/ota_cache.dart';
+import '../storage/ota_destination.dart';
 import '../storage/storage.dart';
 import '../upstream/tables.dart';
 import 'flasher_service.activator.g.dart';
@@ -311,32 +312,68 @@ base class FlasherService {
     }
     final entry = Map<String, dynamic>.from(value);
     final label = otaEntryLabel(entry);
-    final declared = entry['size'] is int ? entry['size'] as int : 0;
-    final reader = await CatalogOtaReader.open(
-      _catalogSources(
-        req['apiBase'] as String? ?? '',
-        proxied: await _useOtaProxy(),
-      ),
-      entry,
+    final destination = req['destination'];
+    final streamed = destination is Map && destination['kind'] == 'stream';
+    final sources = _catalogSources(
+      req['apiBase'] as String? ?? '',
+      proxied: await _useOtaProxy(),
     );
+    if (!streamed) {
+      final workspace = await openOtaDestination(
+        destination,
+        otaEntryDigest(entry),
+      );
+      final cache = OtaCache(workspace: workspace, sources: sources);
+      await for (final event in cache.download(entry)) {
+        switch (event) {
+          case OtaCacheStarted(:final total, :final resumedFrom):
+            yield {
+              'type': 'started',
+              'label': label,
+              'total': total,
+              'resumedFrom': resumedFrom,
+            };
+          case OtaCacheProgress(:final bytes, :final total):
+            yield {
+              'type': 'progress',
+              'label': label,
+              'done': bytes,
+              'total': total,
+            };
+          case OtaCacheFinished(:final entry):
+            yield {
+              'type': 'result',
+              'label': label,
+              'bytes': entry.length,
+              'sha256': entry.sha256,
+            };
+        }
+      }
+      return;
+    }
+    final declared = entry['size'] is int ? entry['size'] as int : 0;
+    final reader = await CatalogOtaReader.open(sources, entry);
     ByteSink? sink;
     try {
       final total = reader.length;
       if (declared > 0 && declared != total) {
         throw BuildException(
-          'The OTA server reports $total bytes but the catalog says '
-          '$declared. Fetch versions again and retry.',
+          'The OTA server reports $total bytes but the catalog says $declared.',
         );
       }
-      sink = await openExportSink(req['destination']);
-      yield {'type': 'started', 'label': label, 'total': total};
+      sink = await openExportSink(destination);
+      yield {
+        'type': 'started',
+        'label': label,
+        'total': total,
+        'resumedFrom': 0,
+      };
       final hasher = StreamingSha256();
       var written = 0;
-      while (written < total) {
-        final bytes = await reader.read(
-          written,
-          min(_saveChunkBytes, total - written),
-        );
+      await for (final bytes in orderedOtaReads(
+        reader,
+        chunkBytes: _saveChunkBytes,
+      )) {
         await sink.write(bytes, written);
         hasher.add(bytes);
         written += bytes.length;
@@ -347,8 +384,9 @@ base class FlasherService {
           'total': total,
         };
       }
-      // A streamed download ends only at its declared length.
       await sink.truncate(written);
+      await sink.close();
+      sink = null;
       yield {
         'type': 'result',
         'label': label,

@@ -11,7 +11,7 @@ import '../range.dart';
 /// whose `Content-Range` names exactly the requested bytes and the same total;
 /// a server that ignores `Range`, shortens the body or changes the length is
 /// an error.
-final class HttpRangeSource implements ByteSource {
+final class HttpRangeSource implements CancellableByteSource {
   HttpRangeSource._(
     this._uri,
     this._headers,
@@ -27,16 +27,30 @@ final class HttpRangeSource implements ByteSource {
   static Future<HttpRangeSource> open(
     Uri uri, {
     Map<String, String> headers = const {},
+    int? expectedLength,
+    String? expectedEtag,
   }) async {
-    final client = HttpClient()..autoUncompress = false;
+    final client = HttpClient()
+      ..autoUncompress = false
+      ..maxConnectionsPerHost = 8;
     try {
       final probe = await _probe(client, uri, headers);
+      if (expectedLength != null && probe.total != expectedLength) {
+        throw RangeException(
+          'remote length is ${probe.total}, expected $expectedLength',
+        );
+      }
+      validatePinnedEtag(
+        expected: expectedEtag,
+        actual: probe.etag,
+        context: 'probe of $uri',
+      );
       return HttpRangeSource._(
         uri,
         Map<String, String>.unmodifiable(headers),
         client,
         length: probe.total,
-        observedEtag: probe.etag,
+        observedEtag: expectedEtag ?? strongEtag(probe.etag),
       );
     } on Object {
       client.close(force: true);
@@ -57,16 +71,37 @@ final class HttpRangeSource implements ByteSource {
   final String? observedEtag;
 
   @override
-  Future<Uint8List> read(int offset, int length) async {
+  Future<Uint8List> read(int offset, int length) =>
+      readCancellable(offset, length, null);
+
+  @override
+  Future<Uint8List> readCancellable(
+    int offset,
+    int length,
+    Future<void>? cancelled,
+  ) async {
     checkReadRange(offset, length, this.length);
     if (length == 0) return Uint8List(0);
     if (_closed) throw StateError('HTTP range source is closed: $_uri');
 
-    final response = await _send(_client, _uri, _headers, offset, length);
+    final response = await _send(
+      _client,
+      _uri,
+      _headers,
+      offset,
+      length,
+      etag: observedEtag,
+      cancelled: cancelled,
+    );
     final contentLength = response.contentLength >= 0
         ? response.contentLength
         : null;
     try {
+      validatePinnedEtag(
+        expected: observedEtag,
+        actual: response.headers.value('etag'),
+        context: 'range at $offset of $_uri',
+      );
       validateRangeResponse(
         status: response.statusCode,
         contentRange: response.headers.value('content-range'),
@@ -80,14 +115,19 @@ final class HttpRangeSource implements ByteSource {
       rethrow;
     }
 
-    final builder = BytesBuilder(copy: false);
+    final bytes = Uint8List(length);
+    var received = 0;
     await for (final chunk in response) {
-      builder.add(chunk);
+      if (chunk.length > length - received) {
+        await _discard(response);
+        throw const RangeException('range body exceeds requested length');
+      }
+      bytes.setRange(received, received + chunk.length, chunk);
+      received += chunk.length;
     }
-    final bytes = builder.takeBytes();
-    if (bytes.length != length) {
+    if (received != length) {
       throw RangeException(
-        'body is ${bytes.length} bytes, wanted $length for '
+        'body is $received bytes, wanted $length for '
         '$_uri at $offset',
       );
     }
@@ -173,12 +213,18 @@ final class HttpRangeSource implements ByteSource {
     Uri uri,
     Map<String, String> headers,
     int offset,
-    int length,
-  ) async {
+    int length, {
+    String? etag,
+    Future<void>? cancelled,
+  }) async {
     final request = await client.getUrl(uri);
+    cancelled?.then((_) {
+      request.abort(const RangeException('range read cancelled'));
+    });
     request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
     headers.forEach((name, value) => request.headers.set(name, value));
     request.headers.set('range', 'bytes=$offset-${offset + length - 1}');
+    if (etag != null) request.headers.set('if-range', etag);
     return request.close();
   }
 

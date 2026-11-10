@@ -24,14 +24,17 @@ void main() {
   test('the entry digest is stable and entry-scoped', () {
     final entry = _entry();
     expect(
-      otaEntryDigest(Map<String, dynamic>.fromEntries(
-        entry.entries.toList().reversed,
-      )),
+      otaEntryDigest(
+        Map<String, dynamic>.fromEntries(entry.entries.toList().reversed),
+      ),
       otaEntryDigest(entry),
       reason: 'member order must not matter',
     );
     expect(
-      otaEntryDigest({...entry, 'source_url': 'https://example.com/ota.zip?sig=other'}),
+      otaEntryDigest({
+        ...entry,
+        'source_url': 'https://example.com/ota.zip?sig=other',
+      }),
       otaEntryDigest(entry),
       reason: 'signed URLs and ranking hints are not identity',
     );
@@ -67,10 +70,7 @@ void main() {
     expect(entry.etag, '"v1"');
     expect(entry.sha256, sha256.convert(bytes).toString());
     expect(entry.completedAt, isNotNull);
-    expect(
-      await _readAll(workspace, 'ota-cache/${entry.key}.zip'),
-      bytes,
-    );
+    expect(await _readAll(workspace, 'ota-cache/${entry.key}.zip'), bytes);
   });
 
   test('an interrupted download resumes at its recorded offset', () async {
@@ -81,7 +81,7 @@ void main() {
 
     await expectLater(
       cache.download(entryMap).forEach((_) {}),
-      throwsA(isA<RangeException>()),
+      throwsA(isA<OtaCacheException>()),
     );
     final partial = await cache.entries();
     expect(partial, hasLength(1));
@@ -97,11 +97,14 @@ void main() {
     expect(
       finished.entry.sha256,
       sha256.convert(bytes).toString(),
-      reason: 'the prefix on disk is hashed again, so the digest covers '
+      reason:
+          'the prefix on disk is hashed again, so the digest covers '
           'the whole file, not only the resumed tail',
     );
-    expect(await _readAll(workspace, 'ota-cache/${finished.entry.key}.zip'),
-        bytes);
+    expect(
+      await _readAll(workspace, 'ota-cache/${finished.entry.key}.zip'),
+      bytes,
+    );
   });
 
   test('a resumed download refuses a changed remote length', () async {
@@ -112,7 +115,7 @@ void main() {
 
     await expectLater(
       cache.download(entryMap).forEach((_) {}),
-      throwsA(isA<RangeException>()),
+      throwsA(isA<OtaCacheException>()),
     );
 
     final grown = _cache(workspace, _RemoteOta(_bytes(300)));
@@ -137,7 +140,7 @@ void main() {
 
     await expectLater(
       cache.download(entryMap).forEach((_) {}),
-      throwsA(isA<RangeException>()),
+      throwsA(isA<OtaCacheException>()),
     );
 
     final changed = _cache(workspace, _RemoteOta(bytes, etag: '"v2"'));
@@ -196,11 +199,11 @@ void main() {
     now = now.add(const Duration(minutes: 1));
     final v3 = await cache.cache(_entry(version: 'v3'));
 
-    expect(
-      (await cache.entries()).map((entry) => entry.key),
-      [v1.key, v2.key, v3.key],
-      reason: 'least recently used first',
-    );
+    expect((await cache.entries()).map((entry) => entry.key), [
+      v1.key,
+      v2.key,
+      v3.key,
+    ], reason: 'least recently used first');
     expect(await cache.evict(bytesNeeded: 128), 128);
     expect(await cache.lookup(_entry(version: 'v1')), isNull);
     expect(await cache.lookup(_entry(version: 'v2')), isNotNull);
@@ -271,10 +274,14 @@ OtaCache _cache(
   workspace: workspace,
   sources: sources,
   chunkBytes: 64,
+  connections: 1,
   clock: clock,
 );
 
-Map<String, dynamic> _entry({String version = 'CPH2653_15.0.0.1', int size = 0}) => {
+Map<String, dynamic> _entry({
+  String version = 'CPH2653_15.0.0.1',
+  int size = 0,
+}) => {
   'id': 'op15-na-$version',
   'device': 'OP 15',
   'region': 'NA',
@@ -301,7 +308,7 @@ Future<Uint8List> _readAll(Workspace workspace, String path) async {
 final class _RemoteOta implements OtaSourceFactory {
   _RemoteOta(
     this.bytes, {
-    this.etag,
+    this.etag = '"v1"',
     this.failAtAll,
     this.gate,
     this.onRead,
