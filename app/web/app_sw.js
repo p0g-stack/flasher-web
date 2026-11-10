@@ -162,7 +162,7 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(staleWhileRevalidate(event, request, cacheName));
 });
 
-/// `/api/catalog`, `/api/resolve`, `/api/ota`, `/api/bloat/…`.
+/// `/api/catalog`, `/api/resolve`, `/api/manifest`, `/api/block`, `/api/bloat/…`.
 function isApiPath(pathname) {
   return pathname === '/api' || pathname.startsWith('/api/');
 }

@@ -9,7 +9,6 @@ cannot call directly:
 - `GET /api/block-config` — discover the public bucket read base.
 - `GET /api/manifest?id=…` — discover an ETag/length-pinned OTA generation.
 - `GET /api/block?id=…&v=…&n=…` — fill/read one aligned 8 MiB block.
-- `GET|HEAD /api/ota?u=…` — legacy Range proxy for explicit URL inputs.
 - `GET /api/bloat/<asset>` — streaming proxy for the upstream bloat assets.
 
 The site has two actions: **Flash directly** and **Export ZIP**. OTA decoding,

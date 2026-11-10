@@ -10,7 +10,6 @@ import { handleCatalog } from "./catalog";
 import { handleBlock } from "./blocks";
 import type { BucketEnv } from "./bucket";
 import { json, jsonError, methodNotAllowed } from "./http";
-import { handleOta } from "./ota";
 import { handleResolve } from "./resolve";
 import { CatalogError, ProxyError } from "./upstream";
 import { warmCache } from "./warm";
@@ -48,12 +47,6 @@ export default {
           return methodNotAllowed("POST");
         }
         return await handleResolve(request);
-      }
-      if (path === "/api/ota") {
-        if (request.method !== "GET" && request.method !== "HEAD") {
-          return methodNotAllowed("GET, HEAD");
-        }
-        return await handleOta(request, url);
       }
       if (path.startsWith(API_PREFIX + "bloat/")) {
         if (request.method !== "GET") {

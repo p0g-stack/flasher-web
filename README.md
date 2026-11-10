@@ -30,14 +30,14 @@ Design: [docs/design.md](docs/design.md). Service contract:
 
 | Package | What | Runs on |
 |---|---|---|
-| `core/` (`flasher_web_core`) | the virtual package, flash plans, preparation and execution, bloat and OTA cache stores, catalog client, upstream tables, facts and strategies | plain Dart; never imports `package:flutter` |
+| `core/` (`flasher_web_core`) | the virtual package, flash plans, preparation and execution, the bloat store and the block OTA reader, catalog client, upstream tables, facts and strategies | plain Dart; never imports `package:flutter` |
 | `app/` (`flasher_web`) | the setup, flash, environment and documentation pages; the page owns permission choosers, a Squadron worker owns execution | Flutter web |
 | `cli/` (`flasher_web_cli`) | `flash`, `export`, `bloat`, `devices`, `facts`, `serve` | `dart run` / `dart compile exe` |
 | `packages/device_link/` | reusable pure-Dart transport/session interfaces and failure evidence | Dart, no Flutter or frb dependency |
 | `rust/` | app frb library: synchronous compute and asynchronous fastboot transport adapters | native and single-threaded wasm |
 | `rust/crates/ota-payload/` | reusable full-OTA parsing, operation decoding and SHA-256 compute; otaripper/AOSP provenance | native and wasm, no frb or I/O |
 | `rust/crates/fastboot-link/` | reusable USB discovery, serial-bound sessions and streaming fastboot | native nusb / browser WebUSB, no frb |
-| `worker/` | Cloudflare Worker: the static site plus `/api/catalog`, `/api/resolve`, `/api/ota`, `/api/bloat` | Cloudflare Workers (`wrangler dev` locally) |
+| `worker/` | Cloudflare Worker: the static site plus `/api/catalog`, `/api/resolve`, `/api/manifest`, `/api/block`, `/api/bloat` | Cloudflare Workers (`wrangler dev` locally) |
 
 ## Start
 
@@ -127,16 +127,13 @@ The setup page has four steps and one action card:
    browser's quota; otherwise they stay in origin-private storage (OPFS).
 3. **OTA source** — a local ZIP (read in place, dropped or chosen through
    `file_picker`'s file system access dialog, which the page remembers so a
-   reload can reconnect it) or a catalog version (read through
-   `/api/ota`, a range proxy limited to the OTA CDNs; an expired signed link is
-   resolved again). Full OTA packages only; incremental updates are rejected.
-   **Download OTA** on a catalog version asks where the ZIP goes: **This
-   computer** saves it where you choose (outside the app cap) and then reads it
-   as the local OTA, or starts a browser download on Android Chrome; **App
-   cache** keeps it in `ota-cache/` under the app cap, and a flash of the same
-   version reads it instead of the network. Downloads use 8 connections; an
-   interrupted cache download, or a save into a chosen file (**Resume save**),
-   continues with only the missing parts.
+   reload can reconnect it) or a catalog version (read in 8 MiB blocks from the
+   edge block cache; the Worker fills a missing block from the CDN). Full OTA
+   packages only; incremental updates are rejected. **Download OTA** on a
+   catalog version saves the ZIP where you choose (outside the app cap) and
+   then reads it as the local OTA, or starts a browser download on Android
+   Chrome. The copy reads ahead up to eight blocks and has no resume: start it
+   again and the blocks already cached come straight back.
 4. **Vulnerable ABL** — the X9U choice between the bloat ABL 16.0.6 and the
    OTA's ABL.
 
@@ -147,8 +144,7 @@ streamed export aborts the download. Discard a partial ZIP left at a picked file
 
 Keep the tab open while a flash, bloat download, OTA download or export runs;
 the app holds a screen wake lock and a leave guard. The Environment page shows
-the engine, the documented storage budget and the cached catalog OTAs, where
-one can be evicted.
+the engine and the documented storage budget.
 
 Flashing requires current Chrome or Edge on HTTPS or localhost, outside an
 embedded webview. The page uses the pure-Dart `packages/web_usb_grant` chooser
@@ -179,18 +175,15 @@ their payload operations to whichever sink consumes them:
 ## Storage
 
 The app keeps its own data under a 10 GiB cap: verified bloat images (at most
-about 1.72 GiB raw), an optional cache of catalog OTA ZIPs and the service
-worker shell. A local OTA file costs nothing because it is read in place.
+about 1.72 GiB raw) and the service worker shell. An OTA costs nothing: a
+local file is read in place, a catalog release is read from the edge block
+cache, and a downloaded copy lands outside the store.
 
 - Bloat uses OPFS by default, or an optionally picked folder on desktop
-  Chromium. Its `ota-cache/` holds an OTA only when the user downloads one
-  catalog release into the app cache; interrupted downloads resume with only
-  their missing ranges, and least-recently-used eviction makes room for a new
-  write. An OTA saved to this computer is outside the cap.
-- A write that would pass the cap is refused after eviction has freed what it
-  could. The browser's origin quota may be lower than the cap. A picked
-  folder's free disk space is not reported by the browser; only the app cap
-  applies to that store, not the origin quota.
+  Chromium. Nothing else is written there.
+- A write that would pass the cap is refused. The browser's origin quota may
+  be lower than the cap. A picked folder's free disk space is not reported by
+  the browser; only the app cap applies to that store, not the origin quota.
 - Archives are never written to the store: the export streams straight into
   the chosen file or the download, so the output needs no OPFS space and no
   workspace.
