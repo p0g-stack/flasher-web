@@ -1,0 +1,13 @@
+[package]
+name = "lp-super"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Pure Rust generation of Android sparse wipe-super images"
+license = "LGPL-3.0-or-later"
+
+[dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

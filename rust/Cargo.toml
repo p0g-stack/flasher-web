@@ -1,7 +1,7 @@
 [workspace]
 # The reusable crates live beside the app crate. The root package remains a
 # member, so `cargo test --workspace` exercises all of it from rust/.
-members = ["crates/fastboot-link", "crates/ota-payload"]
+members = ["crates/fastboot-link", "crates/ota-payload", "crates/lp-super"]
 resolver = "2"
 
 [package]
