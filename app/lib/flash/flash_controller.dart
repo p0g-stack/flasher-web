@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:web_usb_grant/web_usb_grant.dart';
 
 import '../api/flasher_api.dart';
 import '../api/platform_bridge.dart';
@@ -100,8 +101,7 @@ final class FlashController extends ChangeNotifier {
   PreparedFlash? get prepared => _prepared;
   bool get writesSupported => environment.has('usb.web');
   bool get pageCanChoose => bridge.canChooseFastbootDevice;
-  bool get running =>
-      _phase == FlashPhase.running || _stopping || _stoppingRun;
+  bool get running => _phase == FlashPhase.running || _stopping || _stoppingRun;
   bool get terminal => switch (_phase) {
     FlashPhase.succeeded ||
     FlashPhase.failed ||
@@ -333,10 +333,10 @@ final class FlashController extends ChangeNotifier {
     if (running) return;
     _devicesError = null;
     _notify();
-    final FastbootUsbDevice? chosen;
+    final FastbootDeviceChoice? chosen;
     try {
       chosen = await bridge.chooseFastbootDevice();
-    } on FastbootUsbException catch (error) {
+    } on UsbException catch (error) {
       _devicesError = '${error.kind.name}: $error';
       _notify();
       return;
@@ -675,9 +675,7 @@ final class FlashController extends ChangeNotifier {
         _failureStatus = status is String && status == 'uncertain'
             ? 'uncertain'
             : 'failed';
-        _failureReason = reason is String && reason.isNotEmpty
-            ? reason
-            : null;
+        _failureReason = reason is String && reason.isNotEmpty ? reason : null;
         _phase = _failureStatus == 'uncertain'
             ? FlashPhase.uncertain
             : FlashPhase.failed;
@@ -1049,10 +1047,10 @@ final class FlashController extends ChangeNotifier {
     _regrantMessage = null;
     _notify();
     // The chooser must run inside this click task, before any await.
-    final FastbootUsbDevice? chosen;
+    final FastbootDeviceChoice? chosen;
     try {
       chosen = await bridge.chooseFastbootDevice();
-    } on FastbootUsbException catch (error) {
+    } on UsbException catch (error) {
       _regranting = false;
       _regrantMessage = '$error';
       _notify();

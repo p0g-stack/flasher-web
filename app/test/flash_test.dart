@@ -1,17 +1,17 @@
 import 'dart:async';
 
-import 'package:flasher_web/api/platform_bridge.dart';
 import 'package:flasher_web/flash/flash_controller.dart';
 import 'package:flasher_web/flash/flash_page.dart';
 import 'package:flasher_web/flash/flash_target.dart';
 import 'package:flasher_web/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:web_usb_grant/web_usb_grant.dart';
 
 import 'fake.dart';
 
 const _serial = 'SERIAL123';
-const _phone = FastbootUsbDevice(serial: _serial, label: 'Realme NEO8');
+const _phone = (serial: _serial, label: 'Realme NEO8');
 
 FlashTarget flashTarget() => FlashTarget(
   ota: {'kind': 'file', 'file': Object()},
@@ -72,7 +72,8 @@ Map<String, Object?> unresolvedPrepare() => {
   'warnings': <String>[],
 };
 
-const _sha = 'b1946ac92492d2347c6235b4d2611184'
+const _sha =
+    'b1946ac92492d2347c6235b4d2611184'
     'b1946ac92492d2347c6235b4d2611184';
 
 /// A receipt as the landed service returns it: one-based step indexes, the
@@ -438,9 +439,10 @@ void main() {
     await tester.pump();
     expect(find.byKey(const ValueKey('flashWaiting')), findsOneWidget);
 
-    harness.bridge.fastbootChoices.add(
-      const FastbootUsbDevice(serial: 'OTHER999', label: 'Wrong phone'),
-    );
+    harness.bridge.fastbootChoices.add((
+      serial: 'OTHER999',
+      label: 'Wrong phone',
+    ));
     await tester.ensureVisible(find.byKey(const ValueKey('regrantDevice')));
     await tester.tap(find.byKey(const ValueKey('regrantDevice')));
     await tester.pump();
@@ -547,10 +549,11 @@ void main() {
     final controller = await pumpFlash(tester, harness);
     harness.bridge.fastbootChoices
       ..add(
-        const FastbootUsbException(
-          FastbootUsbFailure.permission,
+        const UsbException(
+          UsbFailureKind.permission,
           'The browser refused WebUSB permission.',
-          'SecurityError: access denied',
+          name: 'SecurityError',
+          cause: 'SecurityError: access denied',
         ),
       )
       ..add(null);
@@ -681,10 +684,7 @@ void main() {
     expect(find.byKey(const ValueKey('rebootRetryFlashStep')), findsOneWidget);
     expect(find.byKey(const ValueKey('stopFlashRun')), findsOneWidget);
     expect(find.text('FAILED'), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('downloadFlashReceipt')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('downloadFlashReceipt')), findsOneWidget);
     // The receipt card names the device, serial, version, ARB, ABL source and
     // every image hash the service reported.
     expect(find.text(_serial), findsWidgets);
@@ -778,7 +778,9 @@ void main() {
     expect(controller.phase, FlashPhase.succeeded);
     expect(controller.stepIndex, 2);
     expect(
-      controller.log.where((line) => line.contains('Require bootloader')).length,
+      controller.log
+          .where((line) => line.contains('Require bootloader'))
+          .length,
       earlier,
     );
     expect(controller.receipt?['steps'], hasLength(2));

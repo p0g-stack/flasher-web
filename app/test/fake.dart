@@ -9,6 +9,7 @@ import 'package:flasher_web/theme.dart';
 import 'package:flasher_web_core/flasher_web_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:web_usb_grant/web_usb_grant.dart';
 
 /// The service methods, scripted per test.
 final class FakeFlasherApi implements FlasherApi {
@@ -48,9 +49,12 @@ final class FakeFlasherApi implements FlasherApi {
   bloatStream;
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   flashStream;
-  Stream<Map<String, Object?>> Function(Map<String, Object?> request)? retryStepStream;
-  Stream<Map<String, Object?>> Function(Map<String, Object?> request)? rebootRetryStream;
-  Future<Map<String, Object?>> Function(Map<String, Object?> request)? stopResult;
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
+  retryStepStream;
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
+  rebootRetryStream;
+  Future<Map<String, Object?>> Function(Map<String, Object?> request)?
+  stopResult;
   Map<String, Object?>? lastRetryStepRequest;
   Map<String, Object?>? lastRebootRetryRequest;
   Map<String, Object?>? lastStopRequest;
@@ -140,6 +144,7 @@ final class FakeFlasherApi implements FlasherApi {
     if (handler == null) throw StateError('No retryStep stream scripted.');
     return handler(request);
   }
+
   @override
   Stream<Map<String, Object?>> rebootRetry(Map<String, Object?> request) {
     lastRebootRetryRequest = request;
@@ -147,6 +152,7 @@ final class FakeFlasherApi implements FlasherApi {
     if (handler == null) throw StateError('No rebootRetry stream scripted.');
     return handler(request);
   }
+
   @override
   Future<Map<String, Object?>> stopRun(Map<String, Object?> request) async {
     lastStopRequest = request;
@@ -156,7 +162,9 @@ final class FakeFlasherApi implements FlasherApi {
   }
 
   @override
-  Future<Map<String, Object?>> storageBudget(Map<String, Object?> request) async {
+  Future<Map<String, Object?>> storageBudget(
+    Map<String, Object?> request,
+  ) async {
     lastStorageBudgetRequest = request;
     return storageBudgetResult;
   }
@@ -321,12 +329,12 @@ final class FakePlatformBridge implements PlatformBridge {
   }
 
   @override
-  Future<FastbootUsbDevice?> chooseFastbootDevice() async {
+  Future<FastbootDeviceChoice?> chooseFastbootDevice() async {
     chooseFastbootCalls++;
     if (fastbootChoices.isEmpty) return null;
     final next = fastbootChoices.removeAt(0);
-    if (next is FastbootUsbException) throw next;
-    return next as FastbootUsbDevice?;
+    if (next is UsbException) throw next;
+    return next as FastbootDeviceChoice?;
   }
 
   @override

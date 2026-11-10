@@ -6,6 +6,8 @@
 /// store from the service's facts, never from `kIsWeb`.
 library;
 
+import 'package:web_usb_grant/web_usb_grant.dart';
+
 /// A file the user picked: the browser object, not its bytes.
 final class PickedFile {
   const PickedFile({
@@ -37,50 +39,9 @@ final class DirectoryRef {
   String toString() => name;
 }
 
-/// A granted WebUSB fastboot device, reduced to what the service accepts.
-///
-/// The page never hands a `USBDevice` to the worker: permission lives in the
-/// browser, and the worker reopens the device by [serial].
-final class FastbootUsbDevice {
-  const FastbootUsbDevice({required this.serial, required this.label});
-
-  final String serial;
-  final String label;
-
-  @override
-  String toString() => label.isEmpty ? serial : '$label ($serial)';
-}
-
-/// Why the page could not offer a fastboot device.
-enum FastbootUsbFailure {
-  /// This browser has no WebUSB at all.
-  unsupported,
-
-  /// WebUSB exists but the page is not a secure context.
-  insecureContext,
-
-  /// The grant was refused or the browser reported a security error.
-  permission,
-
-  /// The granted device does not expose a fastboot serial.
-  noSerial,
-
-  /// Any other browser error, carried in [FastbootUsbException.cause].
-  other,
-}
-
-/// A chooser failure that keeps the browser's original error as [cause].
-final class FastbootUsbException implements Exception {
-  const FastbootUsbException(this.kind, this.message, [this.cause]);
-
-  final FastbootUsbFailure kind;
-  final String message;
-  final Object? cause;
-
-  @override
-  String toString() =>
-      cause == null ? message : '$message Browser error: $cause';
-}
+/// App policy projection of a grant, after requiring a serial. Only this
+/// serial and display label cross to the service, never the USBDevice handle.
+typedef FastbootDeviceChoice = ({String serial, String label});
 
 /// The page-side capabilities.
 abstract interface class PlatformBridge {
@@ -159,7 +120,10 @@ abstract interface class PlatformBridge {
   ///
   /// With [remember] the handle replaces the remembered OTA, as a pick does,
   /// so a reload reopens the saved file. Null means the file is unreadable.
-  Future<PickedFile?> openSavedOta(Object destination, {required bool remember});
+  Future<PickedFile?> openSavedOta(
+    Object destination, {
+    required bool remember,
+  });
 
   /// Whether the page can open a WebUSB fastboot chooser right now.
   ///
@@ -172,8 +136,8 @@ abstract interface class PlatformBridge {
   /// Call this synchronously from the click handler: the browser requires a
   /// user gesture, so no `await` may run first. Returns null when the user
   /// closes the chooser without choosing. Browser errors are wrapped in a
-  /// [FastbootUsbException] with the original error attached.
-  Future<FastbootUsbDevice?> chooseFastbootDevice();
+  /// [UsbException] with its original DOMException name, message and stack.
+  Future<FastbootDeviceChoice?> chooseFastbootDevice();
 
   /// Files dropped onto the page. Only `.zip` files are emitted.
   Stream<PickedFile> get droppedFiles;
@@ -311,7 +275,7 @@ final class UnsupportedPlatformBridge implements PlatformBridge {
   bool get canChooseFastbootDevice => false;
 
   @override
-  Future<FastbootUsbDevice?> chooseFastbootDevice() async => _unsupported();
+  Future<FastbootDeviceChoice?> chooseFastbootDevice() async => _unsupported();
 
   @override
   Stream<PickedFile> get droppedFiles => const Stream.empty();

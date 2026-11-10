@@ -121,10 +121,7 @@ void main() {
   test('a virtual conversion target carries its BASE OTA', () {
     final ota = Object();
     final base = Object();
-    final target = _virtualTarget(
-      ota,
-      base: {'kind': 'file', 'file': base},
-    );
+    final target = _virtualTarget(ota, base: {'kind': 'file', 'file': base});
     expect(target.virtualBase, {'kind': 'file', 'file': base});
     expect(target.virtualRequest, {
       'ota': {'kind': 'file', 'file': ota},
@@ -290,43 +287,44 @@ void main() {
     expect(setup.canFlashDirect, isFalse);
   });
 
-  testWidgets('a Super selection shows Flash directly and explains the decode', (
-    tester,
-  ) async {
-    final harness = Harness();
-    harness.api.inspectResult = _inspection();
-    final handle = Object();
-    harness.bridge.otaFile = PickedFile(
-      handle: handle,
-      name: 'super.zip',
-      size: 4096,
-    );
-    await pumpApp(tester, harness: harness);
+  testWidgets(
+    'a Super selection shows Flash directly and explains the decode',
+    (tester) async {
+      final harness = Harness();
+      harness.api.inspectResult = _inspection();
+      final handle = Object();
+      harness.bridge.otaFile = PickedFile(
+        handle: handle,
+        name: 'super.zip',
+        size: 4096,
+      );
+      await pumpApp(tester, harness: harness);
 
-    expect(find.byKey(const ValueKey('flashDirectNotice')), findsNothing);
-    final button = find.byKey(const ValueKey('flashDirectButton'));
-    expect(button, findsOneWidget);
+      expect(find.byKey(const ValueKey('flashDirectNotice')), findsNothing);
+      final button = find.byKey(const ValueKey('flashDirectButton'));
+      expect(button, findsOneWidget);
 
-    final chooseOta = find.byKey(const ValueKey('chooseOtaFile'));
-    await tester.ensureVisible(chooseOta);
-    await tester.tap(chooseOta);
-    await tester.pumpAndSettle();
+      final chooseOta = find.byKey(const ValueKey('chooseOtaFile'));
+      await tester.ensureVisible(chooseOta);
+      await tester.tap(chooseOta);
+      await tester.pumpAndSettle();
 
-    final tooltip = tester.widget<Tooltip>(
-      find.byKey(const ValueKey('directFlashHint')),
-    );
-    expect(tooltip.message, contains('decodes the whole super image once'));
-    expect(tooltip.message, contains('several minutes'));
+      final tooltip = tester.widget<Tooltip>(
+        find.byKey(const ValueKey('directFlashHint')),
+      );
+      expect(tooltip.message, contains('decodes the whole super image once'));
+      expect(tooltip.message, contains('several minutes'));
 
-    final kind = find.byKey(const ValueKey('kindDropdown'));
-    await tester.ensureVisible(kind);
-    await tester.pumpAndSettle();
-    await _chooseRegional(tester);
-    final regional = tester.widget<Tooltip>(
-      find.byKey(const ValueKey('directFlashHint')),
-    );
-    expect(regional.message, isNot(contains('several minutes')));
-  });
+      final kind = find.byKey(const ValueKey('kindDropdown'));
+      await tester.ensureVisible(kind);
+      await tester.pumpAndSettle();
+      await _chooseRegional(tester);
+      final regional = tester.widget<Tooltip>(
+        find.byKey(const ValueKey('directFlashHint')),
+      );
+      expect(regional.message, isNot(contains('several minutes')));
+    },
+  );
 
   testWidgets('Flash directly opens the flash page with the OTA and bloat', (
     tester,
@@ -334,9 +332,7 @@ void main() {
     final harness = Harness();
     harness.api.inspectResult = _inspection();
     harness.api.prepareFlashResult = (_) => _virtualPrepare();
-    harness.bridge.fastbootChoices.add(
-      const FastbootUsbDevice(serial: _serial, label: 'Oneplus 13'),
-    );
+    harness.bridge.fastbootChoices.add((serial: _serial, label: 'Oneplus 13'));
     final handle = Object();
     harness.bridge.otaFile = PickedFile(
       handle: handle,
@@ -377,9 +373,10 @@ void main() {
     final harness = Harness();
     harness.api.inspectResult = _inspection();
     harness.api.prepareFlashResult = (_) => _virtualPrepare();
-    harness.bridge.fastbootChoices.add(
-      const FastbootUsbDevice(serial: _serial, label: 'Oneplus Ace 6'),
-    );
+    harness.bridge.fastbootChoices.add((
+      serial: _serial,
+      label: 'Oneplus Ace 6',
+    ));
     await pumpApp(tester, harness: harness);
     await chooseDevice(tester, 'OnePlus Ace 6');
 
@@ -770,16 +767,15 @@ void main() {
   ) async {
     final harness = Harness();
     harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
-    harness.api.cacheOtaStream = (_) =>
-        Stream.fromIterable(const [
-          {
-            'type': 'result',
-            'key': 'b',
-            'label': 'OP 13 / GLO',
-            'bytes': 4 * 1024 * 1024 * 1024,
-            'complete': true,
-          },
-        ]);
+    harness.api.cacheOtaStream = (_) => Stream.fromIterable(const [
+      {
+        'type': 'result',
+        'key': 'b',
+        'label': 'OP 13 / GLO',
+        'bytes': 4 * 1024 * 1024 * 1024,
+        'complete': true,
+      },
+    ]);
     await pumpApp(tester, harness: harness);
     await _chooseRegional(tester);
     await tester.tap(find.text('Version catalog'));
@@ -835,12 +831,11 @@ void main() {
       size: 4 * 1024 * 1024 * 1024,
     );
     harness.bridge.savedOta = saved;
-    harness.api.saveOtaStream = (_) =>
-        Stream.fromIterable(const [
-          {'type': 'started', 'label': 'OP 13 / GLO', 'total': 10},
-          {'type': 'progress', 'label': 'OP 13 / GLO', 'done': 10, 'total': 10},
-          {'type': 'result', 'label': 'OP 13 / GLO', 'bytes': 10, 'sha256': 'a'},
-        ]);
+    harness.api.saveOtaStream = (_) => Stream.fromIterable(const [
+      {'type': 'started', 'label': 'OP 13 / GLO', 'total': 10},
+      {'type': 'progress', 'label': 'OP 13 / GLO', 'done': 10, 'total': 10},
+      {'type': 'result', 'label': 'OP 13 / GLO', 'bytes': 10, 'sha256': 'a'},
+    ]);
     await pumpApp(tester, harness: harness);
     await _chooseRegional(tester);
     await tester.tap(find.text('Version catalog'));
@@ -854,9 +849,7 @@ void main() {
     final request = harness.api.lastSaveOtaRequest!;
     expect(request['destination'], harness.bridge.saveFileResult);
     expect((request['ota']! as Map)['kind'], 'catalog');
-    expect(harness.bridge.openedSavedOtas, [
-      'save-destination|remember=true',
-    ]);
+    expect(harness.bridge.openedSavedOtas, ['save-destination|remember=true']);
     expect(harness.bridge.rememberedOta, same(saved));
     expect(harness.api.lastInspectRequest?['ota'], {
       'kind': 'file',

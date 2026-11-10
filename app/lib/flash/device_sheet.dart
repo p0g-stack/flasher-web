@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:web_usb_grant/web_usb_grant.dart';
 
 import '../api/flasher_api.dart';
 import '../api/platform_bridge.dart';
@@ -84,10 +85,10 @@ class _FastbootDeviceSheetState extends State<_FastbootDeviceSheet> {
       _error = null;
     });
     // The chooser call must run before any await in this click task.
-    final FastbootUsbDevice? chosen;
+    final FastbootDeviceChoice? chosen;
     try {
       chosen = await widget.bridge.chooseFastbootDevice();
-    } on FastbootUsbException catch (error) {
+    } on UsbException catch (error) {
       if (!mounted) return;
       setState(() {
         _choosing = false;
@@ -117,18 +118,19 @@ class _FastbootDeviceSheetState extends State<_FastbootDeviceSheet> {
     ).pop({'serial': chosen.serial, 'label': chosen.label, 'transport': 'usb'});
   }
 
-  String _guidance(FastbootUsbFailure kind) => switch (kind) {
-    FastbootUsbFailure.unsupported =>
+  String _guidance(UsbFailureKind kind) => switch (kind) {
+    UsbFailureKind.unsupported =>
       'This browser has no WebUSB. Open the app in a current Chromium browser.',
-    FastbootUsbFailure.insecureContext =>
+    UsbFailureKind.insecureContext =>
       'WebUSB needs a secure page. Open the app over HTTPS or on localhost.',
-    FastbootUsbFailure.permission =>
+    UsbFailureKind.permission =>
       'USB permission was refused. Allow USB access for this site, then try '
           'again.',
-    FastbootUsbFailure.noSerial =>
+    UsbFailureKind.noSerial =>
       'The chosen device did not expose a fastboot serial. Reconnect it with '
           'a USB cable and choose it again.',
-    FastbootUsbFailure.other =>
+    UsbFailureKind.cancelled => 'No device was chosen.',
+    UsbFailureKind.other =>
       'The browser could not grant the device. Reconnect it and try again.',
   };
 

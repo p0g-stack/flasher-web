@@ -10,18 +10,23 @@ import 'package:flasher_web_core/flasher_web_core.dart'
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:web/web.dart' as web;
+import 'package:web_usb_grant/web_usb_grant.dart';
 
 import 'platform_bridge.dart';
 
 /// Creates the real page bridge. Compiled only for the browser.
-PlatformBridge createBridge() => WebPlatformBridge();
+PlatformBridge createBridge() => WebPlatformBridge(
+  usb: const bool.fromEnvironment('FLASHER_FAKE_USB')
+      ? WebUsb(backend: const _FakeFastbootUsbBackend())
+      : null,
+);
 
 /// The browser implementation: File System Access, IndexedDB, `fetch`,
 /// downloads, the screen wake lock, page-level drag and drop, and the WebUSB
 /// fastboot device chooser. Folder picking is `dir_picker`, preferences are
 /// `shared_preferences`, external links are `url_launcher`.
 final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
-  WebPlatformBridge() {
+  WebPlatformBridge({WebUsb? usb}) : _webUsb = usb ?? WebUsb() {
     _dragOver = ((web.Event event) {
       event.preventDefault();
     }).toJS;
@@ -56,6 +61,7 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     globalContext['flasherLaunchFiles'] = <JSAny>[].toJS;
   }
 
+  final WebUsb _webUsb;
   late final JSFunction _dragOver;
   late final JSFunction _drop;
   late final JSFunction _launchListener;
@@ -84,144 +90,33 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   @override
   bool get canPickDirectory => _globalFunction('showDirectoryPicker') != null;
 
-  /// The page's WebUSB object, or null when this context has none.
-  JSObject? get _usb {
-    final navigator = globalContext['navigator'];
-    if (navigator == null || !navigator.isA<JSObject>()) return null;
-    final usb = (navigator as JSObject)['usb'];
-    if (usb == null || !usb.isA<JSObject>()) return null;
-    return usb as JSObject;
-  }
-
-  bool get _secureContext {
-    final value = globalContext['isSecureContext'];
-    return value != null &&
-        value.isA<JSBoolean>() &&
-        (value as JSBoolean).toDart;
-  }
+  @override
+  bool get canChooseFastbootDevice => _webUsb.isSupported;
 
   @override
-  bool get canChooseFastbootDevice {
-    final usb = _usb;
-    return _secureContext &&
-        usb != null &&
-        usb.has('requestDevice') &&
-        usb.has('getDevices');
-  }
-
-  @override
-  Future<FastbootUsbDevice?> chooseFastbootDevice() {
-    // The e2e build pairs this with the worker's recording fake transport:
-    // the page hands over the fake serial without touching WebUSB.
-    if (const bool.fromEnvironment('FLASHER_FAKE_USB')) {
-      return Future.value(
-        const FastbootUsbDevice(
-          serial: fakeFastbootSerial,
-          label: 'Fake fastboot phone',
-        ),
-      );
-    }
-    final usb = _usb;
-    if (usb == null || !usb.has('requestDevice')) {
-      return Future.error(
-        const FastbootUsbException(
-          FastbootUsbFailure.unsupported,
-          'This browser does not expose WebUSB. Open the app in current '
-          'Chrome, Edge or Chromium.',
-        ),
-      );
-    }
-    if (!_secureContext) {
-      return Future.error(
-        const FastbootUsbException(
-          FastbootUsbFailure.insecureContext,
-          'WebUSB needs a secure page. Open the app on HTTPS or localhost.',
-        ),
-      );
-    }
-    // requestDevice must run in the same task as the click that led here, so
-    // nothing may be awaited before this call.
-    final options = <String, Object?>{
-      'filters': <Object?>[
-        <String, Object?>{
-          'classCode': 0xff,
-          'subclassCode': 0x42,
-          'protocolCode': 0x03,
-        },
-      ].jsify(),
-    }.jsify()!;
-    final JSPromise<JSAny?> promise;
+  Future<FastbootDeviceChoice?> chooseFastbootDevice() async {
+    // The package invokes requestDevice synchronously, before this await.
+    // Fastboot policy stays here, not in the generic grant package.
+    final UsbGrant grant;
     try {
-      promise = usb.callMethod<JSPromise<JSAny?>>(
-        'requestDevice'.toJS,
-        options,
+      grant = await _webUsb.request(
+        filters: const [
+          UsbFilter(classCode: 0xff, subclassCode: 0x42, protocolCode: 0x03),
+        ],
       );
-    } on Object catch (error) {
-      return Future.error(_chooserError(error));
+    } on UsbException catch (error) {
+      if (error.kind == UsbFailureKind.cancelled) return null;
+      rethrow;
     }
-    return _settleChooser(promise);
-  }
-
-  Future<FastbootUsbDevice?> _settleChooser(JSPromise<JSAny?> promise) async {
-    final JSAny? value;
-    try {
-      value = await promise.toDart;
-    } on Object catch (error) {
-      if (_jsString(_toJSAny(error), 'name') == 'NotFoundError') return null;
-      throw _chooserError(error);
-    }
-    return value == null ? null : _deviceFrom(value);
-  }
-
-  FastbootUsbDevice _deviceFrom(JSAny? value) {
-    if (value == null || !value.isA<JSObject>()) {
-      throw const FastbootUsbException(
-        FastbootUsbFailure.other,
-        'The browser returned a device this page cannot read.',
-      );
-    }
-    final device = value as JSObject;
-    final serial = _jsString(device, 'serialNumber')?.trim() ?? '';
-    if (serial.isEmpty) {
-      throw const FastbootUsbException(
-        FastbootUsbFailure.noSerial,
-        'The browser did not expose this device serial. Fastboot needs a '
-        'serial to reopen the same phone; reconnect it and choose it again.',
-      );
-    }
-    final product = _jsString(device, 'productName')?.trim();
-    final vendor = _jsNumber(device, 'vendorId');
-    final productId = _jsNumber(device, 'productId');
-    final ids = vendor == null || productId == null
-        ? ''
-        : 'USB ${_hex(vendor)}:${_hex(productId)}';
-    final label = [
-      product,
-      ids,
-    ].where((part) => part != null && part.isNotEmpty).join(' · ');
-    return FastbootUsbDevice(
+    final serial = grant.requireSerial();
+    final product = grant.product?.trim();
+    final ids = 'USB ${_hex(grant.vendorId)}:${_hex(grant.productId)}';
+    return (
       serial: serial,
-      label: label.isEmpty ? 'Fastboot device' : label,
-    );
-  }
-
-  FastbootUsbException _chooserError(Object error) {
-    final jsError = _toJSAny(error);
-    final name = _jsString(jsError, 'name');
-    final message = _jsString(jsError, 'message');
-    final detail = message == null || message.isEmpty ? '$error' : message;
-    if (name == 'SecurityError') {
-      return FastbootUsbException(
-        FastbootUsbFailure.permission,
-        'The browser refused WebUSB permission. Allow USB access for this '
-        'site, then choose the device again.',
-        error,
-      );
-    }
-    return FastbootUsbException(
-      FastbootUsbFailure.other,
-      'The browser could not open the USB chooser: $detail',
-      error,
+      label: [
+        if (product != null && product.isNotEmpty) product,
+        ids,
+      ].join(' · '),
     );
   }
 
@@ -239,13 +134,6 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     final property = (value as JSObject).getProperty<JSAny?>(key.toJS);
     if (property == null || !property.isA<JSString>()) return null;
     return (property as JSString).toDart;
-  }
-
-  int? _jsNumber(JSAny? value, String key) {
-    if (value == null || !value.isA<JSObject>()) return null;
-    final property = (value as JSObject).getProperty<JSAny?>(key.toJS);
-    if (property == null || !property.isA<JSNumber>()) return null;
-    return (property as JSNumber).toDartInt;
   }
 
   String _hex(int value) =>
@@ -468,7 +356,9 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     final handle = await _getHandle('ota');
     if (handle == null) return null;
     final name = handle.getProperty<JSAny?>('name'.toJS);
-    return name != null && name.isA<JSString>() ? (name as JSString).toDart : null;
+    return name != null && name.isA<JSString>()
+        ? (name as JSString).toDart
+        : null;
   }
 
   @override
@@ -498,9 +388,7 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
 
   Future<PickedFile?> _otaFileFrom(JSObject handle) async {
     try {
-      final file = await (handle as web.FileSystemFileHandle)
-          .getFile()
-          .toDart;
+      final file = await (handle as web.FileSystemFileHandle).getFile().toDart;
       return PickedFile(handle: file, name: file.name, size: file.size);
     } on Object {
       return null;
@@ -946,4 +834,34 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
       return 'denied';
     }
   }
+}
+
+/// Injected only at the e2e composition root, paired with the worker's fake
+/// transport. The production chooser and the package have no fake-USB branch.
+final class _FakeFastbootUsbBackend implements UsbBackend {
+  const _FakeFastbootUsbBackend();
+
+  @override
+  UsbCapabilities get capabilities => const UsbCapabilities(
+    secureContext: true,
+    canRequest: true,
+    canList: true,
+  );
+
+  UsbGrant get _grant => UsbGrant(
+    vendorId: 0,
+    productId: 0,
+    serial: fakeFastbootSerial,
+    product: 'Fake fastboot phone',
+    handle: Object(),
+  );
+
+  @override
+  Future<UsbGrant> request({
+    List<UsbFilter> filters = const [],
+    List<UsbFilter> exclude = const [],
+  }) => Future.value(_grant);
+
+  @override
+  Future<List<UsbGrant>> granted() => Future.value([_grant]);
 }

@@ -148,10 +148,13 @@ the engine, the documented storage budget and the cached catalog OTAs, where
 one can be evicted.
 
 Flashing requires current Chrome or Edge on HTTPS or localhost, outside an
-embedded webview. The page opens the WebUSB chooser from the click, filtered to
-fastboot interface `ff/42/03`; only its serial crosses to the Squadron worker,
-which reopens that exact granted device. Regrant the same
-phone when the app asks after a mode change.
+embedded webview. The page uses the pure-Dart `packages/web_usb_grant` chooser
+from the click; its browser backend preserves cancellation versus permission
+failure and DOMException diagnostics. The app keeps the fastboot `ff/42/03`
+filter and requires a serial; only that serial crosses to the Squadron worker,
+which reopens that exact granted device. Regrant the same phone when the app
+asks after a mode change. The local path dependency bootstraps from a fresh
+clone without an unpublished package or sibling checkout.
 
 ## One pass over the OTA
 

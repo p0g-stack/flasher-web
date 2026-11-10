@@ -271,12 +271,14 @@ WebUSB failures keep the DOMException name/message/stack rather than
 re-describing it. `sessionRetired` is a lifecycle bit, independent of blame and
 never inferred from an error name.
 
-In the browser, the page opens the Chromium WebUSB chooser from a user gesture
-only in a secure context; it filters on the fastboot interface `ff/42/03` and
-passes only the chosen serial to the worker. The worker never opens a chooser:
-it lists granted devices, reopens that exact serial, and asks the page to
-regrant the same phone after a mode change. Native discovery matches the same
-interface from USB descriptors.
+In the browser, the page calls `web_usb_grant` from the user gesture before any
+await, only in a secure context. The app keeps its fastboot interface `ff/42/03`
+filter and mandatory-serial policy. Package failures distinguish cancellation
+from permission refusal and keep DOMException name/message/stack; the app
+maps only cancellation to no chosen device. Only the chosen serial passes to
+the worker. The worker never opens a chooser: it lists granted devices, reopens
+that exact serial, and asks the page to regrant the same phone after a mode
+change. Native discovery matches the same interface from USB descriptors.
 
 Real OTA flashing on a real phone remains unqualified. The synthetic fixture
 packages exercise streaming, sparse splitting, retries and uncertainty against

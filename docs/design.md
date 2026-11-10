@@ -441,11 +441,15 @@ The wasm build of `fastboot-link` needs `--cfg=web_sys_unstable_apis`; the root
 
 ## Browser runtime
 
-The page opens the WebUSB chooser from the user's click, filters on the
-fastboot interface `ff/42/03`, and passes only the chosen serial to the
-Squadron worker. The worker never opens a chooser: it lists granted devices,
-reopens that exact serial, and asks the page to regrant the same phone after a
-mode change. Native discovery matches the same interface from USB descriptors.
+The page delegates WebUSB capability, grants and DOMException handling to the
+pure-Dart `packages/web_usb_grant` package (`package:web` + `dart:js_interop`,
+including Wasm; no Flutter dependency). The app invokes its chooser from the
+user's click, keeps the fastboot interface `ff/42/03` filter, requires a serial,
+and passes only that serial to the Squadron worker. The worker never opens a
+chooser: it lists granted devices, reopens that exact serial, and asks the page
+to regrant the same phone after a mode change. Native discovery matches the same
+interface from USB descriptors. Tests inject a `UsbBackend`; the e2e build
+selects the fake at bridge creation, not inside the production chooser.
 
 The page holds a screen wake lock and a leave guard for the duration of a
 flash, a bloat download or an export. The browser drops the wake lock while the
