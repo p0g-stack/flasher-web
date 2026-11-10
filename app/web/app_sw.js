@@ -18,6 +18,8 @@
 //
 // Bump CACHE_VERSION when the strategy changes. Same-origin assets are
 // network-first so a deploy runs on the next load; the caches serve offline.
+// Once a new version controls the page it posts `flasher-app-updated`, which
+// the page turns into a reload offer only when no flash is busy.
 
 const CACHE_VERSION = 'v2';
 const SHELL_CACHE = `flasher-shell-${CACHE_VERSION}`;
@@ -107,9 +109,22 @@ self.addEventListener('activate', (event) => {
           .map((name) => caches.delete(name)),
       );
       await self.clients.claim();
+      await announceUpdate();
     })(),
   );
 });
+
+/// Tells every page this worker now serves that a new build took control.
+///
+/// The page decides when a reload is safe: never while it prepares, confirms
+/// or writes. A first install has nothing to replace, and the page ignores an
+/// announcement it had no controller for.
+async function announceUpdate() {
+  const windows = await self.clients.matchAll({ type: 'window' });
+  for (const client of windows) {
+    client.postMessage({ type: 'flasher-app-updated', version: CACHE_VERSION });
+  }
+}
 
 self.addEventListener('message', (event) => {
   const data = event.data;

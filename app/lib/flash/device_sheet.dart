@@ -11,7 +11,9 @@ import 'flash_target.dart';
 /// Opens the fastboot device sheet: grant one through WebUSB, or pick from
 /// devices this page already has permission for.
 ///
-/// Returns `{serial, label}` or null when the sheet closes without a device.
+/// The guided Connect screen opens the chooser directly from its primary
+/// action; this sheet is its secondary path for an existing grant or a second
+/// phone, and returns `{serial, label}` or null when it closes without one.
 Future<Map<String, Object?>?> showFastbootDeviceSheet(
   BuildContext context, {
   required FlasherApi api,

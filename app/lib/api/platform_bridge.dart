@@ -43,6 +43,35 @@ final class DirectoryRef {
 /// serial and display label cross to the service, never the USBDevice handle.
 typedef FastbootDeviceChoice = ({String serial, String label});
 
+/// One WebUSB `connect` or `disconnect` event for this origin's grants.
+///
+/// The event only updates the page's connection state. It never opens a
+/// device, probes fastboot or writes, and it cannot change write certainty.
+final class UsbAttachEvent {
+  const UsbAttachEvent({
+    required this.attached,
+    this.serial,
+    this.product,
+    this.ids,
+  });
+
+  /// True for `connect`, false for `disconnect`.
+  final bool attached;
+
+  /// The device's serial when the browser exposes one.
+  final String? serial;
+
+  final String? product;
+
+  /// `0257:1234` style vendor:product ids, for the log only.
+  final String? ids;
+
+  @override
+  String toString() =>
+      '${attached ? 'connected' : 'disconnected'} '
+      '${serial ?? product ?? ids ?? 'unknown device'}';
+}
+
 /// The page-side capabilities.
 abstract interface class PlatformBridge {
   /// Whether this build of the app has a real browser bridge.
@@ -159,9 +188,42 @@ abstract interface class PlatformBridge {
   Future<void> openExternal(String url);
 
   /// Holds a screen wake lock and a leave guard until [endKeepAwake].
+  ///
+  /// The page calls this only while a flash is writing, and releases it as
+  /// soon as the run pauses, finishes or is stopped. Throwing aborts the write
+  /// before its first command: the guard is required.
   Future<void> beginKeepAwake();
 
   Future<void> endKeepAwake();
+
+  /// Whether this page can take a screen wake lock at all.
+  ///
+  /// A page without one is told so; the leave guard and the confirmation still
+  /// govern the write.
+  bool get wakeLockSupported;
+
+  /// WebUSB arrival and removal for this origin's grants.
+  ///
+  /// A broadcast stream; listeners update connection state only.
+  Stream<UsbAttachEvent> get usbAttachEvents;
+
+  /// Versions of the app that already took control of this page.
+  ///
+  /// A new app deploy is announced only while a run is busy; the page offers a
+  /// reload when nothing is preparing, confirming or writing.
+  Stream<String> get appUpdates;
+
+  /// Reloads the page. Call only when no run is busy.
+  void reloadPage();
+
+  /// The flash checkpoint a reload restores, or null when none is kept.
+  Future<Map<String, Object?>?> readFlashCheckpoint();
+
+  /// Replaces the checkpoint with [value].
+  Future<void> writeFlashCheckpoint(Map<String, Object?> value);
+
+  /// Drops the checkpoint, before an explicit new run.
+  Future<void> clearFlashCheckpoint();
 
   /// Deletes one job directory from the store at [handle] (null means OPFS).
   Future<void> deleteStorePath(String path, {Object? handle});
@@ -302,6 +364,27 @@ final class UnsupportedPlatformBridge implements PlatformBridge {
 
   @override
   Future<void> endKeepAwake() async {}
+
+  @override
+  bool get wakeLockSupported => false;
+
+  @override
+  Stream<UsbAttachEvent> get usbAttachEvents => const Stream.empty();
+
+  @override
+  Stream<String> get appUpdates => const Stream.empty();
+
+  @override
+  void reloadPage() {}
+
+  @override
+  Future<Map<String, Object?>?> readFlashCheckpoint() async => null;
+
+  @override
+  Future<void> writeFlashCheckpoint(Map<String, Object?> value) async {}
+
+  @override
+  Future<void> clearFlashCheckpoint() async {}
 
   @override
   Future<void> deleteStorePath(String path, {Object? handle}) async =>

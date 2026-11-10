@@ -887,8 +887,8 @@ class _ActionsCard extends StatelessWidget {
                 onPressed: setup.canFlashDirect && onFlashDirect != null
                     ? onFlashDirect
                     : null,
-                icon: const Icon(Icons.flash_on, size: 18),
-                label: const Text('Flash directly'),
+                icon: const Icon(Icons.arrow_forward, size: 18),
+                label: const Text('Continue'),
               ),
             ),
             Tooltip(
@@ -896,7 +896,7 @@ class _ActionsCard extends StatelessWidget {
               message: exportError.isEmpty
                   ? 'Save or download the same package as a ZIP file.'
                   : exportError,
-              child: FilledButton.tonalIcon(
+              child: OutlinedButton.icon(
                 key: const ValueKey('exportZipButton'),
                 onPressed: setup.canExportZip && !exports.exporting
                     ? () => _export(context)
@@ -918,8 +918,8 @@ class _ActionsCard extends StatelessWidget {
                         children: [
                           Text(
                             'The OTA and the verified bloat images are read in '
-                            'place. Flash the phone over fastboot or save the '
-                            'same package as a ZIP.',
+                            'place. Continue to connect the phone over '
+                            'fastboot, or save the same package as a ZIP.',
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
                             ),
@@ -937,8 +937,8 @@ class _ActionsCard extends StatelessWidget {
                           Expanded(
                             child: Text(
                               'The OTA and the verified bloat images are read '
-                              'in place. Flash the phone over fastboot or save '
-                              'the same package as a ZIP.',
+                              'in place. Continue to connect the phone over '
+                              'fastboot, or save the same package as a ZIP.',
                               style: theme.textTheme.bodySmall?.copyWith(
                                 color: theme.colorScheme.onSurfaceVariant,
                               ),

@@ -63,7 +63,19 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     // empty array so the queue cannot grow for the life of the page.
     _enqueueLaunches(globalContext['flasherLaunchFiles']);
     globalContext['flasherLaunchFiles'] = <JSAny>[].toJS;
+    _watchUsb();
+    _watchUpdates();
   }
+
+  final _usbEvents = StreamController<UsbAttachEvent>.broadcast();
+  final _appUpdates = StreamController<String>.broadcast();
+  JSFunction? _usbConnect;
+  JSFunction? _usbDisconnect;
+  JSFunction? _updateMessage;
+
+  /// A new app deploy is only an update for a page that was already
+  /// controlled: the first install has nothing old to replace.
+  bool _wasControlled = false;
 
   final WebUsb _webUsb;
   late final JSFunction _dragOver;
@@ -674,6 +686,150 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     await launchUrl(Uri.parse(url), webOnlyWindowName: '_blank');
   }
 
+  /// Page-level WebUSB arrival/removal.
+  ///
+  /// Only connection state reads these events: the worker's transport owns
+  /// every session, so this listener never opens a device or sends a command.
+  void _watchUsb() {
+    final navigator = globalContext['navigator'];
+    if (navigator == null || !navigator.isA<JSObject>()) return;
+    final usbValue = (navigator as JSObject).getProperty<JSAny?>('usb'.toJS);
+    if (usbValue == null || !usbValue.isA<JSObject>()) return;
+    final usb = usbValue as JSObject;
+    JSFunction listener(bool attached) => ((JSAny event) {
+      final device = event.isA<JSObject>()
+          ? (event as JSObject).getProperty<JSAny?>('device'.toJS)
+          : null;
+      JSAny? field(String key) =>
+          device != null && device.isA<JSObject>()
+          ? (device as JSObject).getProperty<JSAny?>(key.toJS)
+          : null;
+      String? text(String key) {
+        final value = field(key);
+        return value != null && value.isA<JSString>()
+            ? (value as JSString).toDart
+            : null;
+      }
+
+      int? number(String key) {
+        final value = field(key);
+        return value != null && value.isA<JSNumber>()
+            ? (value as JSNumber).toDartInt
+            : null;
+      }
+
+      final vendor = number('vendorId');
+      final product = number('productId');
+      _usbEvents.add(
+        UsbAttachEvent(
+          attached: attached,
+          serial: text('serialNumber'),
+          product: text('productName'),
+          ids: vendor == null || product == null
+              ? null
+              : '${_hex(vendor)}:${_hex(product)}',
+        ),
+      );
+    }).toJS;
+    _usbConnect = listener(true);
+    _usbDisconnect = listener(false);
+    usb.callMethod<JSAny?>(
+      'addEventListener'.toJS,
+      _usbConnect!,
+      'connect'.toJS,
+    );
+    usb.callMethod<JSAny?>(
+      'addEventListener'.toJS,
+      _usbDisconnect!,
+      'disconnect'.toJS,
+    );
+  }
+
+  /// Listens for the app service worker announcing a deploy that took control.
+  ///
+  /// The service worker posts `flasher-app-updated` once a new version
+  /// activated; the page decides when a reload is safe.
+  void _watchUpdates() {
+    final container = _serviceWorkers;
+    if (container == null) return;
+    _wasControlled = container.controller != null;
+    _updateMessage = ((web.Event event) {
+      final data = (event as web.MessageEvent).data;
+      if (data == null || !data.isA<JSObject>()) return;
+      final type = (data as JSObject).getProperty<JSAny?>('type'.toJS);
+      if (type == null ||
+          !type.isA<JSString>() ||
+          (type as JSString).toDart != 'flasher-app-updated' ||
+          !_wasControlled) {
+        return;
+      }
+      final version = data.getProperty<JSAny?>('version'.toJS);
+      _appUpdates.add(
+        version != null && version.isA<JSString>()
+            ? (version as JSString).toDart
+            : 'new',
+      );
+    }).toJS;
+    container.addEventListener('message', _updateMessage);
+  }
+
+  @override
+  bool get wakeLockSupported {
+    final navigator = globalContext['navigator'];
+    if (navigator == null || !navigator.isA<JSObject>()) return false;
+    final lock = (navigator as JSObject).getProperty<JSAny?>('wakeLock'.toJS);
+    return lock != null && lock.isA<JSObject>();
+  }
+
+  @override
+  Stream<UsbAttachEvent> get usbAttachEvents => _usbEvents.stream;
+
+  @override
+  Stream<String> get appUpdates => _appUpdates.stream;
+
+  @override
+  void reloadPage() => web.window.location.reload();
+
+  static const _checkpointKey = 'flasher_web.flash-checkpoint';
+
+  @override
+  Future<Map<String, Object?>?> readFlashCheckpoint() async {
+    final String? raw;
+    try {
+      raw = web.window.localStorage.getItem(_checkpointKey);
+    } on Object {
+      return null;
+    }
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map<String, dynamic>
+          ? Map<String, Object?>.from(decoded)
+          : null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> writeFlashCheckpoint(Map<String, Object?> value) async {
+    try {
+      web.window.localStorage.setItem(_checkpointKey, jsonEncode(value));
+    } on Object {
+      // A full or blocked storage leaves the page without a restorable
+      // receipt; the live run is unaffected.
+    }
+  }
+
+  @override
+  Future<void> clearFlashCheckpoint() async {
+    try {
+      web.window.localStorage.removeItem(_checkpointKey);
+    } on Object {
+      // Nothing to clear if storage is blocked.
+    }
+  }
+
   @override
   Future<void> beginKeepAwake() async {
     _keepAlive++;
@@ -754,8 +910,34 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     web.document.removeEventListener('dragover', _dragOver);
     web.document.removeEventListener('drop', _drop);
     web.window.removeEventListener('flasher-launch-files', _launchListener);
+    final navigator = globalContext['navigator'];
+    final usb = navigator != null && navigator.isA<JSObject>()
+        ? (navigator as JSObject).getProperty<JSAny?>('usb'.toJS)
+        : null;
+    if (usb != null && usb.isA<JSObject>()) {
+      final connect = _usbConnect;
+      final disconnect = _usbDisconnect;
+      if (connect != null) {
+        (usb as JSObject).callMethod<JSAny?>(
+          'removeEventListener'.toJS,
+          connect,
+          'connect'.toJS,
+        );
+      }
+      if (disconnect != null) {
+        (usb as JSObject).callMethod<JSAny?>(
+          'removeEventListener'.toJS,
+          disconnect,
+          'disconnect'.toJS,
+        );
+      }
+    }
+    final update = _updateMessage;
+    if (update != null) _serviceWorkers?.removeEventListener('message', update);
     _dropped.close();
     _launched.close();
+    _usbEvents.close();
+    _appUpdates.close();
     final guard = _leaveGuard;
     if (guard != null) {
       web.window.removeEventListener('beforeunload', guard);

@@ -206,9 +206,53 @@ final class FakePlatformBridge implements PlatformBridge {
   int keepAwake = 0;
   Future<void>? keepAwakeGate;
   final _dropped = StreamController<PickedFile>.broadcast();
+  final _usbEvents = StreamController<UsbAttachEvent>.broadcast();
+  final _appUpdates = StreamController<String>.broadcast();
+
+  @override
+  bool wakeLockSupported = true;
+
+  int reloads = 0;
+
+  /// The checkpoint the page keeps across a reload.
+  Map<String, Object?>? checkpoint;
+  int checkpointWrites = 0;
 
   @override
   bool get available => true;
+
+  @override
+  Stream<UsbAttachEvent> get usbAttachEvents => _usbEvents.stream;
+
+  void attach({required bool attached, String? serial, String? product}) =>
+      _usbEvents.add(
+        UsbAttachEvent(
+          attached: attached,
+          serial: serial,
+          product: product,
+        ),
+      );
+
+  @override
+  Stream<String> get appUpdates => _appUpdates.stream;
+
+  void announceUpdate(String version) => _appUpdates.add(version);
+
+  @override
+  void reloadPage() => reloads++;
+
+  @override
+  Future<Map<String, Object?>?> readFlashCheckpoint() async =>
+      checkpoint == null ? null : Map<String, Object?>.from(checkpoint!);
+
+  @override
+  Future<void> writeFlashCheckpoint(Map<String, Object?> value) async {
+    checkpointWrites++;
+    checkpoint = Map<String, Object?>.from(value);
+  }
+
+  @override
+  Future<void> clearFlashCheckpoint() async => checkpoint = null;
 
   @override
   Future<String> fetchText(String path) async => '';
@@ -362,6 +406,8 @@ final class FakePlatformBridge implements PlatformBridge {
   void dispose() {
     _dropped.close();
     _launched.close();
+    _usbEvents.close();
+    _appUpdates.close();
   }
 }
 

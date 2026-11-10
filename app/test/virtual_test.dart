@@ -59,14 +59,17 @@ Future<void> _chooseRegional(WidgetTester tester) async {
 }
 
 Future<void> _selectDevice(WidgetTester tester) async {
-  await tester.ensureVisible(find.byKey(const ValueKey('chooseDevice')));
-  await tester.tap(find.byKey(const ValueKey('chooseDevice')));
-  await tester.pumpAndSettle();
-  await tester.tap(find.byKey(const ValueKey('granted-$_serial')));
+  // The Connect screen's single primary action checks the grant the page
+  // already holds and selects the one phone.
+  await tester.ensureVisible(find.byKey(const ValueKey('connectPrimary')));
+  await tester.tap(find.byKey(const ValueKey('connectPrimary')));
   await tester.pumpAndSettle();
 }
 
 Future<void> _confirmAndFlash(WidgetTester tester) async {
+  await tester.ensureVisible(find.byKey(const ValueKey('reviewPlan')));
+  await tester.tap(find.byKey(const ValueKey('reviewPlan')));
+  await tester.pumpAndSettle();
   await tester.ensureVisible(find.byKey(const ValueKey('confirmFlashDevice')));
   await tester.tap(find.byKey(const ValueKey('confirmFlashDevice')));
   await tester.pumpAndSettle();
@@ -285,7 +288,7 @@ void main() {
   });
 
   testWidgets(
-    'a Super selection shows Flash directly and explains the decode',
+    'a Super selection shows Continue and explains the decode',
     (tester) async {
       final harness = Harness();
       harness.api.inspectResult = _inspection();
@@ -323,7 +326,7 @@ void main() {
     },
   );
 
-  testWidgets('Flash directly opens the flash page with the OTA and bloat', (
+  testWidgets('Continue opens the guided flow with the OTA and bloat', (
     tester,
   ) async {
     final harness = Harness();
@@ -346,8 +349,8 @@ void main() {
     await tester.tap(button);
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('flashStatus')), findsOneWidget);
-    expect(find.textContaining('OTA read in place'), findsOneWidget);
+    expect(find.byKey(const ValueKey('screenConnect')), findsOneWidget);
+    expect(find.text('Connect your phone'), findsOneWidget);
     expect(find.textContaining('Back to setup'), findsWidgets);
 
     await _selectDevice(tester);
@@ -461,8 +464,8 @@ void main() {
       },
     });
     await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('flashReceipt')), findsOneWidget);
-    expect(find.textContaining('flashed in place'), findsWidgets);
+    expect(find.byKey(const ValueKey('screenDone')), findsOneWidget);
+    expect(find.text('The phone accepted every write'), findsOneWidget);
     expect(controller.receiptPath, contains('browser download'));
   });
 

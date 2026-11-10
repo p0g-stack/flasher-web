@@ -166,14 +166,41 @@ The setup page has four steps and one action card:
 4. **Vulnerable ABL** — the X9U choice between the bloat ABL 16.0.6 and the
    OTA's ABL.
 
-The action card then offers **Flash directly** and **Export ZIP**. Flashing
-opens the flash page; exporting opens the save-file picker where the browser
-has one, and otherwise (Android Chrome) starts a streamed download. A failed
-streamed export aborts the download. Discard a partial ZIP left at a picked file.
+The action card then offers **Continue** and, as its secondary action,
+**Export ZIP**. Continue opens the guided flash flow one screen at a time:
 
-Keep the tab open while a flash, bloat download, OTA download or export runs;
-the app holds a screen wake lock and a leave guard. The Environment page shows
-the engine and the documented storage budget.
+1. **Connect** — the phone in bootloader fastboot, one connection status and
+   one primary **Check phone** for a grant the page already holds (or
+   **Choose phone** to open the WebUSB chooser). “Not in the list?” explains
+   mode, cable, port and OS causes.
+2. **Check** — read-only input and device checks, the plan’s remaining prompt
+   answers and the plan outline. **Review plan** once it resolves.
+3. **Confirm** — the exact serial, the OTA identity, the ordered writes and
+   the readback limits. **Flash serial …** only after the acknowledgement.
+4. **Flash** — the current step, byte progress, the last reply and
+   mode-change guidance. The only action is **Stop further commands**.
+5. **Recover** — uncertainty first, a plain-language failure and the raw
+   evidence one tap away. The primary action is the safest one the service
+   offers (never a generic retry for an uncertain write, which is flagged
+   before the error); the other explicit choices are secondary. Clear super
+   has its own serial-naming confirmation and an unbootable warning, and the
+   power-cycle action shows the physical steps.
+6. **Done / Stopped** — OKAY is distinguished from a verified readback, any
+   unresolved uncertainty stays visible, and **Save receipt** is the primary
+   action. Diagnostics are always available.
+
+Exporting opens the save-file picker where the browser has one, and otherwise
+(Android Chrome) starts a streamed download. A failed streamed export aborts
+the download. Discard a partial ZIP left at a picked file.
+
+The flash holds a screen wake lock and a leave guard only while it writes,
+including an in-flight command after Stop, and releases them when the run
+pauses, finishes or is stopped; a page without wake-lock support says so. A
+reload restores the last checkpoint as an inspection-only receipt: nothing is
+resumed and no command is replayed, and a nonterminal checkpoint stays
+uncertain. A new app deploy is announced while a run is busy, but the reload
+it offers is enabled only when nothing is preparing, confirming or writing.
+The Environment page shows the engine and the documented storage budget.
 
 Flashing requires current Chrome or Edge on HTTPS or localhost, outside an
 embedded webview. The page uses the pure-Dart `packages/web_usb_grant` chooser

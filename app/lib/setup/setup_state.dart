@@ -852,20 +852,19 @@ final class SetupState extends ChangeNotifier {
         'selections.';
   }
 
-  /// The explanation under an enabled Flash directly button.
+  /// The explanation under the enabled Continue button.
   String get directFlashHint {
     if (!isSuperKind) {
-      return 'Flash the OTA directly without creating a ZIP.';
+      return 'Continue to connect the phone and flash the OTA directly.';
     }
-    return 'Flash the OTA directly without creating a ZIP. Super preparation '
-        'decodes the whole super image once (this can take several minutes) '
-        'before the device is touched.';
+    return 'Continue to connect the phone and flash the OTA directly. Super '
+        'preparation decodes the whole super image once (this can take '
+        'several minutes) before the device is touched.';
   }
 
   /// Port of the direct-flash prerequisites: verified bloat, one TARGET OTA
   /// and the BASE OTA an Ace 6 conversion needs.
-  String get directFlashRequirementsError =>
-      _requirementsError('flashing directly');
+  String get directFlashRequirementsError => _requirementsError('continuing');
 
   /// The same inputs feed Export ZIP, so only the wording differs.
   String _requirementsError(String action) {

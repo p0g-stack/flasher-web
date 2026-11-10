@@ -6,16 +6,21 @@
 /// drives headless google-chrome-stable over CDP through three browser
 /// scenarios and one CLI scenario:
 ///
-///  1. Flash directly, Super kind: the run succeeds; the reassembled sparse
-///     parts expand to the package's super image and every other write equals
-///     the OTA's image; the receipt's `image_sha256` matches.
-///  2. The same flash with one injected `flash:super` FAIL: the page shows the
-///     three retry buttons, Retry step completes, and no earlier partition is
+///  1. Flash directly, Super kind: the guided Setup → Connect → Check →
+///     Confirm → Flash → Done screens complete; the reassembled sparse parts
+///     expand to the package's super image and every other write equals the
+///     OTA's image; the receipt's `image_sha256` matches.
+///  2. The same flash with one injected `flash:super` FAIL: the Recover screen
+///     shows the service's explicit whole-step rewrite and Stop (never a
+///     generic retry), the rewrite completes, and no earlier partition is
 ///     resent.
 ///  3. Export ZIP with `showSaveFilePicker` hidden: the service worker streams
 ///     the archive to Chrome's download directory, its SHA-256 equals the
 ///     result the page shows, and its `super.img` expands to the same bytes.
 ///  4. The CLI `flash --confirm-serial` and `export` against the same fake.
+///
+/// Each guided screen is captured under `<temp>/flasher-e2e-shots/` and the
+/// paths are printed with the run's facts.
 ///
 /// `--skip-build` reuses the current `app/build/web` (which must already have
 /// been built with the define) and is only for iterating on the harness.
@@ -70,6 +75,13 @@ Future<void> main(List<String> args) async {
       bloatDir: fixture.bloatDir,
     );
     downloads = await Directory.systemTemp.createTemp('flasher-e2e-downloads-');
+    final shots = Directory('${Directory.systemTemp.path}/flasher-e2e-shots');
+    if (shots.existsSync()) shots.deleteSync(recursive: true);
+    shots.createSync(recursive: true);
+    Future<void> shot(HarnessBrowser page, String name) async {
+      final path = await page.screenshot('${shots.path}/$name.png');
+      facts.add('screenshot $name: $path');
+    }
     final bootstrap = bootstrapScript(bloatPaths: bloatManifestPaths(fixture));
 
     Future<HarnessBrowser> open() async {
@@ -86,9 +98,18 @@ Future<void> main(List<String> args) async {
     var watch = Stopwatch()..start();
     var page = await open();
     await selectInputs(page);
-    await preparePlan(page);
+    await shot(page, '1-setup');
+    await continueToConnect(page);
+    await shot(page, '2-connect');
+    await connectPhone(page);
+    await answerPrompts(page);
+    await shot(page, '3-check');
+    await reviewPlan(page);
+    await shot(page, '4-confirm');
     await startFlash(page);
+    await shot(page, '5-flash');
     final status = await waitForResult(page);
+    await shot(page, '6-done');
     _check(status == 'succeeded', 'scenario 1: status is succeeded, not $status');
     final receipt1 = await downloadReceipt(page, downloads);
     final state1 = await page.fakeState();
@@ -99,7 +120,8 @@ Future<void> main(List<String> args) async {
     facts.addAll(_describeWrites(state1, expected));
     timings['1 flash ok'] = watch.elapsedMilliseconds;
 
-    // Scenario 2: one injected FAIL on the super write, then Retry step.
+    // Scenario 2: one injected FAIL on the super write, then an explicit
+    // whole-step rewrite chosen on the Recover screen.
     watch = Stopwatch()..start();
     page = await openFresh(page, server.baseUrl);
     await selectInputs(page);
@@ -110,30 +132,32 @@ Future<void> main(List<String> args) async {
       'scenario 2: the fake device accepts the injected failure',
     );
     await startFlash(page);
-    await waitForFailureButtons(page);
+    await waitForRecovery(page);
+    await shot(page, '7-recover');
     final failedState = await page.fakeState();
     final beforeRetry = List<String>.from(
       (failedState['flashCommands'] as List).cast<String>(),
     );
     final partsBeforeRetry =
         ((failedState['parts'] as Map)['super'] as List).length;
-    await retryFlash(page);
+    await performRewrite(page);
+    await shot(page, '8-rewritten-done');
     final retriedState = await page.fakeState();
     final afterRetry = List<String>.from(
       (retriedState['flashCommands'] as List).cast<String>(),
     );
     final resent = afterRetry.sublist(beforeRetry.length);
-    // The failed step is super and the plan continues after it: the retry
+    // The failed step is super and the plan continues after it: the rewrite
     // must not resend anything that was already written before it failed.
     final earlier = beforeRetry.toSet()..remove('super');
     final repeated = resent.where(earlier.contains).toSet();
     _check(
       repeated.isEmpty,
-      'scenario 2: retry resends no earlier step, repeated=$repeated',
+      'scenario 2: the rewrite resends no earlier step, repeated=$repeated',
     );
     _check(
       resent.contains('super'),
-      'scenario 2: retry resent the failed super step',
+      'scenario 2: the rewrite resent the failed super step',
     );
     final receipt2 = await downloadReceipt(page, downloads);
     _checkReceipt(receipt2, expected, 'scenario 2');
@@ -145,10 +169,10 @@ Future<void> main(List<String> args) async {
       'scenario 2',
     );
     facts.add(
-      'scenario 2 retry resent ${resent.length} super part write(s), '
+      'scenario 2 rewrite resent ${resent.length} super part write(s), '
       '${beforeRetry.length} flash command(s) stayed written',
     );
-    timings['2 fail + retry'] = watch.elapsedMilliseconds;
+    timings['2 fail + rewrite'] = watch.elapsedMilliseconds;
 
     // Scenario 3: streamed ZIP export with the save picker hidden.
     watch = Stopwatch()..start();

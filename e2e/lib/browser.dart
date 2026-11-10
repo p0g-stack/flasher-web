@@ -261,6 +261,25 @@ final class HarnessBrowser {
   /// Evaluates a written-scenario assertion in the page and returns its text.
   Future<String> runPageFunction(String source) => evaluate(source);
 
+  /// Captures the page as a PNG at [path] and returns that path.
+  ///
+  /// The screens of the guided flow are captured so a run leaves visual
+  /// evidence beside its assertions.
+  Future<String> screenshot(String path) async {
+    final response = await _page.sendCommand(
+      'Page.captureScreenshot',
+      {'format': 'png'},
+    );
+    final data = (response.result?['data'] as String?) ?? '';
+    if (data.isEmpty) {
+      throw StateError('the page did not produce a screenshot');
+    }
+    final file = File(path);
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(base64Decode(data));
+    return file.path;
+  }
+
   Future<void> dispose() async {
     try {
       await _page.close();

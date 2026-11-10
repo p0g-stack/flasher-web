@@ -7,7 +7,9 @@ template needs, and points at one full OTA — a local ZIP read in place, or a
 catalog version read through HTTP ranges. Two actions consume the same inputs
 and produce the same images:
 
-- **Flash directly**: the package is written to the phone over fastboot.
+- **Continue (guided flash)**: the setup screen hands the same inputs to the
+  guided Connect → Check → Confirm → Flash flow, which writes the package to
+  the phone over fastboot and pauses on Recover or Done.
 - **Export ZIP**: the package is streamed into one ZIP at a destination the
   user picks (a file handle, the service worker's download, or a path).
 
@@ -576,13 +578,21 @@ to regrant the same phone after a mode change. Native discovery matches the same
 interface from USB descriptors. Tests inject a `UsbBackend`; the e2e build
 selects the fake at bridge creation, not inside the production chooser.
 
-The page holds a screen wake lock and a leave guard for the duration of a
-flash, a bloat download or an export. The browser drops the wake lock while the
-tab is hidden; the page takes it again when the tab is visible and the work
-still runs. The app's service worker caches only the
-shell and engine assets the page loads; `/api/*` and every request that carries
-a `Range` header go to the network, and OTA, bloat and package bytes are never
-cached.
+The page holds a screen wake lock and a leave guard only while a flash is
+writing (including an in-flight command after Stop), and while a bloat or OTA
+download runs; a flash releases them when it pauses, finishes or is stopped,
+and the visibility listener takes the wake lock again only for work that still
+runs. A page without wake-lock support reports it. WebUSB `connect` and
+`disconnect` events feed connection state only: they never open a device,
+probe fastboot or write, and their results are generation-fenced. The flash
+flow writes a checkpoint before the first command and on every state event, so
+a reload restores an inspection-only receipt (a nonterminal checkpoint stays
+uncertain); nothing is resumed or replayed. When a new build's service worker
+takes control, the page announces it while a run is busy and enables the
+reload only when nothing is preparing, confirming or writing. The app's
+service worker caches only the shell and engine assets the page loads;
+`/api/*` and every request that carries a `Range` header go to the network,
+and OTA, bloat and package bytes are never cached.
 
 ## Tests and qualification
 

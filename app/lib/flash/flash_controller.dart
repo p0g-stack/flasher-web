@@ -2,7 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:flasher_web_core/flasher_web_core.dart' show FlashRecovery;
+import 'package:flasher_web_core/flasher_web_core.dart'
+    show
+        FlashConnection,
+        FlashFlowState,
+        FlashRecovery,
+        FlashRunPhase,
+        WriteCertainty;
 import 'package:web_usb_grant/web_usb_grant.dart';
 
 import '../api/flasher_api.dart';
@@ -10,41 +16,98 @@ import '../api/platform_bridge.dart';
 import '../runtime.dart';
 import 'flash_target.dart';
 
-/// Where one flash attempt is.
-enum FlashPhase {
-  idle,
-  preparing,
-  ready,
-  running,
-  succeeded,
-  failed,
-  uncertain,
-  stopped,
-  cancelled,
-}
-
-/// Prepares and executes one OTA-direct flash.
+/// The guided screen the flash flow is on.
 ///
-/// Preparation is read-only and returns a token that binds the exact device,
-/// OTA, bloat store, answers and inspected images. Any change clears both that
-/// token and the user's confirmation; execution sends the token from the
-/// latest preparation only.
+/// Setup is the shell's own page; the flash flow's screens start at Connect.
+/// Each screen has exactly one primary action and derives it from the core
+/// [FlashFlowState] plus the facts of the current preparation.
+enum FlashScreen { connect, check, confirm, flash, recover, done }
+
+/// The guided screens, in order, for the progress rail.
+const flashScreenOrder = [
+  FlashScreen.connect,
+  FlashScreen.check,
+  FlashScreen.confirm,
+  FlashScreen.flash,
+  FlashScreen.recover,
+  FlashScreen.done,
+];
+
+/// What a screen is for, as its heading and one-line instruction.
+({String title, String detail}) flashScreenHeading(FlashScreen screen) =>
+    switch (screen) {
+      FlashScreen.connect => (
+        title: 'Connect your phone',
+        detail:
+            'Put the phone in bootloader fastboot, then choose it. Nothing '
+            'is written on this screen.',
+      ),
+      FlashScreen.check => (
+        title: 'Check and prepare',
+        detail:
+            'Read-only checks and the plan’s remaining questions. The phone '
+            'is not written.',
+      ),
+      FlashScreen.confirm => (
+        title: 'Confirm the exact phone',
+        detail: 'Nothing is written until you confirm this serial.',
+      ),
+      FlashScreen.flash => (
+        title: 'Flashing',
+        detail: 'Do not unplug the phone. Commands are sent one at a time.',
+      ),
+      FlashScreen.recover => (
+        title: 'Recover the run',
+        detail:
+            'Choose one explicit action. Nothing is resent automatically, '
+            'and reconnecting never settles a write.',
+      ),
+      FlashScreen.done => (
+        title: 'Finished',
+        detail: 'The receipt is the only record. Save it.',
+      ),
+    };
+
+/// Prepares and executes one OTA-direct flash as a guided flow.
+///
+/// Core owns transitions and the allowed recovery actions; this controller
+/// renders them and drives the page-only lifecycle: the WebUSB grant, the
+/// wake lock and leave guard while writing, the reload checkpoint and the
+/// service-worker update offer. Preparation is read-only and returns a token
+/// bound to the exact device, OTA, bloat store, answers and inspected images;
+/// a used token is never offered again.
 final class FlashController extends ChangeNotifier {
   FlashController({
     required this.api,
     required this.bridge,
     required this.environment,
-    required this.target,
     required this.upstreamBase,
-  });
+    this.target,
+    Map<String, Object?>? checkpoint,
+  }) {
+    if (checkpoint != null && checkpoint.isNotEmpty) {
+      _restore(checkpoint);
+    } else {
+      _flow = const FlashFlowState();
+    }
+  }
 
   final FlasherApi api;
   final PlatformBridge bridge;
   final EnvironmentInfo environment;
-  final FlashTarget target;
   final String upstreamBase;
 
-  FlashPhase _phase = FlashPhase.idle;
+  /// The package this flow would write; null for a restored receipt, which is
+  /// inspection only.
+  final FlashTarget? target;
+
+  /// The package label the flow shows; a restored receipt has no package.
+  String get targetLabel => target?.label ?? 'not selected';
+
+  late FlashFlowState _flow;
+  bool _restored = false;
+  String? _restoredNote;
+
   List<Map<String, Object?>> _devices = const [];
   bool _devicesLoading = false;
   String? _devicesError;
@@ -55,23 +118,23 @@ final class FlashController extends ChangeNotifier {
   bool _preparing = false;
   bool _starting = false;
   bool _stopping = false;
-  Future<void>? _stoppingFuture;
   String? _prepareError;
   PreparedFlash? _prepared;
   Map<String, Object?>? _preparedRequest;
   String? _derivedJob;
   int _generation = 0;
+  int _devicesGeneration = 0;
   Timer? _debounce;
   StreamSubscription<Map<String, Object?>>? _subscription;
+  StreamSubscription<UsbAttachEvent>? _usbSubscription;
+  StreamSubscription<String>? _updateSubscription;
+  int _streamToken = 0;
+  _RunKind _runKind = _RunKind.none;
   bool _sawStep = false;
-  bool _awake = false;
+  bool _keepAwakeHeld = false;
+  bool _wakeLockReported = false;
   bool _disposed = false;
   String? _runId;
-  int? _failureStep;
-  String? _failureStatus;
-  String? _failureReason;
-  bool _canRetry = false;
-  bool _stoppingRun = false;
 
   final _log = <String>[];
   final _progress = <String, ({int done, int total})>{};
@@ -81,16 +144,68 @@ final class FlashController extends ChangeNotifier {
   Map<String, Object?>? _waiting;
   Map<String, Object?>? _result;
   Map<String, Object?>? _receipt;
+  Map<String, Object?>? _failureEvent;
+  Map<String, Object?>? _superPreflight;
   String? _errorText;
   String? _guidance;
-  String? _cancelNote;
-  bool _regranting = false;
+  String? _notice;
+  bool _canRetry = false;
+  bool _stoppingRun = false;
+  bool _workerLost = false;
+  bool _updateReady = false;
+  String? _updateVersion;
   String? _regrantMessage;
+  bool _regranting = false;
+  Future<void> _checkpointWrites = Future<void>.value();
 
-  FlashPhase get phase => _phase;
+  FlashFlowState get state => _flow;
+  FlashConnection get connection => _flow.connection;
+  FlashRunPhase get phase => _flow.phase;
+  WriteCertainty get certainty => _flow.certainty;
+
+  /// A receipt restored after a reload. It is inspection only: nothing on
+  /// this page can resume it, write again or change its certainty.
+  bool get restored => _restored;
+  String? get restoredNote => _restoredNote;
+
+  /// The screen the flow is on.
+  FlashScreen get screen {
+    if (_restored) return FlashScreen.done;
+    switch (_flow.phase) {
+      case FlashRunPhase.writing:
+        return FlashScreen.flash;
+      case FlashRunPhase.recovering:
+        return FlashScreen.recover;
+      case FlashRunPhase.done:
+      case FlashRunPhase.stopped:
+        return FlashScreen.done;
+      case FlashRunPhase.confirming:
+        return FlashScreen.confirm;
+      case FlashRunPhase.preparing:
+        return _live ? FlashScreen.flash : FlashScreen.check;
+      case FlashRunPhase.setup:
+      case FlashRunPhase.connecting:
+        if (_live) return FlashScreen.flash;
+        return _serial == null ? FlashScreen.connect : FlashScreen.check;
+    }
+  }
+
+  /// A run stream this controller is still following.
+  bool get _live =>
+      _runKind != _RunKind.none &&
+      (_subscription != null || _starting || _stoppingRun);
+
+  /// A run is in flight or its stop acknowledgement is pending.
+  bool get busy => _live || _stopping;
+
+  /// A write is in progress (including an in-flight command after Stop):
+  /// exactly the span that holds the wake lock and the leave guard.
+  bool get writing => _keepAwakeHeld;
+
   List<Map<String, Object?>> get devices => List.unmodifiable(_devices);
   bool get devicesLoading => _devicesLoading;
   String? get devicesError => _devicesError;
+  bool get hasGrant => _devices.isNotEmpty;
   String? get serial => _serial;
   String get deviceLabel => _deviceLabel;
   Map<String, String> get answers => Map.unmodifiable(_answers);
@@ -100,16 +215,16 @@ final class FlashController extends ChangeNotifier {
   PreparedFlash? get prepared => _prepared;
   bool get writesSupported => environment.has('usb.web');
   bool get pageCanChoose => bridge.canChooseFastbootDevice;
-  bool get running => _phase == FlashPhase.running || _stopping || _stoppingRun;
-  bool get terminal => switch (_phase) {
-    FlashPhase.succeeded ||
-    FlashPhase.failed ||
-    FlashPhase.uncertain ||
-    FlashPhase.stopped ||
-    FlashPhase.cancelled => true,
-    _ => false,
-  };
+  bool get wakeLockSupported => bridge.wakeLockSupported;
+  bool get stopping => _stoppingRun;
+  bool get stoppingRun => _stopping;
+  bool get workerLost => _workerLost;
+  bool get updateReady => _updateReady;
+  String? get updateVersion => _updateVersion;
+
   List<String> get log => List.unmodifiable(_log);
+  String get logText => _log.join('\n');
+  String get lastReply => _log.isEmpty ? '' : _log.last;
   Map<String, ({int done, int total})> get progress =>
       Map.unmodifiable(_progress);
   int get stepIndex => _stepIndex;
@@ -126,37 +241,48 @@ final class FlashController extends ChangeNotifier {
   Map<String, Object?>? get receipt => _receipt;
   String? get errorText => _errorText;
   String? get guidance => _guidance;
-  String? get cancelNote => _cancelNote;
+  String? get notice => _notice;
   bool get regranting => _regranting;
   String? get regrantMessage => _regrantMessage;
-  String get logText => _log.join('\n');
 
-  /// The service's id for this run, read from its first `run` event. A retry
+  String get connectionLabel => switch (_flow.connection) {
+    FlashConnection.unavailable => 'USB is not available in this browser',
+    FlashConnection.waiting => 'Waiting for a phone',
+    FlashConnection.opening => 'Opening the phone',
+    FlashConnection.probing => 'Checking the phone',
+    FlashConnection.ready => 'Phone ready',
+    FlashConnection.active => 'Commands running',
+    FlashConnection.transitioning => 'The phone is rebooting',
+    FlashConnection.needsAccess => 'Grant the same phone again',
+    FlashConnection.lost => 'The phone left USB',
+    FlashConnection.closing => 'Closing the connection',
+    FlashConnection.stopped => 'Connection closed',
+  };
+
+  /// The core's id for this run, read from its first `run` event. A recovery
   /// names exactly this run; nothing reopens a used confirmation token.
   String? get runId => _runId;
 
-  /// The zero-based failed step and its status and reason, as the service's
-  /// `failure` event reported them. Null until a step fails.
-  int? get failedStepIndex => _failureStep;
-  String? get failureStatus => _failureStatus;
-  String? get failureReason => _failureReason;
+  /// The failed step and its status, as the service reported them.
+  int? get failedStepIndex {
+    final value = _receipt?['stepIndex'];
+    return value is num ? value.toInt() : null;
+  }
+
+  bool get uncertain =>
+      _flow.certainty == WriteCertainty.uncertain ||
+      _receipt?['uncertain'] == true;
 
   /// The failed step as the receipt names it, one-based for display.
   String get failedStepLabel {
-    final index = _failureStep;
-    if (index == null) return 'The failed step';
+    final index = _receipt?['stepIndex'];
+    if (index is! num) return 'The failed step';
+    final oneBased = index.toInt() + 1;
     final title = _stepTitle.isNotEmpty
         ? _stepTitle
-        : _receiptStepTitle(index + 1);
-    return title.isEmpty ? 'Step ${index + 1}' : 'Step ${index + 1}: $title';
+        : _receiptStepTitle(oneBased);
+    return title.isEmpty ? 'Step $oneBased' : 'Step $oneBased: $title';
   }
-
-  /// Whether the service kept the failed run paused and accepts an explicit
-  /// retry. Nothing is ever resent automatically.
-  bool get canRetry => _canRetry && _runId != null && !running;
-
-  /// A stop request is in flight.
-  bool get stopping => _stoppingRun;
 
   String _receiptStepTitle(int oneBased) {
     final steps = _receipt?['steps'];
@@ -172,11 +298,120 @@ final class FlashController extends ChangeNotifier {
     return '';
   }
 
-  /// The job the service derives from the OTA identity. It appears after
-  /// preparation.
+  /// Whether the service kept the failed run paused and accepts another
+  /// explicit command. A restored receipt cannot recover: its run ended with
+  /// the page.
+  bool get canRecover =>
+      !_restored &&
+      _canRetry &&
+      _runId != null &&
+      !_starting &&
+      !_stoppingRun &&
+      !_live;
+
+  bool get canStop =>
+      !_restored &&
+      _runId != null &&
+      (_flow.phase == FlashRunPhase.writing || _canRetry) &&
+      !_stoppingRun;
+
+  /// Every action the service offers for this receipt, in its order.
+  ///
+  /// The service decides which actions exist; the page only renders them. A
+  /// generic retry is never among them for an uncertain write.
+  List<Map<String, Object?>> get recoveryActions {
+    final actions = _receipt?['recoveryActions'];
+    if (actions is! List) return const [];
+    return [
+      for (final value in actions)
+        if (value is Map) Map<String, Object?>.from(value),
+    ];
+  }
+
+  /// The safest applicable action: the first the service offers, and Stop
+  /// when it offers nothing else.
+  Map<String, Object?>? get primaryRecovery {
+    for (final action in recoveryActions) {
+      if (action['action'] != FlashRecovery.stopRun.name) return action;
+    }
+    return null;
+  }
+
+  /// The service's own words for an action, e.g. for a dialog title.
+  String recoveryTitle(Map<String, Object?> action) =>
+      '${action['label'] ?? action['action'] ?? ''}';
+
+  Map<String, Object?>? get superPreflight {
+    final value = _superPreflight ?? _receipt?['superPreflight'];
+    return value is Map ? Map<String, Object?>.from(value) : null;
+  }
+
+  /// The phone's super holds allocations this plan needs; the service offers
+  /// Clear super and Stop, nothing else.
+  bool get needsWipeSuper {
+    final preflight = superPreflight;
+    if (preflight != null &&
+        preflight['needsWipe'] == true &&
+        preflight['cleared'] != true) {
+      return true;
+    }
+    return _receipt?['wipeSuperRequired'] == true &&
+        recoveryActions.any(
+          (action) => action['action'] == FlashRecovery.wipeSuper.name,
+        );
+  }
+
+  /// The plain-language failure: the core's link guidance, or the worker
+  /// loss when the page lost its service.
+  String? get plainFailure {
+    if (_workerLost) {
+      return 'The service worker stopped, so this page can no longer send '
+          'commands to the phone. It was not restarted and nothing was '
+          'replayed. Check the phone, reconnect it and start a new run.';
+    }
+    final failure = _receipt?['failure'] ?? _failureEvent;
+    if (failure is Map && failure.isNotEmpty) {
+      // The super preflight question is the service's own wording; the link
+      // guidance has nothing better for it.
+      if ('${failure['name']}' == 'SuperSpaceRequired') {
+        final message = '${failure['message'] ?? ''}'.trim();
+        return message.isEmpty ? superPreflightQuestion : message;
+      }
+      return describeLinkFailure(failure);
+    }
+    final reason = _receipt?['reason'];
+    if (reason is String && reason.isNotEmpty) return reason;
+    return _errorText;
+  }
+
+  /// The original structured evidence, one tap away from the plain message.
+  String? get rawFailure {
+    final failure = _receipt?['failure'] ?? _failureEvent;
+    if (failure is Map && failure.isNotEmpty) {
+      return const JsonEncoder.withIndent('  ').convert(failure);
+    }
+    return null;
+  }
+
+  static const powerCycleInstructions =
+      'Unplug the USB cable. Hold Power for 15 seconds until the phone turns '
+      'off, then hold Volume-Down + Power to enter bootloader fastboot and '
+      'reconnect the cable. This does not settle an uncertain write.';
+
+  static const superPreflightQuestion =
+      "This phone's super still holds another system (for example a custom "
+      'ROM). Clear it?';
+
+  String get superWarning =>
+      'Clearing super removes every logical system partition on '
+      '${_serial ?? 'the phone'}. The phone cannot boot until this run '
+      'completes. It is never automatic.';
+
+  /// The job the service derives from the OTA identity.
   String get jobId {
     final job = _prepared?.job ?? _derivedJob;
-    return job == null || job.isEmpty ? 'assigned by the service' : job;
+    if (job == null || job.isEmpty) return 'assigned by the service';
+    return job;
   }
 
   String get receiptPath =>
@@ -199,16 +434,21 @@ final class FlashController extends ChangeNotifier {
   /// The final button is enabled only for a fully resolved, explicitly
   /// confirmed plan whose token belongs to the current input.
   bool get canFlash =>
+      !_restored &&
       writesSupported &&
-      !running &&
+      !_live &&
       !_preparing &&
       !_starting &&
+      !_stoppingRun &&
       ready &&
       _acknowledged;
 
-  /// Any prompt without an explicit answer, or a plan whose mode still blocks
-  /// it.
+  /// Why the write cannot start, or null when it can.
   String? get blockingReason {
+    if (_restored) {
+      return 'This receipt is inspection only. Prepare and confirm a new run '
+          'to write again.';
+    }
     if (!writesSupported) {
       return 'This browser context cannot reach USB devices. Open the app in '
           'a Chromium browser over HTTPS or localhost.';
@@ -225,15 +465,13 @@ final class FlashController extends ChangeNotifier {
       return 'Answer every question before flashing: ${unanswered.join(' ')}';
     }
     if (!prepared.resolved || !prepared.hasToken) {
-      return 'The plan is not resolved yet. Prepare again after answering.';
+      return 'The plan is not resolved yet. Answer the questions again.';
     }
     if (!prepared.modeOk) {
       return 'The phone is in ${prepared.mode}. Reboot it to bootloader '
-          'fastboot, then choose it and prepare again.';
+          'fastboot, then check the phone again.';
     }
-    if (!_acknowledged) {
-      return 'Confirm the exact serial below.';
-    }
+    if (!_acknowledged) return 'Confirm the exact serial below.';
     return null;
   }
 
@@ -251,18 +489,36 @@ final class FlashController extends ChangeNotifier {
     return prepared.steps;
   }
 
+  /// Reload is offered only when no run is preparing, confirming, writing or
+  /// recovering.
+  bool get canReloadNow =>
+      _updateReady &&
+      !_live &&
+      !_preparing &&
+      !_starting &&
+      !_stoppingRun &&
+      _flow.phase != FlashRunPhase.recovering &&
+      _flow.phase != FlashRunPhase.confirming;
+
   Future<void> start() async {
+    _usbSubscription ??= bridge.usbAttachEvents.listen(_onUsbAttach);
+    _updateSubscription ??= bridge.appUpdates.listen(_onAppUpdate);
+    if (_restored) {
+      _notify();
+      return;
+    }
     await refreshDevices();
   }
 
   Future<void> refreshDevices() async {
-    if (_disposed || running) return;
+    if (_disposed || _live || _restored) return;
+    final generation = ++_devicesGeneration;
     _devicesLoading = true;
     _devicesError = null;
     _notify();
     try {
       final response = await api.fastbootDevices();
-      if (_disposed) return;
+      if (_disposed || generation != _devicesGeneration) return;
       final values = response['devices'];
       _devices = [
         if (values is List)
@@ -297,14 +553,24 @@ final class FlashController extends ChangeNotifier {
           _devicesError =
               'Serial $current is no longer granted. Reconnect the phone and '
               'choose it again.';
+          _setConnection(FlashConnection.lost);
         }
       }
     } on Object catch (error) {
-      if (_disposed) return;
+      if (_disposed || generation != _devicesGeneration) return;
       _devicesLoading = false;
       _devicesError = '$error';
     }
     _notify();
+  }
+
+  /// The Connect screen's "Check phone": lists the grants this page already
+  /// holds and selects the one phone when there is exactly one.
+  Future<void> checkPhone() async {
+    if (_disposed || _live || _restored) return;
+    await refreshDevices();
+    if (_disposed || _serial != null || _devices.length != 1) return;
+    selectDevice(_devices.first);
   }
 
   String _labelOf(Map<String, Object?> device) {
@@ -320,13 +586,16 @@ final class FlashController extends ChangeNotifier {
 
   void selectDevice(Map<String, Object?> device) {
     final serial = device['serial'];
-    if (serial is! String || serial.isEmpty || running) return;
+    if (serial is! String || serial.isEmpty || _live || _restored) return;
     if (serial == _serial) return;
     _serial = serial;
     _deviceLabel = _labelOf(device);
     _devicesError = null;
-    _resetPreparation();
     _answers.clear();
+    _resetPreparation();
+    _setConnection(FlashConnection.waiting);
+    _setPhase(FlashRunPhase.connecting);
+    _notice = null;
     _notify();
     unawaited(prepare());
   }
@@ -334,7 +603,7 @@ final class FlashController extends ChangeNotifier {
   /// Uses the page chooser. The chooser is invoked before any await so the
   /// browser still sees the click gesture.
   Future<void> chooseDevice() async {
-    if (running) return;
+    if (_live || _restored) return;
     _devicesError = null;
     _notify();
     final FastbootDeviceChoice? chosen;
@@ -361,16 +630,20 @@ final class FlashController extends ChangeNotifier {
     _deviceLabel = chosen.label.isEmpty
         ? chosen.serial
         : '${chosen.label} · ${chosen.serial}';
-    _resetPreparation();
     _answers.clear();
+    _resetPreparation();
+    _setConnection(FlashConnection.waiting);
+    _setPhase(FlashRunPhase.connecting);
+    _notice = null;
     _notify();
     await prepare();
   }
 
   void answerPrompt(String id, String choice) {
-    if (running) return;
+    if (_live || _restored) return;
     if (_answers[id] == choice) return;
     _answers[id] = choice;
+    _acknowledged = false;
     _resetPreparation();
     _notify();
     _schedulePrepare();
@@ -384,12 +657,9 @@ final class FlashController extends ChangeNotifier {
   }
 
   Map<String, Object?> _request({String? token, String? job}) {
-    // Preparation omits the job: the service derives it from the OTA
-    // identity and returns it. Execution echoes the returned id, which is
-    // what the confirmed plan is bound to.
     final jobId = job ?? _prepared?.job ?? _derivedJob;
     return {
-      'selection': target.selection,
+      'selection': target?.selection ?? const <String, Object?>{},
       'upstreamBase': upstreamBase,
       if (_serial != null) 'serial': _serial,
       'answers': Map<String, String>.from(_answers),
@@ -403,12 +673,13 @@ final class FlashController extends ChangeNotifier {
   /// when the caller's map changes. The file object itself stays the same
   /// reference: that is the identity the service compares too.
   Map<String, Object?> _virtualSnapshot() {
-    final virtual = target.virtualRequest;
+    final virtual = target?.virtualRequest ?? const <String, Object?>{};
     return {
       'ota': _otaSnapshot(virtual['ota']),
       if (virtual['base'] != null) 'base': _otaSnapshot(virtual['base']),
       'bloat': _storeSnapshot(virtual['bloat']),
-      if (target.vulnerableAbl != null) 'vulnerableAbl': target.vulnerableAbl,
+      if (target?.vulnerableAbl != null)
+        'vulnerableAbl': target!.vulnerableAbl,
     };
   }
 
@@ -431,22 +702,15 @@ final class FlashController extends ChangeNotifier {
       : store;
 
   Future<void> prepare() async {
-    if (_disposed || running) return;
+    if (_disposed || _live || _restored) return;
     final serial = _serial;
     if (serial == null || serial.isEmpty) return;
     _debounce?.cancel();
     final generation = ++_generation;
-    if (terminal) {
-      _result = null;
-      _receipt = null;
-      _guidance = null;
-      _cancelNote = null;
-      _errorText = null;
-    }
-    _phase = FlashPhase.preparing;
     _preparing = true;
     _prepareError = null;
     _acknowledged = false;
+    _setPhase(FlashRunPhase.preparing);
     _notify();
     final request = _request();
     try {
@@ -458,6 +722,9 @@ final class FlashController extends ChangeNotifier {
         _preparedRequest = null;
         _prepareError = describeLinkFailure(linkError);
         _log.add('Preparation evidence: ${jsonEncode(linkError)}');
+        _setConnection(_linkLost(linkError)
+            ? FlashConnection.lost
+            : FlashConnection.waiting);
         return;
       }
       final prepared = PreparedFlash.fromMap(response);
@@ -479,23 +746,54 @@ final class FlashController extends ChangeNotifier {
       _prepared = prepared;
       _preparedRequest = Map<String, Object?>.unmodifiable(request);
       if (prepared.job.isNotEmpty) _derivedJob = prepared.job;
+      _setConnection(
+        prepared.modeOk ? FlashConnection.ready : FlashConnection.waiting,
+      );
     } on Object catch (error) {
       if (_disposed || generation != _generation) return;
-      final text = '$error';
       _prepared = null;
       _preparedRequest = null;
-      _prepareError = text;
+      _prepareError = '$error';
+      _setConnection(FlashConnection.waiting);
     } finally {
       if (!_disposed && generation == _generation) {
         _preparing = false;
-        if (_phase == FlashPhase.preparing) _phase = FlashPhase.ready;
         _notify();
       }
     }
   }
 
+  bool _linkLost(Object? error) {
+    if (error is! Map) return false;
+    return error['disconnectObserved'] == true ||
+        error['sessionRetired'] == true ||
+        '${error['name']}' == 'Disconnected' ||
+        '${error['name']}' == 'NoDevice';
+  }
+
+  /// Check → Confirm. Only a resolved, consistent plan moves on.
+  void reviewPlan() {
+    if (_restored || _live || _preparing || !ready) return;
+    if (_flow.phase != FlashRunPhase.confirming) {
+      _flow = FlashFlowState(
+        connection: _flow.connection,
+        phase: FlashRunPhase.confirming,
+        certainty: _flow.certainty,
+      );
+    }
+    _notify();
+  }
+
+  /// Confirm → Check, so an answer can change. The acknowledgement clears.
+  void editAnswers() {
+    if (_restored || _live) return;
+    _acknowledged = false;
+    _setPhase(FlashRunPhase.preparing);
+    _notify();
+  }
+
   void setAcknowledged(bool value) {
-    if (running) return;
+    if (_live || _restored) return;
     if (value && !ready) return;
     _acknowledged = value && ready;
     _notify();
@@ -511,17 +809,20 @@ final class FlashController extends ChangeNotifier {
           'The confirmed input changed. Prepare the flash again before '
           'writing.';
       _resetPreparation();
-      _phase = FlashPhase.ready;
       _notify();
       return;
     }
     final generation = _generation;
     _starting = true;
     _notify();
+    // The checkpoint is written before the first command exists, so a reload
+    // during preparation still restores what this page knew.
+    await _persist();
     // The leave guard and wake lock must hold before the first command.
     try {
       await bridge.beginKeepAwake();
-      _awake = true;
+      _keepAwakeHeld = true;
+      _wakeLockReported = !wakeLockSupported;
     } on Object catch (error) {
       _starting = false;
       _errorText =
@@ -539,38 +840,43 @@ final class FlashController extends ChangeNotifier {
       _notify();
       return;
     }
-    _phase = FlashPhase.running;
     _starting = false;
+    _runKind = _RunKind.flash;
     _sawStep = false;
     _waiting = null;
     _result = null;
     _receipt = null;
+    _failureEvent = null;
+    _superPreflight = null;
     _errorText = null;
     _guidance = null;
-    _cancelNote = null;
-    _regrantMessage = null;
+    _notice = null;
+    _workerLost = false;
     _stepIndex = 0;
+    _totalSteps = 0;
     _stepTitle = '';
+    _progress.clear();
     _runId = null;
-    _failureStep = null;
-    _failureStatus = null;
-    _failureReason = null;
     _canRetry = false;
     _log
       ..clear()
-      ..add('Flashing ${target.label} to serial ${_serial ?? ''}.');
+      ..add('Flashing ${target?.label ?? ''} to serial ${_serial ?? ''}.');
+    _setPhase(FlashRunPhase.preparing);
     _notify();
+    _listen(api.flash(request));
+  }
+
+  void _listen(Stream<Map<String, Object?>> stream) {
+    final token = ++_streamToken;
     try {
-      _subscription = api
-          .flash(request)
-          .listen(
-            _onEvent,
-            onError: _onError,
-            onDone: _onDone,
-            cancelOnError: false,
-          );
+      _subscription = stream.listen(
+        (event) => _onEvent(event, token),
+        onError: (Object error) => _onError(error, token),
+        onDone: () => _onDone(token),
+        cancelOnError: false,
+      );
     } on Object catch (error) {
-      _onError(error);
+      _onError(error, token);
     }
   }
 
@@ -591,8 +897,6 @@ final class FlashController extends ChangeNotifier {
     return _sameVirtual(request['virtual'], prepared['virtual']);
   }
 
-  /// The virtual identity: the OTA source, the optional BASE OTA and the bloat
-  /// store.
   bool _sameVirtual(Object? a, Object? b) {
     if (a is! Map || b is! Map) return false;
     if (!_sameOta(a['ota'], b['ota']) || !_sameStore(a['bloat'], b['bloat'])) {
@@ -637,8 +941,32 @@ final class FlashController extends ChangeNotifier {
     return identical(left, right);
   }
 
-  void _onEvent(Map<String, Object?> event) {
-    if (_disposed) return;
+  void _applyFlow(Map<String, Object?> event) {
+    final flow = event['flow'];
+    if (flow is Map) {
+      final connection = _enumByName(FlashConnection.values, flow['connection']);
+      final phase = _enumByName(FlashRunPhase.values, flow['phase']);
+      final certainty = _enumByName(WriteCertainty.values, flow['certainty']);
+      _flow = FlashFlowState(
+        connection: connection ?? _flow.connection,
+        phase: phase ?? _flow.phase,
+        certainty: certainty ?? _flow.certainty,
+      );
+    } else {
+      _flow = _flow.onEvent(event);
+    }
+  }
+
+  T? _enumByName<T extends Enum>(List<T> values, Object? name) {
+    for (final value in values) {
+      if (value.name == '$name') return value;
+    }
+    return null;
+  }
+
+  void _onEvent(Map<String, Object?> event, int token) {
+    if (_disposed || token != _streamToken) return;
+    _applyFlow(event);
     switch (event['type']) {
       case 'run':
         final runId = event['runId'];
@@ -646,27 +974,17 @@ final class FlashController extends ChangeNotifier {
       case 'failure':
         _waiting = null;
         _regrantMessage = null;
+        _failureEvent = Map<String, Object?>.from(event);
         final index = event['stepIndex'];
-        final status = event['status'];
+        final failedAt = index is num ? index.toInt() : 0;
+        final status = '${event['status']}';
         final reason = event['reason'];
-        if (index is num) _failureStep = index.toInt();
-        _failureStatus = status is String && status == 'uncertain'
-            ? 'uncertain'
-            : 'failed';
-        _failureReason = reason is String && reason.isNotEmpty ? reason : null;
-        _phase = _failureStatus == 'uncertain'
-            ? FlashPhase.uncertain
-            : FlashPhase.failed;
-        final number = (_failureStep ?? 0) + 1;
         _log.add(
-          '${_failureStatus == 'uncertain' ? 'UNCERTAIN' : 'FAILED'}: step '
-          '$number${_failureReason == null ? '' : ' — $_failureReason'}',
+          '${status == 'uncertain' ? 'UNCERTAIN' : 'FAILED'}: step '
+          '${failedAt + 1}'
+          '${reason is String && reason.isNotEmpty ? ' — $reason' : ''}',
         );
-        _guidance = _failureStatus == 'uncertain'
-            ? 'The result is not confirmed. Nothing will be resent automatically. '
-                'A new connection does not settle the write. Save the receipt and choose an explicit recovery.'
-            : 'The run stopped at the first failure. Earlier steps stay applied. '
-                'Choose an applicable recovery or stop; nothing is resent automatically.';
+        _releaseAwake();
       case 'step':
         _waiting = null;
         _regrantMessage = null;
@@ -700,58 +1018,30 @@ final class FlashController extends ChangeNotifier {
           'Waiting for ${event['serial']} in ${event['mode']}. Grant the same '
           'phone again in the USB chooser.',
         );
+      case 'superPreflight':
+        _superPreflight = Map<String, Object?>.from(event);
+        _log.add('Super preflight: ${jsonEncode(event)}');
       case 'result':
         _result = Map<String, Object?>.from(event);
         final receipt = event['receipt'];
         _receipt = receipt is Map ? Map<String, Object?>.from(receipt) : null;
         final runId = event['runId'];
         if (runId is String && runId.isNotEmpty) _runId = runId;
-        final canRetry = event['canRetry'];
-        _canRetry = canRetry == true;
+        _canRetry = event['canRetry'] == true;
         final status = '${event['status'] ?? _receipt?['status'] ?? ''}';
-        _phase = switch (status) {
-          'succeeded' => FlashPhase.succeeded,
-          'cancelled' => FlashPhase.cancelled,
-          'stopped' => FlashPhase.stopped,
-          'uncertain' => FlashPhase.uncertain,
-          _ => FlashPhase.failed,
-        };
-        // A receipt repeats the failed step for pages that never saw the
-        // failure event; the event's own values stay authoritative.
-        if (_failureStep == null && _receipt?['stepIndex'] is num) {
-          _failureStep = (_receipt!['stepIndex']! as num).toInt();
-        }
-        if (_failureReason == null && _receipt?['reason'] is String) {
-          _failureReason = _receipt!['reason']! as String;
-        }
-        if (_failureStatus == null && _phase == FlashPhase.uncertain) {
-          _failureStatus = 'uncertain';
-        } else if (_failureStatus == null && _phase == FlashPhase.failed) {
-          _failureStatus = 'failed';
-        }
-        _log.add('Flash finished: $status.');
-        switch (_phase) {
-          case FlashPhase.failed:
-            _guidance ??=
-                'The run stopped at the first failure. Choose an explicit recovery or stop.';
-          case FlashPhase.uncertain:
-            _guidance ??=
-                'A write may have reached the phone without confirmation. '
-                'Nothing is resent automatically. A new connection does not settle the write.';
-          case FlashPhase.succeeded:
+        _log.add('Run finished: $status.');
+        switch (status) {
+          case 'succeeded':
+            _failureEvent = null;
             _guidance =
-                'The OTA was flashed in place from its own bytes and no local '
-                'job or history exists, so download the receipt now. Wiping '
-                'and rooting stay manual on the phone.';
-          case FlashPhase.stopped:
-            _guidance ??=
+                'The phone accepted every command with OKAY. That is not a '
+                'readback verification of the bytes. Wiping and root '
+                'installation stay manual on the phone.';
+          case 'stopped' || 'cancelled':
+            _guidance =
                 'Stopped on request. No rollback was performed; commands '
                 'already sent stay applied and a write in flight may have '
                 'left the phone partially written.';
-          case FlashPhase.cancelled:
-            _guidance ??=
-                'Cancelled. No rollback was performed; commands already sent '
-                'stay applied.';
           default:
             break;
         }
@@ -759,76 +1049,89 @@ final class FlashController extends ChangeNotifier {
       default:
         break;
     }
+    if (const {
+      'connection',
+      'run',
+      'step',
+      'failure',
+      'waiting',
+      'superPreflight',
+      'result',
+    }.contains('${event['type']}')) {
+      unawaited(_persist());
+    }
     _notify();
   }
 
-  void _onError(Object error) {
-    if (_disposed || terminal || _stoppingRun) return;
-    if (_phase != FlashPhase.running) {
-      _errorText = '$error';
-      _canRetry = false;
-      _phase = FlashPhase.failed;
-      _finish();
-      return;
-    }
+  void _onError(Object error, int token) {
+    if (_disposed || token != _streamToken) return;
+    _workerLost = true;
     _errorText = '$error';
-    _phase = _sawStep ? FlashPhase.uncertain : FlashPhase.failed;
-    if (_stepIndex > 0) _failureStep = _stepIndex - 1;
-    _failureStatus = _phase == FlashPhase.uncertain ? 'uncertain' : 'failed';
-    _failureReason ??= '$error';
-    _canRetry = false;
-    _guidance = _phase == FlashPhase.uncertain
-        ? 'The stream broke after at least one command, so the phone may be '
-              'partially written. Do not retry automatically. Reconnect it in '
-              'fastboot and inspect the device before preparing again.'
-        : 'The stream ended before any step ran. Reconnect the phone and '
-              'prepare again.';
     _log.add('ERROR: $error');
-    _finish();
+    _failureEvent = {
+      'name': 'WorkerLost',
+      'message': '$error',
+      'stage': 'stream',
+      'uncertain': _sawStep,
+    };
+    final certainty = _sawStep
+        ? WriteCertainty.uncertain
+        : _flow.certainty == WriteCertainty.confirmed
+        ? WriteCertainty.confirmed
+        : WriteCertainty.notSubmitted;
+    _flow = FlashFlowState(
+      connection: FlashConnection.stopped,
+      phase: FlashRunPhase.stopped,
+      certainty: certainty,
+    );
+    _finish(cancelSubscription: false);
+    _notify();
   }
 
-  void _onDone() {
-    if (_disposed || _stoppingRun) return;
-    if (terminal) {
-      // A result already ended the run; a failure event without a result
-      // still leaves this stream, so release the guard and the wake lock.
-      if (_subscription != null) _finish(cancelSubscription: false);
-      return;
-    }
-    if (_phase == FlashPhase.running) {
-      _phase = _sawStep ? FlashPhase.uncertain : FlashPhase.failed;
+  void _onDone(int token) {
+    if (_disposed || token != _streamToken) return;
+    if (_flow.phase == FlashRunPhase.writing ||
+        _flow.phase == FlashRunPhase.preparing) {
+      _workerLost = true;
       _errorText = 'The flash stream ended without a result.';
-      if (_stepIndex > 0) _failureStep = _stepIndex - 1;
-      _failureStatus = _phase == FlashPhase.uncertain ? 'uncertain' : 'failed';
-      _failureReason ??= _errorText;
-      _canRetry = false;
-      _guidance = _phase == FlashPhase.uncertain
-          ? 'A command may have reached the phone. Do not retry '
-                'automatically; reconnect it and inspect the device.'
-          : 'No step ran. Reconnect the phone and prepare again.';
-      _log.add('ERROR: The flash stream ended without a result.');
+      _log.add('ERROR: the flash stream ended without a result.');
+      _failureEvent = {
+        'name': 'WorkerLost',
+        'message': _errorText,
+        'stage': 'stream',
+        'uncertain': _sawStep,
+      };
+      _flow = FlashFlowState(
+        connection: FlashConnection.stopped,
+        phase: FlashRunPhase.stopped,
+        certainty: _sawStep
+            ? WriteCertainty.uncertain
+            : WriteCertainty.notSubmitted,
+      );
+      _finish(cancelSubscription: false);
+      _notify();
     }
-    _finish();
   }
 
   void _finish({bool cancelSubscription = true}) {
     _regranting = false;
     _waiting = null;
+    _runKind = _RunKind.none;
+    _streamToken++;
     final subscription = _subscription;
     _subscription = null;
     if (cancelSubscription && subscription != null) {
       _stopping = true;
-      _stoppingFuture = _cancelAndRelease(subscription);
-    } else if (!_stopping) {
+      unawaited(_cancelAndRelease(subscription));
+    } else {
       _releaseAwake();
     }
-    // A used token is never offered again: a retry names the paused run by id,
-    // and a fresh flash needs a new read-only preparation and confirmation.
-    if (terminal) {
-      _prepared = null;
-      _preparedRequest = null;
-      _acknowledged = false;
-    }
+    // A used token is never offered again: a new flash needs a new read-only
+    // preparation and confirmation.
+    _prepared = null;
+    _preparedRequest = null;
+    _acknowledged = false;
+    unawaited(_persist());
     _notify();
   }
 
@@ -836,124 +1139,27 @@ final class FlashController extends ChangeNotifier {
     StreamSubscription<Map<String, Object?>> subscription,
   ) async {
     try {
-      // Cancellation acknowledges only after the service stops in-flight work.
       await subscription.cancel();
     } on Object catch (error) {
       _log.add('Cancellation acknowledgement failed: $error');
-      _phase = FlashPhase.uncertain;
-      _guidance =
-          'The worker did not acknowledge cancellation. Inspect the '
-          'phone before any retry; no rollback was performed.';
     } finally {
-      if (_awake) {
-        _awake = false;
-        await _endAwake();
-      }
+      _releaseAwake();
       _stopping = false;
       _notify();
     }
   }
 
-  /// Cancelling stops future commands; it never rolls the phone back.
-  Future<void> cancel() async {
-    if (_phase != FlashPhase.running) {
-      await _stoppingFuture;
-      return;
-    }
-    _phase = FlashPhase.cancelled;
-    _cancelNote =
-        'Cancelled. No rollback was performed. Commands already sent stay '
-        'applied, and a write in flight may have left the phone partially '
-        'written. Reconnect it in fastboot and inspect it before flashing '
-        'again. Download the receipt from this page; a direct flash has no '
-        'local folder.';
-    _guidance =
-        'This is not a rollback. Do not retry automatically; reconnect the '
-        'phone and inspect its state.';
-    _log.add('Cancelled by you; no rollback was performed.');
-    _finish();
-    await _stoppingFuture;
-  }
-
-  List<Map<String, Object?>> get recoveryOptions => [
-    if (_receipt?['recoveryActions'] is List)
-      for (final value in _receipt!['recoveryActions']! as List)
-        if (value is Map && value['action'] != 'stopRun') Map<String, Object?>.from(value),
-  ];
-
-  Future<void> recover(FlashRecovery action, {String? confirmedSerial, bool powerCycled = false}) async {
-    final runId = _runId;
-    if (runId == null || !_canRetry || running || _disposed) return;
-    final stepNumber = (_failureStep ?? 0) + 1;
-    if (_totalSteps <= 0 && _receipt?['steps'] is List) {
-      _totalSteps = (_receipt!['steps']! as List).length;
-    }
-    _starting = true;
-    _notify();
-    // The leave guard and wake lock must hold before the first command.
-    try {
-      await bridge.beginKeepAwake();
-      _awake = true;
-    } on Object catch (error) {
-      _starting = false;
-      _errorText =
-          'Could not hold a wake lock or leave guard, so the retry was not '
-          'started: $error';
-      _notify();
-      return;
-    }
-    if (_disposed || _runId != runId || !_canRetry) {
-      _starting = false;
-      _releaseAwake();
-      _notify();
-      return;
-    }
-    _starting = false;
-    _canRetry = false;
-    _failureStep = null;
-    _failureStatus = null;
-    _failureReason = null;
-    _result = null;
-    _errorText = null;
-    _guidance = null;
-    _cancelNote = null;
-    _waiting = null;
-    _phase = FlashPhase.running;
-    _log.add('Recovery ${action.name} requested for step $stepNumber.');
-    _notify();
-    final request = <String, Object?>{'runId': runId,
-      'confirmedSerial': ?confirmedSerial,
-      if (powerCycled) 'powerCycled': true};
-    try {
-      final stream = switch (action) {
-        FlashRecovery.retryRead => api.retryRead(request),
-        FlashRecovery.reconnectDevice => api.reconnectDevice(request),
-        FlashRecovery.recoverBootloader => api.recoverBootloader(request),
-        FlashRecovery.recoverFastbootd => api.recoverFastbootd(request),
-        FlashRecovery.recoverPowerCycle => api.recoverPowerCycle(request),
-        FlashRecovery.rewriteStep => api.rewriteStep(request),
-        FlashRecovery.wipeSuper => api.wipeSuper(request),
-        FlashRecovery.stopRun => throw StateError('Use stopRun to stop.'),
-      };
-      _subscription = stream.listen(
-            _onEvent,
-            onError: _onError,
-            onDone: _onDone,
-            cancelOnError: false,
-          );
-    } on Object catch (error) {
-      _onError(error);
-    }
-  }
-
-  /// Stops a running or paused run and keeps the returned receipt. No rollback
-  /// happens: commands already sent stay applied.
+  /// Stops a running or paused run and keeps the returned receipt.
+  ///
+  /// No rollback happens: no new command is sent after the in-flight one
+  /// completes, and an uncertain attempt stays uncertain.
   Future<void> stop() async {
     final runId = _runId;
-    if (runId == null || _stoppingRun || _disposed) return;
-    if (_phase != FlashPhase.running && !_canRetry) return;
+    if (runId == null || _stoppingRun || _disposed || _restored) return;
+    if (_flow.phase != FlashRunPhase.writing && !_canRetry) return;
     _stoppingRun = true;
     _notify();
+    await _persist();
     Map<String, Object?>? receipt;
     Object? failure;
     try {
@@ -972,33 +1178,34 @@ final class FlashController extends ChangeNotifier {
       return;
     }
     _receipt = receipt;
-    _phase = FlashPhase.stopped;
     _canRetry = false;
-    _failureStep = null;
-    _failureStatus = null;
-    _failureReason = null;
     _errorText = null;
-    _cancelNote = null;
+    _notice = null;
     _guidance =
         'Stopped on request. No rollback was performed; commands already sent '
         'stay applied and a write in flight may have left the phone partially '
         'written.';
     _log.add('Stopped on request; no further commands are sent.');
-    _stoppingFuture = _finishStopped();
-    _notify();
-    await _stoppingFuture;
+    final flow = _flow.onEvent({
+      'type': 'result',
+      'status': 'stopped',
+      'receipt': receipt,
+    });
+    _flow = flow;
+    await _finishStopped();
   }
 
   Future<void> _finishStopped() async {
     _regranting = false;
     _waiting = null;
-    _prepared = null;
-    _preparedRequest = null;
-    _acknowledged = false;
+    _runKind = _RunKind.none;
+    _streamToken++;
     final subscription = _subscription;
     _subscription = null;
+    await _persist();
     if (subscription == null) {
       _releaseAwake();
+      _notify();
       return;
     }
     _stopping = true;
@@ -1007,13 +1214,98 @@ final class FlashController extends ChangeNotifier {
     } on Object catch (error) {
       _log.add('The stop acknowledgement failed: $error');
     } finally {
-      if (_awake) {
-        _awake = false;
-        await _endAwake();
-      }
+      _releaseAwake();
       _stopping = false;
       _notify();
     }
+  }
+
+  /// Runs one explicit recovery action. Only the service decides which
+  /// actions exist; this method only names the exact serial and the physical
+  /// confirmation the action requires.
+  Future<void> recover(
+    FlashRecovery action, {
+    String? confirmedSerial,
+    bool powerCycled = false,
+  }) async {
+    final runId = _runId;
+    if (runId == null || !canRecover || action == FlashRecovery.stopRun) {
+      return;
+    }
+    if ((action == FlashRecovery.rewriteStep ||
+            action == FlashRecovery.wipeSuper) &&
+        (confirmedSerial == null ||
+            _serial == null ||
+            confirmedSerial != _serial)) {
+      _errorText =
+          'Type the exact serial ${_serial ?? ''} to confirm this action.';
+      _notify();
+      return;
+    }
+    if (action == FlashRecovery.recoverPowerCycle && !powerCycled) {
+      _errorText = 'Follow the power-cycle instructions first.';
+      _notify();
+      return;
+    }
+    if (!recoveryActions.any((option) => option['action'] == action.name)) {
+      _errorText = 'The service does not offer that action for this run.';
+      _notify();
+      return;
+    }
+    _starting = true;
+    _notify();
+    await _persist();
+    try {
+      await bridge.beginKeepAwake();
+      _keepAwakeHeld = true;
+      _wakeLockReported = !wakeLockSupported;
+    } on Object catch (error) {
+      _starting = false;
+      _errorText =
+          'Could not hold a wake lock or leave guard, so the recovery was '
+          'not started: $error';
+      _notify();
+      return;
+    }
+    if (_disposed || _runId != runId || !_canRetry) {
+      _starting = false;
+      _releaseAwake();
+      _notify();
+      return;
+    }
+    _starting = false;
+    _canRetry = false;
+    _runKind = _RunKind.recovery;
+    _result = null;
+    _errorText = null;
+    _guidance = null;
+    _notice = null;
+    _waiting = null;
+    _workerLost = false;
+    _stepIndex = 0;
+    _totalSteps = 0;
+    _stepTitle = '';
+    _progress.clear();
+    _setPhase(FlashRunPhase.preparing);
+    _log.add('Recovery ${action.name} requested for step '
+        '${(_receipt?['stepIndex'] is num ? (_receipt!['stepIndex']! as num).toInt() : 0) + 1}.');
+    _notify();
+    final request = <String, Object?>{
+      'runId': runId,
+      'confirmedSerial': ?confirmedSerial,
+      if (powerCycled) 'powerCycled': true,
+    };
+    final stream = switch (action) {
+      FlashRecovery.retryRead => api.retryRead(request),
+      FlashRecovery.reconnectDevice => api.reconnectDevice(request),
+      FlashRecovery.recoverBootloader => api.recoverBootloader(request),
+      FlashRecovery.recoverFastbootd => api.recoverFastbootd(request),
+      FlashRecovery.recoverPowerCycle => api.recoverPowerCycle(request),
+      FlashRecovery.rewriteStep => api.rewriteStep(request),
+      FlashRecovery.wipeSuper => api.wipeSuper(request),
+      FlashRecovery.stopRun => throw StateError('Use stop() to stop.'),
+    };
+    _listen(stream);
   }
 
   /// Grants the waiting serial again. A different device is refused before
@@ -1060,17 +1352,14 @@ final class FlashController extends ChangeNotifier {
 
   Future<String?> downloadReceipt() async {
     final receipt = _receipt;
-    if (receipt == null) {
-      return 'No receipt is available yet.';
-    }
+    if (receipt == null) return 'No receipt is available yet.';
     final port = (_serial ?? 'device').replaceAll(
       RegExp(r'[^A-Za-z0-9._-]'),
       '_',
     );
-    final name = 'flash-$_jobSlug-$port.json';
     await bridge.downloadText(
       '${const JsonEncoder.withIndent('  ').convert(receipt)}\n',
-      name,
+      'flash-$_jobSlug-$port.json',
     );
     return null;
   }
@@ -1085,11 +1374,43 @@ final class FlashController extends ChangeNotifier {
     return null;
   }
 
+  /// The diagnostics the Done and Recover screens expose: the log plus the
+  /// raw receipt when one exists.
+  String get diagnosticsText {
+    final receipt = _receipt;
+    final failure = _failureEvent;
+    final buffer = StringBuffer();
+    if (_log.isNotEmpty) buffer.writeln(_log.join('\n'));
+    if (failure != null && receipt?['failure'] == null) {
+      buffer
+        ..writeln()
+        ..writeln('Failure evidence:')
+        ..writeln(const JsonEncoder.withIndent('  ').convert(failure));
+    }
+    if (receipt != null) {
+      buffer
+        ..writeln()
+        ..writeln('Receipt:')
+        ..writeln(const JsonEncoder.withIndent('  ').convert(receipt));
+    }
+    return buffer.toString();
+  }
+
+  /// The reload offer: the page keeps its checkpoint and reloads into it.
+  Future<void> reloadForUpdate() async {
+    if (!canReloadNow) return;
+    await _persist();
+    bridge.reloadPage();
+  }
+
   String get _jobSlug => jobId.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
 
   void _resetPreparation() {
     _debounce?.cancel();
     _generation++;
+    // The in-flight preparation is fenced by the generation; its spinner must
+    // not outlive it.
+    _preparing = false;
     _prepared = null;
     _preparedRequest = null;
     _acknowledged = false;
@@ -1098,14 +1419,167 @@ final class FlashController extends ChangeNotifier {
     _stepIndex = 0;
     _totalSteps = 0;
     _stepTitle = '';
-    if (_phase != FlashPhase.running) {
-      _phase = _serial == null ? FlashPhase.idle : FlashPhase.ready;
+    if (!_live && !_restored) {
+      _setPhase(
+        _serial == null ? FlashRunPhase.setup : FlashRunPhase.preparing,
+      );
     }
   }
 
+  void _setPhase(FlashRunPhase phase) {
+    if (_flow.phase == phase) return;
+    _flow = FlashFlowState(
+      connection: _flow.connection,
+      phase: phase,
+      certainty: _flow.certainty,
+    );
+  }
+
+  void _setConnection(FlashConnection connection) {
+    if (_flow.connection == connection) return;
+    _flow = _flow.onEvent({'type': 'connection', 'state': connection.name});
+  }
+
+  // ------------------------------------------------------------ lifecycle
+
+  void _onUsbAttach(UsbAttachEvent event) {
+    if (_disposed || _restored) return;
+    _log.add('USB $event.');
+    // Arrival and removal never change write certainty, never issue a write
+    // and never start a competing probe while a run is live.
+    if (_live || _flow.phase == FlashRunPhase.writing) {
+      _notify();
+      return;
+    }
+    final serial = event.serial;
+    if (serial != null && serial == _serial) {
+      if (event.attached) {
+        _setConnection(FlashConnection.waiting);
+        _notice =
+            'Serial $serial is back. Check the phone to prepare a new plan.';
+      } else {
+        _setConnection(FlashConnection.lost);
+        _notice =
+            'Serial $serial left USB. Replug it, then check the phone again.';
+        _resetPreparation();
+      }
+      _notify();
+      return;
+    }
+    if (!event.attached && _devices.isNotEmpty) {
+      _devices = [
+        for (final device in _devices)
+          if (device['serial'] != serial) device,
+      ];
+    }
+    _notify();
+  }
+
+  void _onAppUpdate(String version) {
+    if (_disposed) return;
+    _updateVersion = version;
+    _updateReady = true;
+    _log.add('A new app version ($version) took control of this page.');
+    _notify();
+  }
+
+  // ---------------------------------------------------------- checkpoints
+
+  Map<String, Object?> _checkpoint() => {
+    'version': 1,
+    'updatedAt': DateTime.now().toUtc().toIso8601String(),
+    'runId': ?_runId,
+    'serial': ?_serial,
+    'target': {
+      'label': target?.label ?? '',
+      'selection': target?.selection ?? const <String, Object?>{},
+    },
+    'status': _checkpointStatus,
+    'phase': _flow.phase.name,
+    'connection': _flow.connection.name,
+    'certainty': _flow.certainty.name,
+    'stepIndex': _stepIndex,
+    'totalSteps': _totalSteps,
+    'stepTitle': _stepTitle,
+    'receipt': ?_receipt,
+    if (_failureEvent != null) 'failure': _failureEvent,
+    if (_superPreflight != null) 'superPreflight': _superPreflight,
+  };
+
+  String get _checkpointStatus {
+    final status = _receipt?['status'];
+    if (status is String && status.isNotEmpty) return status;
+    return switch (_flow.phase) {
+      FlashRunPhase.writing => 'writing',
+      FlashRunPhase.preparing => 'preparing',
+      FlashRunPhase.recovering => 'failed',
+      FlashRunPhase.done => 'succeeded',
+      FlashRunPhase.stopped => 'stopped',
+      _ => 'idle',
+    };
+  }
+
+  Future<void> _persist() {
+    final snapshot = _checkpoint();
+    _checkpointWrites = _checkpointWrites.then((_) async {
+      try {
+        await bridge.writeFlashCheckpoint(snapshot);
+      } on Object {
+        // A blocked store leaves no restorable receipt; the live run is
+        // unaffected.
+      }
+    });
+    return _checkpointWrites;
+  }
+
+  void _restore(Map<String, Object?> checkpoint) {
+    _restored = true;
+    final runId = checkpoint['runId'];
+    if (runId is String && runId.isNotEmpty) _runId = runId;
+    final serial = checkpoint['serial'];
+    if (serial is String && serial.isNotEmpty) _serial = serial;
+    final receipt = checkpoint['receipt'];
+    _receipt = receipt is Map ? Map<String, Object?>.from(receipt) : null;
+    final failure = checkpoint['failure'];
+    _failureEvent = failure is Map ? Map<String, Object?>.from(failure) : null;
+    final preflight = checkpoint['superPreflight'];
+    _superPreflight = preflight is Map
+        ? Map<String, Object?>.from(preflight)
+        : null;
+    final index = checkpoint['stepIndex'];
+    if (index is num) _stepIndex = index.toInt();
+    final total = checkpoint['totalSteps'];
+    if (total is num) _totalSteps = total.toInt();
+    final title = checkpoint['stepTitle'];
+    if (title is String) _stepTitle = title;
+    final status = '${_receipt?['status'] ?? checkpoint['status'] ?? ''}';
+    final finished =
+        _receipt != null &&
+        (status == 'succeeded' || status == 'stopped' || status == 'failed');
+    final uncertain = _receipt?['uncertain'] == true || !finished;
+    _canRetry = false;
+    _flow = FlashFlowState(
+      connection: FlashConnection.stopped,
+      phase: status == 'succeeded' && !uncertain
+          ? FlashRunPhase.done
+          : FlashRunPhase.stopped,
+      certainty: status == 'succeeded' && !uncertain
+          ? WriteCertainty.confirmed
+          : uncertain
+          ? WriteCertainty.uncertain
+          : WriteCertainty.refused,
+    );
+    _restoredNote = uncertain
+        ? 'This run was still live, failed or uncertain when the page '
+              'reloaded. It was not resumed and none of its commands will be '
+              'replayed: treat any unconfirmed write as uncertain.'
+        : 'This is the receipt this browser kept when the page last loaded. '
+              'It is inspection only; prepare and confirm a new run to write.';
+  }
+
   void _releaseAwake() {
-    if (!_awake) return;
-    _awake = false;
+    if (!_keepAwakeHeld) return;
+    _keepAwakeHeld = false;
     unawaited(_endAwake());
   }
 
@@ -1113,9 +1587,13 @@ final class FlashController extends ChangeNotifier {
     try {
       await bridge.endKeepAwake();
     } on Object {
-      // The page is closing or the lock was already gone; nothing to fix.
+      // The page is closing or the guard was already gone; nothing to fix.
     }
   }
+
+  /// Reported once the guard is held: a page without a wake lock is told so
+  /// rather than treated as a reason to write without confirmation.
+  bool get wakeLockMissing => _wakeLockReported;
 
   void _notify() {
     if (!_disposed) notifyListeners();
@@ -1125,14 +1603,19 @@ final class FlashController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _debounce?.cancel();
+    _streamToken++;
     final subscription = _subscription;
     _subscription = null;
     if (subscription != null) {
       _stopping = true;
       unawaited(_cancelAndRelease(subscription));
-    } else if (!_stopping) {
+    } else {
       _releaseAwake();
     }
+    unawaited(_usbSubscription?.cancel());
+    unawaited(_updateSubscription?.cancel());
     super.dispose();
   }
 }
+
+enum _RunKind { none, flash, recovery }

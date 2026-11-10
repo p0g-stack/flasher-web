@@ -45,7 +45,35 @@ class _AppShellState extends State<AppShell> {
 
   AppPage _page = AppPage.setup;
   FlashController? _flash;
-  FlashTarget? _flashTarget;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_restoreCheckpoint());
+  }
+
+  /// A reload restores the last checkpoint as an inspection-only receipt.
+  ///
+  /// The run it describes is gone with the page: nothing is resumed, no
+  /// command is replayed and a new preparation and confirmation are required
+  /// to write again.
+  Future<void> _restoreCheckpoint() async {
+    final checkpoint = await widget.runtime.bridge.readFlashCheckpoint();
+    if (!mounted || checkpoint == null || checkpoint.isEmpty) return;
+    if (_flash != null) return;
+    final controller = FlashController(
+      api: widget.runtime.service,
+      bridge: widget.runtime.bridge,
+      environment: widget.environment,
+      upstreamBase: widget.runtime.upstreamBase,
+      checkpoint: checkpoint,
+    );
+    setState(() {
+      _flash = controller;
+      _page = AppPage.flash;
+    });
+    unawaited(controller.start());
+  }
 
   static const _titles = {
     AppPage.setup: (
@@ -75,19 +103,19 @@ class _AppShellState extends State<AppShell> {
 
   List<AppPage> get _destinations => [
     AppPage.setup,
-    if (_flashTarget != null) AppPage.flash,
+    if (_flash != null) AppPage.flash,
     AppPage.environment,
     AppPage.documentation,
   ];
 
   void _navigate(AppPage page) {
-    if (page == AppPage.flash && _flashTarget == null) return;
-    if (_flash?.running == true && page != AppPage.flash) {
+    if (page == AppPage.flash && _flash == null) return;
+    if (_flash?.busy == true && page != AppPage.flash) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
             'The flash is still running. Stay here until it finishes or '
-            'cancel it; leaving does not stop the phone write.',
+            'stop it; leaving does not stop the phone write.',
           ),
         ),
       );
@@ -98,11 +126,11 @@ class _AppShellState extends State<AppShell> {
 
   void _openFlash(FlashTarget target) {
     final current = _flash;
-    if (current != null && current.running) {
+    if (current != null && current.busy) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'A flash is already running. Cancel it or wait for the receipt '
+            'A flash is already running. Stop it or wait for the receipt '
             'before starting another.',
           ),
         ),
@@ -119,18 +147,21 @@ class _AppShellState extends State<AppShell> {
     );
     setState(() {
       _flash = controller;
-      _flashTarget = target;
       _page = AppPage.flash;
     });
     unawaited(controller.start());
   }
 
-  void _flashDirect() {
+  Future<void> _flashDirect() async {
     final ota = _setup.directFlashOta;
     final base = _setup.directFlashBase;
     final selection = _setup.selectionMap;
     if (ota == null || selection == null) return;
     if (_setup.needsBase && base == null) return;
+    // Continue is an explicit new run: the previous receipt is not restored
+    // into it.
+    await widget.runtime.bridge.clearFlashCheckpoint();
+    if (!mounted) return;
     _openFlash(
       FlashTarget(
         ota: ota,
