@@ -498,7 +498,7 @@ mod tests {
 
     struct Recorder {
         writes: Vec<usize>,
-        replies: VecDeque<&'static [u8]>,
+        replies: VecDeque<Vec<u8>>,
     }
 
     impl BulkTransport for Recorder {
@@ -510,7 +510,7 @@ mod tests {
             Ok(())
         }
         async fn read(&mut self, _max: usize) -> Result<Vec<u8>, TransportError> {
-            Ok(self.replies.pop_front().expect("unexpected read").to_vec())
+            Ok(self.replies.pop_front().expect("unexpected read"))
         }
         async fn close(&mut self) -> Result<(), TransportError> {
             Ok(())
@@ -523,11 +523,9 @@ mod tests {
         // header and then data; only the final transfer may be short.
         let pieces = [28, 12, MAX_CHUNK, MAX_CHUNK, 12, 500];
         let total: usize = pieces.iter().sum();
-        let data_reply: &'static [u8] =
-            Box::leak(format!("DATA{total:08x}").into_bytes().into_boxed_slice());
         let transport = Recorder {
             writes: Vec::new(),
-            replies: VecDeque::from([data_reply, b"OKAY".as_slice()]),
+            replies: VecDeque::from([format!("DATA{total:08x}").into_bytes(), b"OKAY".to_vec()]),
         };
         let mut session = Session::new(transport, "S".into(), 64, Duration::from_secs(5));
         tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async {
