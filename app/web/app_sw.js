@@ -16,11 +16,10 @@
 // pulled chunk by chunk over a broadcast channel. Those bytes are never cached
 // and the route is answered before anything else.
 //
-// Bump CACHE_VERSION when the strategy changes. Asset URLs are stable across
-// builds, so cached responses are revalidated in the background; a deploy is
-// picked up on the next navigation without wiping the cache up front.
+// Bump CACHE_VERSION when the strategy changes. Same-origin assets are
+// network-first so a deploy runs on the next load; the caches serve offline.
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const SHELL_CACHE = `flasher-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `flasher-assets-${CACHE_VERSION}`;
 const ENGINE_CACHE = `flasher-engine-${CACHE_VERSION}`;
@@ -157,9 +156,15 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  const sameOrigin = url.origin === self.location.origin;
-  const cacheName = sameOrigin ? ASSET_CACHE : ENGINE_CACHE;
-  event.respondWith(staleWhileRevalidate(event, request, cacheName));
+  // Same-origin code (main.dart.js, workers, the Rust wasm) is network-first:
+  // a stale-while-revalidate copy would run the previous build for one load
+  // after every deploy, including its USB transport. The cache is the offline
+  // fallback only.
+  if (url.origin === self.location.origin) {
+    event.respondWith(assetNetworkFirst(event, request));
+    return;
+  }
+  event.respondWith(staleWhileRevalidate(event, request, ENGINE_CACHE));
 });
 
 /// `/api/catalog`, `/api/resolve`, `/api/manifest`, `/api/block`, `/api/bloat/…`.
@@ -413,7 +418,21 @@ async function networkFirst(event, request) {
   }
 }
 
-/// Same-origin assets: cached immediately, refreshed in the background.
+/// Same-origin assets: fresh when the network answers, cached when it does not.
+async function assetNetworkFirst(event, request) {
+  const cache = await caches.open(ASSET_CACHE);
+  try {
+    const response = await fetch(request);
+    if (isCacheable(response)) {
+      event.waitUntil(cache.put(request, response.clone()));
+    }
+    return response;
+  } catch (error) {
+    return (await cache.match(request)) || Response.error();
+  }
+}
+
+/// Cross-origin engine assets: cached immediately, refreshed in the background.
 async function staleWhileRevalidate(event, request, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
