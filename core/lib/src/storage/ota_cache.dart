@@ -254,8 +254,7 @@ final class OtaCacheEntry {
   /// When the cache last served or resumed this entry; eviction order.
   final DateTime lastUsedAt;
 
-  /// Bytes this entry occupies now: the whole OTA once complete, the partial
-  /// download before that.
+  /// Durable downloaded data, not the logical allocation of a sparse file.
   int get bytes => complete ? length : written;
 
   /// The same entry with a fresh use stamp.
@@ -448,6 +447,21 @@ final class OtaCache {
     }
     found.sort((left, right) => left.lastUsedAt.compareTo(right.lastUsedAt));
     return found;
+  }
+
+  /// Logical file extent already charged to storage for this entry.
+  ///
+  /// A partial download can have large unwritten holes: its allocation is
+  /// distinct from [OtaCacheEntry.bytes], the durable downloaded data.
+  Future<int> allocatedBytes(OtaCacheEntry entry) async {
+    final path = entry.complete
+        ? _archive(entry.key)
+        : '$_directory/${entry.key}${dlx.tempExt}';
+    try {
+      return await workspace.exists(path) ? await workspace.size(path) : 0;
+    } on Object {
+      return 0;
+    }
   }
 
   /// The complete, intact entry for a catalog [entry], or null.

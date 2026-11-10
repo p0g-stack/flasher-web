@@ -988,13 +988,23 @@ final class SetupState extends ChangeNotifier {
     );
   }
 
-  /// Whether a catalog OTA fits under the app cap and the platform quota.
-  /// Unknown numbers never promise a fit.
+  /// Whether the additional file extent fits under the cap and platform quota.
+  /// An existing allocation is credited only to the same catalog entry.
   bool otaFitsCache(Map<String, dynamic> entry) {
     if (_budget == null || _budgetError != null) return false;
     final size = entry['size'];
     if (size is! num || size <= 0) return false;
-    return size.toInt() <= budgetAvailable;
+    final key = cacheKeyFor(entry);
+    var allocated = 0;
+    for (final item in cachedOtas) {
+      if (key == null || item['key'] != key) continue;
+      final value = item['allocated'];
+      if (value is num && value > 0) {
+        allocated = value.toInt().clamp(0, size.toInt());
+      }
+      break;
+    }
+    return size.toInt() - allocated <= budgetAvailable;
   }
 
   /// Whether the catalog [role] may be downloaded now.

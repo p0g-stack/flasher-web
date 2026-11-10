@@ -50,6 +50,14 @@ browser and from the volume on the VM; a source that cannot measure anything
 leaves the cap as the only limit. Local OTA files are read in place and never
 counted.
 
+Each `storageBudget.items` entry reports `bytes` (durable downloaded data) and
+`allocated` (the current logical file extent, zero if missing). A sparse
+`<key>.downloadx.part` can have an allocation much larger than `bytes`; that
+extent is already included in `usage`. Resuming the same catalog entry needs
+only `max(0, catalog size - allocated)` additional space. Allocation belonging
+to a different entry is not credited, and the service rechecks the file before
+resuming.
+
 For a picked directory, an unknown estimate deliberately avoids applying the
 origin's quota to that folder. Only the app cap applies, and filesystem writes
 can still fail when the destination drive fills.
@@ -61,7 +69,7 @@ can still fail when the destination drive fills.
 | `Future<Map> environment()` | – | `{"facts": [...], "native": bool, "upstream": "<commit>", "storage": {"opfs": bool, "picker": bool, "handle": bool, "persisted": bool, "quota": int, "usage": int}}` |
 | `Future<Map> bloatStatus(Map req)` | `{"selection": Sel, "store": Store, "upstreamBase": String}` | `{"total": int, "downloaded": int, "bytes": int, "ready": bool}` |
 | `Stream<Map> downloadBloat(Map req)` | same as `bloatStatus` + `"apiBase": String` | events (below); last is `{"type": "result", "bloat": {...status}}` |
-| `Future<Map> storageBudget(Map req)` | `{"store": Store, "apiBase": String?}` | `{"cap": int, "usage": int, "quota": int, "available": int, "items": [{"key", "label", "bytes", "complete", "lastUsed"}]}` |
+| `Future<Map> storageBudget(Map req)` | `{"store": Store, "apiBase": String?}` | `{"cap": int, "usage": int, "quota": int, "available": int, "items": [{"key", "label", "bytes", "allocated", "complete", "lastUsed"}]}` |
 | `Stream<Map> cacheOta(Map req)` | `{"store": Store, "ota": {"kind": "catalog", "entry": <release>}, "apiBase": String?}` | `started`/`progress` events; last is `{"type": "result", "key", "label", "bytes", "complete", "sha256", "etag", "lastUsed"}` |
 | `Stream<Map> saveOta(Map req)` | `{"ota": {"kind": "catalog", "entry": <release>}, "apiBase": String?, "destination": FileSystemFileHandle \| {"kind": "stream", "id", "channel"} \| {"kind": "path", "path"}}` | `started`/`progress` events (as for `cacheOta`, without `key`); last is `{"type": "result", "label", "bytes", "sha256"}`. Copies the OTA byte for byte outside the stores; no budget check. A file or path destination resumes from its recorded ranges when the same destination is passed again; a stream destination cannot resume |
 | `Future<Map> evictCachedOta(Map req)` | `{"store": Store, "key": String}` | `{"key", "removed": bool, "freed": int, "storage": {"cap", "usage", "quota", "available"}}` |

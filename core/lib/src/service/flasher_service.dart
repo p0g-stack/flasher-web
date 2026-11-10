@@ -199,7 +199,8 @@ base class FlasherService {
   /// The storage cap, the origin's usage and the cached OTAs of [store].
   ///
   /// `items` is the UI's cache list, most recently used first: `key` (catalog
-  /// entry digest), `label`, `bytes`, `complete`, `lastUsed` (ISO-8601 UTC).
+  /// entry digest), `label`, `bytes` (durable data), `allocated` (file extent),
+  /// `complete`, `lastUsed` (ISO-8601 UTC).
   @squadronMethod
   Future<Map<String, Object?>> storageBudget(Map<String, Object?> req) async {
     final workspace = await _openStoreWorkspace(req['store']);
@@ -221,6 +222,7 @@ base class FlasherService {
             'key': entry.key,
             'label': entry.label,
             'bytes': entry.bytes,
+            'allocated': await cache.allocatedBytes(entry),
             'complete': entry.complete,
             'lastUsed': entry.lastUsedAt.toIso8601String(),
           },

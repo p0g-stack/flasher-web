@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:downloadx/downloadx.dart' show tempExt;
 import 'package:flasher_web_core/src/storage/budget.dart';
+import 'package:flasher_web_core/src/service/flasher_service.dart';
 import 'package:flasher_web_core/src/storage/ota_cache.dart';
 import 'package:flasher_web_core/src/storage/ota_destination_io.dart';
 import 'package:flasher_web_core/src/storage/storage.dart';
@@ -277,13 +278,24 @@ void main() {
     final key = otaEntryDigest(entry);
     final part = File('${temp.path}/ota-cache/$key$tempExt');
     expect(await part.length(), bytes.length);
-    expect((await downloaded.entries()).single.written, lessThan(bytes.length));
+    final partial = (await downloaded.entries()).single;
+    expect(partial.written, lessThan(bytes.length));
+    expect(await downloaded.allocatedBytes(partial), bytes.length);
+    final status = await FlasherService().storageBudget({
+      'store': {'kind': 'path', 'path': temp.path},
+    });
+    final item = (status['items'] as List).single as Map;
+    expect(item['bytes'], partial.written);
+    expect(item['allocated'], bytes.length);
     failing = false;
     final budget = StorageBudget(
       estimateSource: _Estimate(bytes.length), cap: bytes.length,
     );
     final result = await downloaded.cache(entry, budget: budget);
     expect(result.sha256, sha256.convert(bytes).toString());
+    expect(await downloaded.allocatedBytes(result), bytes.length);
+    await File('${temp.path}/ota-cache/$key.zip').delete();
+    expect(await downloaded.allocatedBytes(result), 0);
   });
 
   test('an error before started reaches the subscriber before stream done', () async {
