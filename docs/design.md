@@ -118,15 +118,43 @@ store uses an unknown estimate: only the app cap applies, not the origin quota.
 
 ### Catalog OTA cache (`storage/ota_cache.dart`)
 
-Optional and disposable: `ota-cache/<digest>.zip` plus a JSON sidecar (entry
-digest, label, catalog size, observed length, ETag, bytes written, complete
-flag, full-file SHA-256, use timestamps). `<digest>` is a canonical digest of
-the catalog entry with signed-URL query strings and ranking hints removed, so
-two releases never share a key. Bytes are written positionally, so an
-interrupted download resumes at its recorded offset. A complete cache hit is
-transparent — same catalog identity, same archive — and payload operation
-hashes are still checked while it is read, so a corrupt cache cannot corrupt a
-flash. A cache that cannot be read is a miss and the OTA streams instead.
+Optional and disposable. Per catalog entry: `ota-cache/<digest>.json` (the
+inventory: label, catalog size, ETag, bytes written, complete flag, full-file
+SHA-256, use timestamps), `<digest>.part` while downloading, `<digest>.zip`
+when complete, and `<digest>.downloadx.json`, the chunk layout of the
+[`downloadx`](https://pub.dev/packages/downloadx) engine. `<digest>` is a
+canonical digest of the catalog entry with signed-URL query strings and ranking
+hints removed, so two releases never share a key.
+
+A download fetches 8 ranges of 8 MiB at once through `/api/ota` and writes
+them positionally; downloadx splits slow ranges so fast connections keep
+working. Every response must carry exactly the requested `Content-Range` and
+the same strong ETag, and the length is pinned to the catalog size, so a server
+that changed the file is refused, not mixed in. An expired signed link is
+resolved once for all connections. The chunk layout is written only after its
+bytes are flushed (every 8 MiB in OPFS or a folder, every 512 MiB in a file
+picked with the save picker, where each flush copies the file), so a cancel,
+crash or reload resumes with only the missing ranges. Before resuming, every
+recorded range must still be inside the file; a shorter file restarts from
+zero. A server without a strong ETag gets one connection and no resume across
+sessions. The full-file SHA-256 is read back once at the end. A complete cache
+hit is transparent — same catalog identity, same archive — and payload
+operation hashes are still checked while it is read, so a corrupt cache cannot
+corrupt a flash. A cache that cannot be read is a miss and the OTA streams
+instead.
+
+**Download OTA → This computer** uses the same engine into the file the save
+picker returned. The page remembers that file handle before the first byte; a
+save that stops offers **Resume save** after a reload, which renews write
+permission and fetches only the missing ranges into the same file. Picking the
+file again cannot resume: Chromium truncates an existing file chosen in the
+save picker. On Android Chrome, which has no save picker, the OTA streams to the
+browser's downloads in file order with 8 ranges in flight (at most 64 MiB
+buffered); that download is faster but cannot resume.
+
+Through the local proxy on one 5.3 GB OTA (256 MiB measured, including link
+resolution and the final hash): one connection 9.3 MiB/s, eight 47.6 MiB/s.
+A process killed after 64 MiB resumed by fetching exactly the 192 MiB missing.
 
 ## The virtual package (one pass)
 

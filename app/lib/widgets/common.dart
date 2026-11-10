@@ -192,11 +192,15 @@ class ByteProgress extends StatelessWidget {
     required this.label,
     required this.done,
     required this.total,
+    this.detail,
   });
 
   final String label;
   final int done;
   final int total;
+
+  /// A second line under the bar, for example the transfer rate.
+  final String? detail;
 
   @override
   Widget build(BuildContext context) {
@@ -225,6 +229,10 @@ class ByteProgress extends StatelessWidget {
           ),
           const SizedBox(height: 3),
           LinearProgressIndicator(value: value, minHeight: 5),
+          if (detail != null) ...[
+            const SizedBox(height: 3),
+            Text(detail!, style: theme.textTheme.labelSmall),
+          ],
         ],
       ),
     );

@@ -133,7 +133,9 @@ The setup page has four steps and one action card:
    computer** saves it where you choose (outside the app cap) and then reads it
    as the local OTA, or starts a browser download on Android Chrome; **App
    cache** keeps it in `ota-cache/` under the app cap, and a flash of the same
-   version reads it instead of the network.
+   version reads it instead of the network. Downloads use 8 connections; an
+   interrupted cache download, or a save into a chosen file (**Resume save**),
+   continues with only the missing parts.
 4. **Vulnerable ABL** — the X9U choice between the bloat ABL 16.0.6 and the
    OTA's ABL.
 
@@ -181,8 +183,8 @@ worker shell. A local OTA file costs nothing because it is read in place.
 
 - Bloat uses OPFS by default, or an optionally picked folder on desktop
   Chromium. Its `ota-cache/` holds an OTA only when the user downloads one
-  catalog release into the app cache; interrupted downloads resume at their
-  recorded offsets, and least-recently-used eviction makes room for a new
+  catalog release into the app cache; interrupted downloads resume with only
+  their missing ranges, and least-recently-used eviction makes room for a new
   write. An OTA saved to this computer is outside the cap.
 - A write that would pass the cap is refused after eviction has freed what it
   could. The browser's origin quota may be lower than the cap. A picked

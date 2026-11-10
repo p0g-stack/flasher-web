@@ -763,6 +763,7 @@ class _OtaDownload extends StatelessWidget {
               label: item.key,
               done: item.value.done,
               total: item.value.total,
+              detail: _transferDetail(downloads, item.key, item.value),
             ),
           Align(
             alignment: Alignment.centerLeft,
@@ -789,11 +790,31 @@ class _OtaDownload extends StatelessWidget {
               ),
             ),
           ),
-        if (mine && downloads.notice != null)
+        if (!downloads.running && downloads.pendingSave?.role == role) ...[
           HintText(
-            downloads.notice!,
-            key: ValueKey('otaDownloadNotice-$role'),
+            '${downloads.pendingSave!.name} was not finished. Resume writes '
+            'only the missing parts into the same file.',
+            key: ValueKey('pendingOtaSave-$role'),
           ),
+          Wrap(
+            spacing: 8,
+            children: [
+              TextButton.icon(
+                key: ValueKey('resumeOtaSave-$role'),
+                onPressed: setup.resumeOtaSave,
+                icon: const Icon(Icons.play_arrow, size: 18),
+                label: const Text('Resume save'),
+              ),
+              TextButton(
+                key: ValueKey('discardOtaSave-$role'),
+                onPressed: downloads.discardSave,
+                child: const Text('Discard'),
+              ),
+            ],
+          ),
+        ],
+        if (mine && downloads.notice != null)
+          HintText(downloads.notice!, key: ValueKey('otaDownloadNotice-$role')),
         if (mine && downloads.error != null)
           HintText(
             downloads.error!,
@@ -802,6 +823,23 @@ class _OtaDownload extends StatelessWidget {
           ),
       ],
     );
+  }
+
+  static String _transferDetail(
+    OtaDownloadController downloads,
+    String label,
+    ({int done, int total}) progress,
+  ) {
+    final parts = [
+      '${formatBytes(progress.done)} of ${formatBytes(progress.total)}',
+    ];
+    final rate = downloads.rate(label);
+    if (rate != null) parts.add('${formatBytes(rate.round())}/s');
+    final resumed = downloads.resumedFrom(label);
+    if (resumed > 0) {
+      parts.add('resumed with ${formatBytes(resumed)} already saved');
+    }
+    return parts.join(' · ');
   }
 
   Future<void> _choose(BuildContext context) async {
@@ -958,7 +996,9 @@ class _ActionsCard extends StatelessWidget {
           children: [
             Tooltip(
               key: const ValueKey('directFlashHint'),
-              message: directError.isEmpty ? setup.directFlashHint : directError,
+              message: directError.isEmpty
+                  ? setup.directFlashHint
+                  : directError,
               child: FilledButton.icon(
                 key: const ValueKey('flashDirectButton'),
                 onPressed: setup.canFlashDirect && onFlashDirect != null
@@ -1002,7 +1042,10 @@ class _ActionsCard extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(height: 12),
-                          Align(alignment: Alignment.centerRight, child: actions),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: actions,
+                          ),
                         ],
                       )
                     : Row(
@@ -1130,9 +1173,8 @@ class _ActionsCard extends StatelessWidget {
   Future<void> _export(BuildContext context) async {
     final message = await setup.exportZip();
     if (!context.mounted || message == null) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 }
 

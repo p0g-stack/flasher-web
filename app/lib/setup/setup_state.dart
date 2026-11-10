@@ -65,6 +65,7 @@ final class SetupState extends ChangeNotifier {
     });
     unawaited(_restoreStores());
     unawaited(_restoreOtaFile());
+    unawaited(otaDownloads.loadPendingSave());
     unawaited(refreshBloat());
     unawaited(refreshBudget());
   }
@@ -927,9 +928,7 @@ final class SetupState extends ChangeNotifier {
   }
 
   bool get canExportZip =>
-      exportRequirementsError.isEmpty &&
-      !_bloatDownloading &&
-      !catalogLoading;
+      exportRequirementsError.isEmpty && !_bloatDownloading && !catalogLoading;
 
   /// Streams the package a direct flash would write into a save-picker file.
   Future<String?> exportZip() async {
@@ -1058,6 +1057,19 @@ final class SetupState extends ChangeNotifier {
       ota: ota,
       apiBase: runtime.apiBase,
       suggestedName: otaFileName(entry),
+      onSaved: (file) => setLocalFile(role, file),
+    );
+  }
+
+  /// Continues an unfinished save into the file picked for it.
+  ///
+  /// Call from the click handler: renewing write permission needs the
+  /// gesture.
+  Future<void> resumeOtaSave() async {
+    final role = otaDownloads.pendingSave?.role;
+    if (role == null) return;
+    await otaDownloads.resumeSave(
+      apiBase: runtime.apiBase,
       onSaved: (file) => setLocalFile(role, file),
     );
   }

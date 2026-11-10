@@ -328,6 +328,35 @@ final class FakePlatformBridge implements PlatformBridge {
     return savedOta;
   }
 
+  /// The remembered unfinished save, as [rememberOtaSave] stored it.
+  ({Object destination, Map<String, Object?> request})? otaSave;
+
+  /// Whether [requestRememberedOtaSave] grants write permission.
+  bool grantOtaSave = true;
+
+  @override
+  Future<void> rememberOtaSave(
+    Object destination,
+    Map<String, Object?> request,
+  ) async {
+    otaSave = (destination: destination, request: request);
+  }
+
+  @override
+  Future<({String name, Map<String, Object?> request})?>
+  rememberedOtaSave() async {
+    final save = otaSave;
+    if (save == null) return null;
+    return (name: '${save.request['suggestedName']}', request: save.request);
+  }
+
+  @override
+  Future<Object?> requestRememberedOtaSave() async =>
+      grantOtaSave ? otaSave?.destination : null;
+
+  @override
+  Future<void> forgetOtaSave() async => otaSave = null;
+
   @override
   Future<FastbootDeviceChoice?> chooseFastbootDevice() async {
     chooseFastbootCalls++;

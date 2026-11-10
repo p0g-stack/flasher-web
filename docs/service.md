@@ -63,7 +63,7 @@ can still fail when the destination drive fills.
 | `Stream<Map> downloadBloat(Map req)` | same as `bloatStatus` + `"apiBase": String` | events (below); last is `{"type": "result", "bloat": {...status}}` |
 | `Future<Map> storageBudget(Map req)` | `{"store": Store, "apiBase": String?}` | `{"cap": int, "usage": int, "quota": int, "available": int, "items": [{"key", "label", "bytes", "complete", "lastUsed"}]}` |
 | `Stream<Map> cacheOta(Map req)` | `{"store": Store, "ota": {"kind": "catalog", "entry": <release>}, "apiBase": String?}` | `started`/`progress` events; last is `{"type": "result", "key", "label", "bytes", "complete", "sha256", "etag", "lastUsed"}` |
-| `Stream<Map> saveOta(Map req)` | `{"ota": {"kind": "catalog", "entry": <release>}, "apiBase": String?, "destination": FileSystemFileHandle \| {"kind": "stream", "id", "channel"} \| {"kind": "path", "path"}}` | `started`/`progress` events; last is `{"type": "result", "label", "bytes", "sha256"}`. Copies the OTA byte for byte outside the stores; no budget check; a failed copy leaves a partial file |
+| `Stream<Map> saveOta(Map req)` | `{"ota": {"kind": "catalog", "entry": <release>}, "apiBase": String?, "destination": FileSystemFileHandle \| {"kind": "stream", "id", "channel"} \| {"kind": "path", "path"}}` | `started`/`progress` events (as for `cacheOta`, without `key`); last is `{"type": "result", "label", "bytes", "sha256"}`. Copies the OTA byte for byte outside the stores; no budget check. A file or path destination resumes from its recorded ranges when the same destination is passed again; a stream destination cannot resume |
 | `Future<Map> evictCachedOta(Map req)` | `{"store": Store, "key": String}` | `{"key", "removed": bool, "freed": int, "storage": {"cap", "usage", "quota", "available"}}` |
 | `Future<Map> inspectOta(Map req)` | `{"ota": OtaInput, "apiBase": String}` | `{"version", "fields": {...metadata}, "partitions": {name: size}, "length": int, "stored": bool, "arb": {"major","minor","index"}?, "device": String?, "securityPatch": String?}` |
 | `Future<Map> fastbootDevices()` | – | `{"devices": [{"serial", "label", "transport"}], "error"?: FailureMap}` |
@@ -103,8 +103,9 @@ kept, a missing one is fetched through `/api/bloat/`, gunzipped and joined.
 ```
 
 `key` is the catalog entry digest. Only a catalog OTA can be cached; other
-inputs throw. Cancelling the stream leaves the partial file and its resumed
-offset in place.
+inputs throw. `resumedFrom` counts the bytes already on disk, which may be
+scattered ranges rather than a prefix. Cancelling the stream leaves the partial
+file and its chunk layout in place for the next download of the same entry.
 
 ## Flash contract
 

@@ -83,6 +83,7 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   static const _prefix = 'flasher_web.handles.';
   static const _preferencesKey = 'flasher_web.preferences';
   static const _directoryPrefix = 'flasher_web.directory.';
+  static const _otaSaveKey = 'ota-save';
 
   @override
   bool get available => true;
@@ -345,7 +346,7 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   Future<PickedFile?> rememberedOtaFile() async {
     final handle = await _getHandle('ota');
     if (handle == null || !handle.has('getFile')) return null;
-    if (await _readPermission(handle, request: false) != 'granted') {
+    if (await _permission(handle, request: false) != 'granted') {
       return null;
     }
     return _otaFileFrom(handle);
@@ -365,18 +366,20 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   Future<PickedFile?> requestRememberedOtaFile() async {
     final handle = await _getHandle('ota');
     if (handle == null || !handle.has('getFile')) return null;
-    if (await _readPermission(handle, request: true) != 'granted') {
+    if (await _permission(handle, request: true) != 'granted') {
       return null;
     }
     return _otaFileFrom(handle);
   }
 
   @override
-  Future<void> forgetRememberedOta() async {
+  Future<void> forgetRememberedOta() => _deleteHandle('ota');
+
+  Future<void> _deleteHandle(String key) async {
     final database = await _database();
     final completer = Completer<void>();
     final transaction = database.transaction(_store.toJS, 'readwrite');
-    transaction.objectStore(_store).delete('${_prefix}ota'.toJS);
+    transaction.objectStore(_store).delete('$_prefix$key'.toJS);
     transaction.oncomplete = ((web.Event event) {
       completer.complete();
     }).toJS;
@@ -596,6 +599,67 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   }
 
   @override
+  Future<void> rememberOtaSave(
+    Object destination,
+    Map<String, Object?> request,
+  ) async {
+    final record = JSObject()
+      ..['handle'] = destination as web.FileSystemFileHandle
+      ..['request'] = jsonEncode(request).toJS;
+    await _putHandle(_otaSaveKey, record);
+  }
+
+  @override
+  Future<({String name, Map<String, Object?> request})?>
+  rememberedOtaSave() async {
+    final saved = await _otaSave();
+    if (saved == null) return null;
+    return (name: saved.handle.name, request: saved.request);
+  }
+
+  @override
+  Future<Object?> requestRememberedOtaSave() async {
+    final saved = await _otaSave();
+    if (saved == null) return null;
+    final state = await _permission(
+      saved.handle,
+      request: true,
+      mode: 'readwrite',
+    );
+    return state == 'granted' ? saved.handle : null;
+  }
+
+  @override
+  Future<void> forgetOtaSave() => _deleteHandle(_otaSaveKey);
+
+  /// The remembered save, or null when absent or written by another build.
+  Future<({web.FileSystemFileHandle handle, Map<String, Object?> request})?>
+  _otaSave() async {
+    final record = await _getHandle(_otaSaveKey);
+    if (record == null) return null;
+    final handle = record['handle'];
+    final request = record['request'];
+    if (handle == null ||
+        !handle.isA<JSObject>() ||
+        !(handle as JSObject).has('createWritable') ||
+        request == null ||
+        !request.isA<JSString>()) {
+      return null;
+    }
+    final Object? decoded;
+    try {
+      decoded = jsonDecode((request as JSString).toDart);
+    } on FormatException {
+      return null;
+    }
+    if (decoded is! Map<String, dynamic>) return null;
+    return (
+      handle: handle as web.FileSystemFileHandle,
+      request: Map<String, Object?>.from(decoded),
+    );
+  }
+
+  @override
   Future<bool> requestPersistentStorage() async {
     try {
       return (await web.window.navigator.storage.persist().toDart).toDart;
@@ -810,11 +874,12 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     return value != null && value.isA<JSObject>() ? value as JSObject : null;
   }
 
-  Future<String> _readPermission(
+  Future<String> _permission(
     JSObject handle, {
     required bool request,
+    String mode = 'read',
   }) async {
-    final options = <String, Object?>{'mode': 'read'}.jsify();
+    final options = <String, Object?>{'mode': mode}.jsify();
     try {
       final result = request
           ? await handle

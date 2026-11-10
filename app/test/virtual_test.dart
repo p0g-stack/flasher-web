@@ -857,6 +857,109 @@ void main() {
     });
     expect(find.text('regional.zip'), findsWidgets);
     expect(harness.bridge.keepAwake, 0, reason: 'the wake lock is released');
+    expect(
+      harness.bridge.otaSave,
+      isNull,
+      reason: 'a finished save is forgotten',
+    );
+  });
+
+  testWidgets('an unfinished save resumes into the same file after a reload', (
+    tester,
+  ) async {
+    final harness = Harness();
+    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
+    harness.api.inspectResult = _inspection();
+    harness.api.saveOtaStream = (_) async* {
+      yield {'type': 'started', 'label': 'OP 13 / GLO', 'total': 10};
+      yield {
+        'type': 'progress',
+        'label': 'OP 13 / GLO',
+        'done': 4,
+        'total': 10,
+      };
+      throw StateError('network gone');
+    };
+    await pumpApp(tester, harness: harness);
+    await _chooseRegional(tester);
+    await tester.tap(find.text('Version catalog'));
+    await tester.pumpAndSettle();
+    await _openDownloadDialog(tester);
+    await tester.tap(find.byKey(const ValueKey('downloadOtaComputer')));
+    await tester.pumpAndSettle();
+
+    expect(harness.bridge.otaSave?.destination, harness.bridge.saveFileResult);
+    expect(find.byKey(const ValueKey('otaDownloadError-ota')), findsOneWidget);
+
+    // A reload: a fresh app over the same browser state.
+    await tester.pumpWidget(const SizedBox());
+    harness.api.lastSaveOtaRequest = null;
+    const saved = PickedFile(
+      handle: 'saved-file',
+      name: 'regional.zip',
+      size: 10,
+    );
+    harness.bridge.savedOta = saved;
+    harness.api.saveOtaStream = (_) => Stream.fromIterable(const [
+      {
+        'type': 'started',
+        'label': 'OP 13 / GLO',
+        'total': 10,
+        'resumedFrom': 4,
+      },
+      {'type': 'result', 'label': 'OP 13 / GLO', 'bytes': 10, 'sha256': 'a'},
+    ]);
+    await pumpApp(tester, harness: harness);
+    await _chooseRegional(tester);
+    await tester.tap(find.text('Version catalog'));
+    await tester.pumpAndSettle();
+
+    final resume = find.byKey(const ValueKey('resumeOtaSave-ota'));
+    await tester.ensureVisible(resume);
+    await tester.tap(resume);
+    await tester.pumpAndSettle();
+
+    expect(harness.bridge.pickSaveFileCalls, 1, reason: 'no second picker');
+    final request = harness.api.lastSaveOtaRequest!;
+    expect(request['destination'], harness.bridge.saveFileResult);
+    expect((request['ota']! as Map)['kind'], 'catalog');
+    expect(harness.bridge.otaSave, isNull);
+    expect(harness.bridge.rememberedOta, same(saved));
+    expect(find.byKey(const ValueKey('resumeOtaSave-ota')), findsNothing);
+  });
+
+  testWidgets('a refused write permission does not start the resumed save', (
+    tester,
+  ) async {
+    final harness = Harness();
+    harness.api.catalog = _catalogOf(4 * 1024 * 1024 * 1024);
+    harness.bridge.otaSave = (
+      destination: 'old-file',
+      request: {
+        'role': 'ota',
+        'ota': {'kind': 'catalog'},
+        'suggestedName': 'regional.zip',
+      },
+    );
+    harness.bridge.grantOtaSave = false;
+    await pumpApp(tester, harness: harness);
+    await _chooseRegional(tester);
+    await tester.tap(find.text('Version catalog'));
+    await tester.pumpAndSettle();
+
+    final resume = find.byKey(const ValueKey('resumeOtaSave-ota'));
+    await tester.ensureVisible(resume);
+    await tester.tap(resume);
+    await tester.pumpAndSettle();
+
+    expect(harness.api.lastSaveOtaRequest, isNull);
+    expect(find.textContaining('did not allow writing'), findsOneWidget);
+    expect(harness.bridge.otaSave, isNotNull, reason: 'still resumable');
+
+    await tester.tap(find.byKey(const ValueKey('discardOtaSave-ota')));
+    await tester.pumpAndSettle();
+    expect(harness.bridge.otaSave, isNull);
+    expect(find.byKey(const ValueKey('resumeOtaSave-ota')), findsNothing);
   });
 
   testWidgets('a cancelled save picker starts no download', (tester) async {
