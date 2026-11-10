@@ -16,6 +16,9 @@ dependencies:
   web: ^1.1.0
   http: ^1.6.0
   flasher_web_core: any
+  dir_picker: ^0.8.0
+  shared_preferences: ^2.5.6
+  url_launcher: ^6.3.3
 
 dev_dependencies:
   flutter_lints: ^6.0.0

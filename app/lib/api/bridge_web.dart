@@ -4,8 +4,11 @@ import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'dart:math' as math;
 
+import 'package:dir_picker/dir_picker.dart';
 import 'package:flasher_web_core/flasher_web_core.dart'
     show HandleWorkspace, fakeFastbootSerial;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:web/web.dart' as web;
 
 import 'platform_bridge.dart';
@@ -15,7 +18,8 @@ PlatformBridge createBridge() => WebPlatformBridge();
 
 /// The browser implementation: File System Access, IndexedDB, `fetch`,
 /// downloads, the screen wake lock, page-level drag and drop, and the WebUSB
-/// fastboot device chooser.
+/// fastboot device chooser. Folder picking is `dir_picker`, preferences are
+/// `shared_preferences`, external links are `url_launcher`.
 final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   WebPlatformBridge() {
     _dragOver = ((web.Event event) {
@@ -64,10 +68,15 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   int _keepAlive = 0;
   web.WakeLockSentinel? _sentinel;
   JSFunction? _leaveGuard;
+  JSFunction? _visibility;
+  Future<void>? _acquiring;
+  late final _preferences = SharedPreferencesAsync();
 
   static const _databaseName = 'flasher_web';
   static const _store = 'handles';
   static const _prefix = 'flasher_web.handles.';
+  static const _preferencesKey = 'flasher_web.preferences';
+  static const _directoryPrefix = 'flasher_web.directory.';
 
   @override
   bool get available => true;
@@ -259,7 +268,13 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
 
   @override
   Future<Map<String, Object?>?> readPreferences() async {
-    final raw = web.window.localStorage.getItem('flasher_web.preferences');
+    final String? raw;
+    try {
+      raw = await _preferences.getString(_preferencesKey);
+    } on Object {
+      // Unreadable or of another type: start from the defaults.
+      return null;
+    }
     if (raw == null || raw.isEmpty) return null;
     try {
       final decoded = jsonDecode(raw);
@@ -272,63 +287,64 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   }
 
   @override
-  Future<void> writePreferences(Map<String, Object?> value) async {
-    web.window.localStorage.setItem(
-      'flasher_web.preferences',
-      jsonEncode(value),
-    );
-  }
+  Future<void> writePreferences(Map<String, Object?> value) =>
+      _preferences.setString(_preferencesKey, jsonEncode(value));
 
   @override
   Future<DirectoryRef?> pickDirectory(
     String key, {
     String label = 'Choose folder',
   }) async {
-    final picker = _globalFunction('showDirectoryPicker');
-    if (picker == null) {
-      throw UnsupportedError(
-        'This browser cannot choose a folder; use browser storage.',
-      );
+    final location = await DirPicker.pick(
+      options: PickOptions.web(
+        mode: WebPermissionMode.readwrite,
+        id: key,
+        startIn: WebStartIn.documents,
+      ),
+    );
+    if (location is! WebPickedLocation) return null;
+    final token = await DirPicker.persist(location);
+    final previous = await _preferences.getString('$_directoryPrefix$key');
+    await _preferences.setString('$_directoryPrefix$key', token);
+    if (previous != null && previous != token) {
+      await DirPicker.release(previous);
     }
-    final options = <String, Object?>{
-      'id': key,
-      'mode': 'readwrite',
-      'startIn': 'documents',
-    }.jsify();
-    final promise = picker.callAsFunction(globalContext, options);
-    final handle = await (promise as JSPromise<JSAny?>).toDart;
-    if (handle == null) return null;
-    final directory = handle as web.FileSystemDirectoryHandle;
-    await _putHandle(key, directory);
-    return DirectoryRef(handle: directory, name: directory.name);
+    return DirectoryRef(handle: location.handle, name: location.name);
   }
 
   @override
   Future<DirectoryRef?> rememberedDirectory(String key) async {
-    final handle = await _getHandle(key);
-    if (handle == null || !handle.has('name')) return null;
-    final directory = handle as web.FileSystemDirectoryHandle;
-    final permission = await _permission(handle, request: false);
-    if (permission != 'granted') return null;
-    return DirectoryRef(handle: directory, name: directory.name);
+    final location = await _restoreDirectory(key);
+    if (location == null) return null;
+    if (!await location.hasAccess(mode: WebPermissionMode.readwrite)) {
+      return null;
+    }
+    return DirectoryRef(handle: location.handle, name: location.name);
   }
 
   @override
-  Future<String?> rememberedDirectoryName(String key) async {
-    final handle = await _getHandle(key);
-    if (handle == null) return null;
-    final name = handle.getProperty<JSAny?>('name'.toJS);
-    return name != null && name.isA<JSString>() ? (name as JSString).toDart : null;
-  }
+  Future<String?> rememberedDirectoryName(String key) async =>
+      (await _restoreDirectory(key))?.name;
 
   @override
   Future<DirectoryRef?> requestRememberedDirectory(String key) async {
-    final handle = await _getHandle(key);
-    if (handle == null || !handle.has('name')) return null;
-    final directory = handle as web.FileSystemDirectoryHandle;
-    final permission = await _permission(handle, request: true);
-    if (permission != 'granted') return null;
-    return DirectoryRef(handle: directory, name: directory.name);
+    final location = await _restoreDirectory(key);
+    if (location == null) return null;
+    try {
+      if (!await location.requestAccess(mode: WebPermissionMode.readwrite)) {
+        return null;
+      }
+    } on DirPickerException {
+      return null;
+    }
+    return DirectoryRef(handle: location.handle, name: location.name);
+  }
+
+  Future<WebPickedLocation?> _restoreDirectory(String key) async {
+    final token = await _preferences.getString('$_directoryPrefix$key');
+    if (token == null) return null;
+    final location = await DirPicker.restore(token);
+    return location is WebPickedLocation ? location : null;
   }
 
   @override
@@ -347,8 +363,14 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
           },
         ],
       }.jsify();
-      final promise = picker.callAsFunction(globalContext, options);
-      final value = await (promise as JSPromise<JSAny?>).toDart;
+      final JSAny? value;
+      try {
+        final promise = picker.callAsFunction(globalContext, options);
+        value = await (promise as JSPromise<JSAny?>).toDart;
+      } on Object catch (error) {
+        if (_jsString(_toJSAny(error), 'name') == 'AbortError') return null;
+        rethrow;
+      }
       if (value == null) return null;
       final handles = (value as JSArray<web.FileSystemFileHandle>).toDart;
       if (handles.isEmpty) return null;
@@ -435,7 +457,7 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   Future<PickedFile?> rememberedOtaFile() async {
     final handle = await _getHandle('ota');
     if (handle == null || !handle.has('getFile')) return null;
-    if (await _permission(handle, request: false, mode: 'read') != 'granted') {
+    if (await _readPermission(handle, request: false) != 'granted') {
       return null;
     }
     return _otaFileFrom(handle);
@@ -453,7 +475,7 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
   Future<PickedFile?> requestRememberedOtaFile() async {
     final handle = await _getHandle('ota');
     if (handle == null || !handle.has('getFile')) return null;
-    if (await _permission(handle, request: true, mode: 'read') != 'granted') {
+    if (await _readPermission(handle, request: true) != 'granted') {
       return null;
     }
     return _otaFileFrom(handle);
@@ -746,7 +768,7 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
 
   @override
   Future<void> openExternal(String url) async {
-    web.window.open(url, '_blank', 'noopener,noreferrer');
+    await launchUrl(Uri.parse(url), webOnlyWindowName: '_blank');
   }
 
   @override
@@ -758,8 +780,33 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
       event.returnValue = true;
     }).toJS;
     web.window.addEventListener('beforeunload', _leaveGuard);
+    // The browser releases a screen wake lock whenever the tab is hidden;
+    // take it again when the tab is visible while work still runs.
+    _visibility = ((web.Event event) {
+      if (web.document.visibilityState == 'visible') unawaited(_wakeLock());
+    }).toJS;
+    web.document.addEventListener('visibilitychange', _visibility);
+    await _wakeLock();
+  }
+
+  /// One request at a time, so a visibility change during [beginKeepAwake]
+  /// cannot leave a second sentinel behind.
+  Future<void> _wakeLock() =>
+      _acquiring ??= _acquireWakeLock().whenComplete(() => _acquiring = null);
+
+  Future<void> _acquireWakeLock() async {
+    if (_keepAlive == 0) return;
+    final held = _sentinel;
+    if (held != null && !held.released) return;
     try {
-      _sentinel = await web.window.navigator.wakeLock.request('screen').toDart;
+      final sentinel = await web.window.navigator.wakeLock
+          .request('screen')
+          .toDart;
+      if (_keepAlive == 0) {
+        await sentinel.release().toDart;
+        return;
+      }
+      _sentinel = sentinel;
     } catch (_) {
       // Screen wake lock is best effort: the leave guard still protects work.
     }
@@ -774,6 +821,11 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     if (guard != null) {
       web.window.removeEventListener('beforeunload', guard);
       _leaveGuard = null;
+    }
+    final visibility = _visibility;
+    if (visibility != null) {
+      web.document.removeEventListener('visibilitychange', visibility);
+      _visibility = null;
     }
     final sentinel = _sentinel;
     _sentinel = null;
@@ -805,6 +857,10 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     final guard = _leaveGuard;
     if (guard != null) {
       web.window.removeEventListener('beforeunload', guard);
+    }
+    final visibility = _visibility;
+    if (visibility != null) {
+      web.document.removeEventListener('visibilitychange', visibility);
     }
     _sentinel?.release();
   }
@@ -843,7 +899,7 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     }).toJS;
     transaction.onerror = ((web.Event event) {
       completer.completeError(
-        StateError('Could not remember the chosen folder.'),
+        StateError('Could not remember the chosen OTA file.'),
       );
     }).toJS;
     await completer.future;
@@ -866,12 +922,11 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
     return value != null && value.isA<JSObject>() ? value as JSObject : null;
   }
 
-  Future<String> _permission(
+  Future<String> _readPermission(
     JSObject handle, {
     required bool request,
-    String mode = 'readwrite',
   }) async {
-    final options = <String, Object?>{'mode': mode}.jsify();
+    final options = <String, Object?>{'mode': 'read'}.jsify();
     try {
       final result = request
           ? await handle

@@ -96,7 +96,7 @@ abstract interface class PlatformBridge {
   /// Reads a same-origin static file, for example `upstream/tables.json`.
   Future<String> fetchText(String path);
 
-  /// Preferences stored in `localStorage`.
+  /// Preferences, kept through `shared_preferences`.
   Future<Map<String, Object?>?> readPreferences();
 
   Future<void> writePreferences(Map<String, Object?> value);

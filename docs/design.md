@@ -448,7 +448,9 @@ reopens that exact serial, and asks the page to regrant the same phone after a
 mode change. Native discovery matches the same interface from USB descriptors.
 
 The page holds a screen wake lock and a leave guard for the duration of a
-flash, a bloat download or an export. The app's service worker caches only the
+flash, a bloat download or an export. The browser drops the wake lock while the
+tab is hidden; the page takes it again when the tab is visible and the work
+still runs. The app's service worker caches only the
 shell and engine assets the page loads; `/api/*` and every request that carries
 a `Range` header go to the network, and OTA, bloat and package bytes are never
 cached.
