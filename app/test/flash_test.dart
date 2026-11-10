@@ -30,9 +30,6 @@ Map<String, Object?> resolvedPrepare({
 }) => {
   'token': ?token,
   'serial': _serial,
-  'product': 'REALME_NEO8',
-  'expectedProduct': 'REALME_NEO8',
-  'productMatches': true,
   'mode': 'bootloader',
   'modeOk': true,
   'resolved': true,
@@ -42,7 +39,7 @@ Map<String, Object?> resolvedPrepare({
   'steps': ['Require bootloader', 'Flash boot from boot.img'],
   'executionSteps': ['Require bootloader', 'Flash boot from boot.img'],
   'confirmation': [
-    'Flash Realme NEO8, serial $_serial, product REALME_NEO8',
+    'Flash Realme NEO8, serial $_serial',
     'Flash boot from boot.img',
   ],
   'prompts': prompts,
@@ -51,9 +48,6 @@ Map<String, Object?> resolvedPrepare({
 
 Map<String, Object?> unresolvedPrepare() => {
   'serial': _serial,
-  'product': 'REALME_NEO8',
-  'expectedProduct': 'REALME_NEO8',
-  'productMatches': true,
   'mode': 'bootloader',
   'modeOk': true,
   'resolved': false,
@@ -244,7 +238,6 @@ void main() {
         'status': 'succeeded',
         'serial': _serial,
         'device': 'Realme NEO8',
-        'product': 'REALME_NEO8',
         'job': '20260101-000000-abcdef',
         'version': '1',
         'steps': [
@@ -316,66 +309,6 @@ void main() {
     expect(harness.api.flashCalls, 0);
   });
 
-  testWidgets('an unknown product needs an explicit override', (tester) async {
-    final harness = Harness();
-    harness.api.prepareFlashResult = (request) {
-      final answers = request['answers'] as Map? ?? const {};
-      if (answers['product'] == null) {
-        return {
-          'productRequired': true,
-          'observedProduct': 'REALME_NEO8',
-          'message': 'Check the model and explicitly type the observed product REALME_NEO8.',
-        };
-      }
-      return resolvedPrepare();
-    };
-    final controller = await pumpFlash(tester, harness);
-    await selectDevice(tester, controller);
-
-    expect(
-      find.byKey(const ValueKey('productOverrideRequired')),
-      findsOneWidget,
-    );
-    expect(harness.api.flashCalls, 0);
-
-    await tester.ensureVisible(find.byKey(const ValueKey('productOverride')));
-    await tester.enterText(
-      find.byKey(const ValueKey('productOverride')),
-      'REALME_NEO8',
-    );
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pumpAndSettle();
-
-    expect(harness.api.lastPrepareRequest?['answers'], {
-      'product': 'REALME_NEO8',
-    });
-    expect(find.byKey(const ValueKey('flashPlan')), findsOneWidget);
-  });
-
-  testWidgets('product editing retains focus while invalidating confirmation', (
-    tester,
-  ) async {
-    final harness = Harness();
-    harness.api.prepareFlashResult = (_) => resolvedPrepare();
-    final controller = await pumpFlash(tester, harness);
-    await selectDevice(tester, controller);
-    controller.setAcknowledged(true);
-    final product = find.byKey(const ValueKey('productOverride'));
-    await tester.ensureVisible(product);
-    await tester.enterText(product, 'REALME_');
-    await tester.pump();
-
-    expect(product, findsOneWidget);
-    expect(tester.widget<TextField>(product).focusNode!.hasFocus, isTrue);
-    expect(controller.acknowledged, isFalse);
-    expect(controller.canFlash, isFalse);
-    await tester.enterText(product, 'REALME_NEO8');
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pumpAndSettle();
-    expect(tester.widget<TextField>(product).controller!.text, 'REALME_NEO8');
-    expect(tester.widget<TextField>(product).focusNode!.hasFocus, isTrue);
-  });
-
   testWidgets('an uncertain result explains the risk and releases the lock', (
     tester,
   ) async {
@@ -390,7 +323,6 @@ void main() {
           'status': 'uncertain',
           'serial': _serial,
           'device': 'Realme NEO8',
-          'product': 'REALME_NEO8',
           'job': '20260101-000000-abcdef',
           'version': '1',
           'steps': [
@@ -532,7 +464,7 @@ void main() {
     controller.setAcknowledged(true);
     final starting = controller.flash();
     await tester.pump();
-    controller.setProductOverride('another-product');
+    controller.answerPrompt('wipe', 'wipe');
     awake.complete();
     await starting;
     await tester.pump(const Duration(milliseconds: 300));

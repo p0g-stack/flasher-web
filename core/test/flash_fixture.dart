@@ -63,11 +63,10 @@ PackageIndex flashPackage({
   return PackageIndex.fromEntries(entries);
 }
 
-/// Answers for the product check, plus [answers] for prompts.
-Map<String, String> answersFor(
-  String dev, [
+/// Prompt answers for a plan; an empty map leaves every default in place.
+Map<String, String> answersFor([
   Map<String, String> answers = const {},
-]) => {'product': dev == '13' ? 'sun' : 'test-$dev', ...answers};
+]) => {...answers};
 
 List<Flash> flashes(FlashPlan plan) => [
   for (final step in plan.executionSteps)

@@ -88,9 +88,6 @@ final class PreparedFlash {
     required this.raw,
     required this.token,
     required this.serial,
-    required this.product,
-    required this.expectedProduct,
-    required this.productMatches,
     required this.mode,
     required this.modeOk,
     required this.resolved,
@@ -116,9 +113,6 @@ final class PreparedFlash {
       raw: Map<String, Object?>.unmodifiable(map),
       token: map['token'] is String ? map['token']! as String : null,
       serial: '${map['serial'] ?? ''}',
-      product: '${map['product'] ?? ''}',
-      expectedProduct: '${map['expectedProduct'] ?? ''}',
-      productMatches: map['productMatches'] == true,
       mode: '${map['mode'] ?? ''}',
       modeOk: map['modeOk'] == true,
       resolved: map['resolved'] == true,
@@ -142,12 +136,6 @@ final class PreparedFlash {
   final String? token;
   final String serial;
 
-  /// The product the connected device reported.
-  final String product;
-
-  /// The product the selected package requires.
-  final String expectedProduct;
-  final bool productMatches;
   final String mode;
   final bool modeOk;
   final bool resolved;

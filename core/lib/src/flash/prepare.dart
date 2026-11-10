@@ -80,8 +80,6 @@ final class PreparedFlash {
   PreparedFlash({
     required this.token,
     required this.serial,
-    required this.product,
-    required this.expectedProduct,
     required this.mode,
     required this.maxDownloadSize,
     required this.selection,
@@ -103,8 +101,6 @@ final class PreparedFlash {
 
   final String token;
   final String serial;
-  final String product;
-  final String expectedProduct;
   final FlashMode mode;
   final int maxDownloadSize;
   final Selection selection;
@@ -130,8 +126,6 @@ final class PreparedFlash {
   PreparedFlash withPackage(FlashPackage package) => PreparedFlash(
     token: token,
     serial: serial,
-    product: product,
-    expectedProduct: expectedProduct,
     mode: mode,
     maxDownloadSize: maxDownloadSize,
     selection: selection,
@@ -163,9 +157,6 @@ final class PreparedFlash {
   Map<String, Object?> toMap() => {
     'token': resolved ? token : '',
     'serial': serial,
-    'product': product,
-    'expectedProduct': expectedProduct,
-    'productMatches': product == expectedProduct,
     'mode': mode.name,
     'modeOk': modeOk,
     'maxDownloadSize': maxDownloadSize,
@@ -318,7 +309,6 @@ Future<PreparedFlash> prepareFlash({
     );
   }
   FastbootSession? session;
-  var product = '';
   var mode = FlashMode.android;
   var maxDownloadSize = 0;
   final cleanup = <String>[];
@@ -328,13 +318,6 @@ Future<PreparedFlash> prepareFlash({
     if (opened.serial != serial) {
       throw FlashException(
         'The transport opened ${opened.serial} instead of $serial.',
-      );
-    }
-    product = await readProduct(opened);
-    if (product != plan.identity.product) {
-      throw FlashException(
-        'The connected device reports product "$product", but the selected '
-        'package requires "${plan.identity.product}". Refusing to flash.',
       );
     }
     mode = await probeFlashMode(opened);
@@ -381,8 +364,6 @@ Future<PreparedFlash> prepareFlash({
   final prepared = PreparedFlash(
     token: token ?? _newToken(),
     serial: serial,
-    product: product,
-    expectedProduct: plan.identity.product,
     mode: mode,
     maxDownloadSize: maxDownloadSize,
     selection: selection,
@@ -400,7 +381,7 @@ Future<PreparedFlash> prepareFlash({
   if (prepared.resolved) {
     final target = await transport.open(serial);
     try {
-      if (target.serial != serial || await readProduct(target) != product) {
+      if (target.serial != serial) {
         throw const FlashException('The device changed during preparation.');
       }
       for (final step in plan.executionSteps) {
@@ -473,22 +454,9 @@ Future<void> verifyPreparedImages(
   }
 }
 
-/// The device's fastboot product, without a `product:` prefix.
-Future<String> readProduct(FastbootSession session) async {
-  final value = cleanGetvar(await session.command('getvar:product'), 'product');
-  if (value.isEmpty) {
-    throw const FlashException('The device returned an empty product.');
-  }
-  return value;
-}
-
-/// Classifies the connected fastboot mode from the device's own answers.
-///
-/// CANOE-BDS is checked first: it can report `is-userspace:no` and would
-/// otherwise be mistaken for the normal bootloader.
+/// Classifies the connected fastboot mode from `getvar:is-userspace`, the same
+/// answer the fastboot CLI reads.
 Future<FlashMode> probeFlashMode(FastbootSession session) async {
-  final canoe = await _optionalGetvar(session, 'canoe-bds');
-  if (canoe != null && _truthy(canoe)) return FlashMode.superFastboot;
   final userspace = await _optionalGetvar(session, 'is-userspace');
   if (userspace != null && _truthy(userspace)) return FlashMode.fastbootd;
   return FlashMode.bootloader;

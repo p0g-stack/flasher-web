@@ -61,9 +61,7 @@ class FlashCommand extends Command<int> {
       )
       ..addMultiOption(
         'answer',
-        help:
-            'Prompt answer as id=value, repeatable. Use product=<getvar '
-            'product> when the device table marks the product unknown.',
+        help: 'Prompt answer as id=value, repeatable.',
       )
       ..addOption(
         'confirm-serial',
@@ -173,12 +171,6 @@ class FlashCommand extends Command<int> {
       if (failure is Map) {
         stderr.writeln('ERROR: ${failure['name']}: ${failure['message']}');
         return 1;
-      }
-      if (prepared['productRequired'] == true) {
-        stderr.writeln(
-          '${prepared['message']}\nUse --answer product=<verified product>.',
-        );
-        return 2;
       }
       printFlashPreparation(prepared);
       if (prepared['resolved'] != true) {

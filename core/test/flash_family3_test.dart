@@ -7,7 +7,7 @@ void main() {
   group('legacy shell family', () {
     test('Pad3 without a super reboots by default and uses slot A', () {
       final package = flashPackage(folder: 'OOS_FILES_HERE', superImage: false);
-      final plan = planFlash(package, selectionOf('Pad3'), answersFor('Pad3'));
+      final plan = planFlash(package, selectionOf('Pad3'), answersFor());
 
       expect(plan.family, 'legacyShell');
       expect(plan.isResolved, isTrue);
@@ -26,7 +26,7 @@ void main() {
 
     test('Pad3 with a super treats every non-N answer as a manual wipe', () {
       final package = flashPackage(folder: 'OOS_FILES_HERE', extras: ['pdp']);
-      final plan = planFlash(package, selectionOf('Pad3'), answersFor('Pad3'));
+      final plan = planFlash(package, selectionOf('Pad3'), answersFor());
       expect(promptOf(plan, 'wipe').defaultChoice, 'wipe');
       final steps = execution(plan);
       expect(steps.last, isA<Instruct>());
@@ -48,7 +48,7 @@ void main() {
         superImage: false,
         logical: [...testBaselineLogical, 'system_dlkm_gki', 'system_dlkm_oki'],
       );
-      final plan = planFlash(package, selectionOf('Ace6'), answersFor('Ace6'));
+      final plan = planFlash(package, selectionOf('Ace6'), answersFor());
       expect(plan.family, 'legacyShell');
       final steps = execution(plan);
       expect(

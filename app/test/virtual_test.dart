@@ -25,9 +25,6 @@ Map<String, Object?> _inspection() => {
 Map<String, Object?> _virtualPrepare({String job = _virtualJob}) => {
   'token': 'token-virtual',
   'serial': _serial,
-  'product': 'OP13',
-  'expectedProduct': 'OP13',
-  'productMatches': true,
   'mode': 'bootloader',
   'modeOk': true,
   'resolved': true,

@@ -14,7 +14,6 @@ import '../catalog/ota_catalog.dart';
 import '../e2e/fake_fastboot.dart';
 import '../facts/facts.dart';
 import '../flash/executor.dart';
-import '../flash/identity.dart';
 import '../flash/model.dart' as flash_model;
 import '../flash/op_decoder.dart';
 import '../flash/prepare.dart' as flash_prepare;
@@ -388,13 +387,6 @@ base class FlasherService {
         throw const BuildException('Choose a fastboot device serial.');
       }
       final answers = _flashAnswers(req['answers']);
-      final required = await _productRequired(
-        selection,
-        answers,
-        serial,
-        _fastbootTransport(),
-      );
-      if (required != null) return required;
       final virtualPackage = await _openVirtualPackage(req, selection);
       final job = virtualPackage.job;
       final storeKey = 'virtual|${_storeKey(virtual['bloat'])}';
@@ -658,32 +650,6 @@ Map<String, Object?>? _virtualArg(Map<String, Object?> req) {
     throw const flash_model.FlashException('A virtual flash cannot name output or hosted.');
   }
   return Map<String, Object?>.from(value);
-}
-
-Future<Map<String, Object?>?> _productRequired(
-  Selection selection, Map<String, String> answers, String serial, FastbootTransport transport,
-) async {
-  if (deviceIdentities[selection.dev]?.product != null ||
-      (answers['product'] ?? '').trim().isNotEmpty) {
-    return null;
-  }
-  final device = await transport.open(serial);
-  try {
-    if (device.serial != serial) {
-      throw const flash_model.FlashException('The connected serial changed.');
-    }
-    final product = await flash_prepare.readProduct(device);
-    return {
-      'productRequired': true,
-      'serial': serial,
-      'observedProduct': product,
-      'message': 'Connected product: $product. No confirmed product mapping '
-          'exists for ${selection.device}. Check the selected model, then '
-          'type the product explicitly to continue.',
-    };
-  } finally {
-    await device.close();
-  }
 }
 
 Future<VirtualFlashPackage> _openVirtualPackage(

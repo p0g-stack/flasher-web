@@ -32,7 +32,7 @@ void main() {
         logical: const [],
         extras: ['abl', 'pdp'],
       );
-      final plan = planFlash(package, selectionOf('X9U'), answersFor('X9U'));
+      final plan = planFlash(package, selectionOf('X9U'), answersFor());
 
       expect(plan.family, 'x9u');
       expect(promptOf(plan, 'abl').defaultChoice, 'keep-abl');
@@ -67,7 +67,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('X9U'),
-        answersFor('X9U', {'abl': 'flash-abl'}),
+        answersFor({'abl': 'flash-abl'}),
       );
       final steps = execution(plan);
       final partitions = flashPartitions(plan);
@@ -93,7 +93,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('X9U', kind: 'Regional Flasher'),
-        answersFor('X9U'),
+        answersFor(),
       );
       final steps = execution(plan);
       expect(plan.template, 'cos/regional');
@@ -126,14 +126,8 @@ void main() {
 
     test('super packages still flash the boot list and require boot.img', () {
       final package = flashPackage(folder: 'OTA_FILES_HERE', logical: const []);
-      final plan = planFlash(package, selectionOf('X9U'), answersFor('X9U'));
+      final plan = planFlash(package, selectionOf('X9U'), answersFor());
       expect(flashPartitions(plan).take(2), ['boot_a', 'boot_b']);
-      expect(
-        (execution(
-          plan,
-        ).firstWhere((step) => step is GetvarCheck) as GetvarCheck).expected,
-        'test-X9U',
-      );
     });
   });
 }

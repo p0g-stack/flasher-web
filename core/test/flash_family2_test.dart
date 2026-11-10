@@ -11,7 +11,7 @@ void main() {
         extras: ['pdp'],
         logical: [...testBaselineLogical, 'system_dlkm_oki'],
       );
-      final plan = planFlash(package, selectionOf('15'), answersFor('15'));
+      final plan = planFlash(package, selectionOf('15'), answersFor());
 
       expect(plan.family, 'newer');
       expect(plan.isResolved, isTrue);
@@ -52,7 +52,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('15', kind: 'Regional Flasher'),
-        answersFor('15'),
+        answersFor(),
       );
       final steps = execution(plan);
       expect(plan.template, 'oos/regional');
@@ -87,7 +87,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('15', region: 'CN'),
-        answersFor('15'),
+        answersFor(),
       );
       expect(promptOf(plan, 'bloat').defaultChoice, 'debloat');
       final steps = execution(plan);

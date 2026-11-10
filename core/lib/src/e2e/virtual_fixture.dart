@@ -559,7 +559,6 @@ final class FixtureDevice {
   final String serial;
   final String product;
   bool fastbootd = false;
-  bool superFastboot = false;
   bool android = false;
 
   /// Reported `partition-size:<name>`, when a test sets one.
@@ -640,15 +639,6 @@ final class _FixtureSession implements FastbootSession {
     if (_closed) throw StateError('closed');
     device.commands.add(command);
     if (command == 'getvar:product') return device.product;
-    if (command == 'getvar:canoe-bds') {
-      if (device.superFastboot) return '1';
-      throw const LinkFailure(
-        blame: 'device',
-        name: 'FastbootFail',
-        message: 'unknown variable',
-        stage: 'command',
-      );
-    }
     if (command == 'getvar:is-userspace') {
       return device.fastbootd ? 'yes' : 'no';
     }

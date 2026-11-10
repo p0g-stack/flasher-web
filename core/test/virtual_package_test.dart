@@ -244,7 +244,7 @@ void main() {
       final plan = planFlash(
         package.index,
         selection,
-        const {'product': 'canoe'},
+        const {},
       );
       final bootStep = plan.executionSteps
           .whereType<Flash>()
@@ -255,7 +255,7 @@ void main() {
       final prepared = await prepareFlash(
         package: package,
         selection: selection,
-        answers: const {'product': 'canoe'},
+        answers: const {},
         serial: 'SERIAL-A',
         transport: FixtureTransport(device),
         job: package.job,

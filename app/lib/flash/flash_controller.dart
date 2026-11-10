@@ -50,7 +50,6 @@ final class FlashController extends ChangeNotifier {
   String? _serial;
   String _deviceLabel = '';
   final _answers = <String, String>{};
-  bool _productRequired = false;
   bool _acknowledged = false;
   bool _preparing = false;
   bool _starting = false;
@@ -94,7 +93,6 @@ final class FlashController extends ChangeNotifier {
   String? get serial => _serial;
   String get deviceLabel => _deviceLabel;
   Map<String, String> get answers => Map.unmodifiable(_answers);
-  bool get productRequired => _productRequired;
   bool get acknowledged => _acknowledged;
   bool get preparing => _preparing;
   String? get prepareError => _prepareError;
@@ -195,7 +193,6 @@ final class FlashController extends ChangeNotifier {
       _prepared?.resolved == true &&
       _prepared!.hasToken &&
       _prepared!.modeOk &&
-      _prepared!.productMatches &&
       answersComplete;
 
   /// The final button is enabled only for a fully resolved, explicitly
@@ -208,8 +205,8 @@ final class FlashController extends ChangeNotifier {
       ready &&
       _acknowledged;
 
-  /// Any prompt without an explicit answer, or a plan whose product/mode
-  /// still blocks it.
+  /// Any prompt without an explicit answer, or a plan whose mode still blocks
+  /// it.
   String? get blockingReason {
     if (!writesSupported) {
       return 'This browser context cannot reach USB devices. Open the app in '
@@ -234,7 +231,7 @@ final class FlashController extends ChangeNotifier {
           'fastboot, then choose it and prepare again.';
     }
     if (!_acknowledged) {
-      return 'Confirm the exact serial and product below.';
+      return 'Confirm the exact serial below.';
     }
     return null;
   }
@@ -322,7 +319,6 @@ final class FlashController extends ChangeNotifier {
     _devicesError = null;
     _resetPreparation();
     _answers.clear();
-    _productRequired = false;
     _notify();
     unawaited(prepare());
   }
@@ -359,23 +355,8 @@ final class FlashController extends ChangeNotifier {
         : '${chosen.label} · ${chosen.serial}';
     _resetPreparation();
     _answers.clear();
-    _productRequired = false;
     _notify();
     await prepare();
-  }
-
-  void setProductOverride(String value) {
-    if (running) return;
-    final product = value.trim();
-    if ((_answers['product'] ?? '') == product) return;
-    if (product.isEmpty) {
-      _answers.remove('product');
-    } else {
-      _answers['product'] = product;
-    }
-    _resetPreparation();
-    _notify();
-    _schedulePrepare();
   }
 
   void answerPrompt(String id, String choice) {
@@ -467,15 +448,7 @@ final class FlashController extends ChangeNotifier {
       if (linkError != null) {
         _prepared = null;
         _preparedRequest = null;
-        _productRequired = false;
         _prepareError = describeLinkFailure(linkError);
-        return;
-      }
-      if (response['productRequired'] == true) {
-        _prepared = null;
-        _preparedRequest = null;
-        _productRequired = true;
-        _prepareError = '${response['message']}';
         return;
       }
       final prepared = PreparedFlash.fromMap(response);
@@ -488,23 +461,20 @@ final class FlashController extends ChangeNotifier {
       final promptIds = {for (final prompt in prepared.prompts) prompt.id};
       _answers.removeWhere(
         (id, value) =>
-            id != 'product' &&
-            (!promptIds.contains(id) ||
-                !prepared.prompts
-                    .firstWhere((prompt) => prompt.id == id)
-                    .choices
-                    .contains(value)),
+            !promptIds.contains(id) ||
+            !prepared.prompts
+                .firstWhere((prompt) => prompt.id == id)
+                .choices
+                .contains(value),
       );
       _prepared = prepared;
       _preparedRequest = Map<String, Object?>.unmodifiable(request);
       if (prepared.job.isNotEmpty) _derivedJob = prepared.job;
-      _productRequired = false;
     } on Object catch (error) {
       if (_disposed || generation != _generation) return;
       final text = '$error';
       _prepared = null;
       _preparedRequest = null;
-      _productRequired = false;
       _prepareError = text;
     } finally {
       if (!_disposed && generation == _generation) {
@@ -579,8 +549,7 @@ final class FlashController extends ChangeNotifier {
     _canRetry = false;
     _log
       ..clear()
-      ..add('Flashing ${target.label} to serial ${_serial ?? ''}.')
-      ..add('Product ${prepared.expectedProduct}.');
+      ..add('Flashing ${target.label} to serial ${_serial ?? ''}.');
     _notify();
     try {
       _subscription = api

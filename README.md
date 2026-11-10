@@ -89,14 +89,13 @@ ColorOS BASE OTA for the Ace 6 OxygenOS conversion. X9U requires either
 
 Repeat the connected serial exactly to authorize writes; a mismatch exits 1
 before any preparation. Answer template prompts with repeated
-`--answer id=value`; an unknown product mapping requires
-`--answer product=VERIFIED_PRODUCT`, so verify the selected model and the
-reported product yourself. Do not guess answers or confirm a different phone.
+`--answer id=value`, and check the serial line before confirming.
+Do not guess answers or confirm a different phone.
 
 On a failure the command asks `[r]etry step / re[b]oot to fastboot and retry /
 [s]top`, and stops when stdin is not a terminal. The receipt is written to
 `--receipt PATH` or `./receipt-<runId>.json`. Exit codes: 0 succeeded, 2 policy
-stop (plan only, unanswered prompt, product required, stopped run), 1 failed,
+stop (plan only, unanswered prompt, stopped run), 1 failed,
 uncertain or an error, 64 for a usage error.
 
 Export the same package without a device:
@@ -194,13 +193,13 @@ Execution stops at the first failing step (a USB drop, a hash mismatch, a
 device FAIL reply) and reports the step, its status and the reason. Nothing is
 resent automatically. The user chooses:
 
-- **Retry step** — reopens the confirmed serial, rechecks product and mode,
+- **Retry step** — reopens the confirmed serial, rechecks serial and mode,
   and writes the failed step again from byte zero, then continues.
 - **Reboot to fastboot and retry** — reboots to the mode the failed step needs
   and then does the same.
 - **Stop** — ends the run; commands already sent stay applied.
 
-After the retried step succeeds, serial, product and mode are checked again
+After the retried step succeeds, the serial and mode are checked again
 before continuing with the remaining steps.
 
 A write whose completion is unknown is reported as uncertain, and a retry is

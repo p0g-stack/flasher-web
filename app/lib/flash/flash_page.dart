@@ -17,37 +17,22 @@ class FlashPage extends StatefulWidget {
 }
 
 class _FlashPageState extends State<FlashPage> {
-  final _product = TextEditingController();
-  final _productFocus = FocusNode();
   final _logScroll = ScrollController();
 
   @override
   void initState() {
     super.initState();
-    _product.text = widget.controller.answers['product'] ?? '';
-    _product.addListener(_onProductChanged);
     widget.controller.addListener(_onControllerChanged);
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_onControllerChanged);
-    _product.removeListener(_onProductChanged);
-    _product.dispose();
-    _productFocus.dispose();
     _logScroll.dispose();
     super.dispose();
   }
 
-  void _onProductChanged() {
-    widget.controller.setProductOverride(_product.text);
-  }
-
   void _onControllerChanged() {
-    final answer = widget.controller.answers['product'] ?? '';
-    if (!_productFocus.hasFocus && _product.text != answer) {
-      _product.text = answer;
-    }
     if (_logScroll.hasClients) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_logScroll.hasClients) return;
@@ -88,11 +73,7 @@ class _FlashPageState extends State<FlashPage> {
               _DeviceCard(controller: controller, onChoose: _openDeviceSheet),
               if (controller.serial != null) ...[
                 const SizedBox(height: 16),
-                _PreparationCard(
-                  controller: controller,
-                  product: _product,
-                  productFocus: _productFocus,
-                ),
+                _PreparationCard(controller: controller),
               ],
               if (controller.planSteps.isNotEmpty ||
                   (controller.prepared?.steps.isNotEmpty ?? false)) ...[
@@ -333,16 +314,6 @@ class _DeviceCard extends StatelessWidget {
             if (prepared != null) ...[
               const SizedBox(height: 8),
               LabeledValue(
-                label: 'Connected product',
-                value: prepared.product.isEmpty ? 'unknown' : prepared.product,
-                monospace: true,
-              ),
-              LabeledValue(
-                label: 'Expected product',
-                value: prepared.expectedProduct,
-                monospace: true,
-              ),
-              LabeledValue(
                 label: 'Actual mode',
                 value: prepared.mode,
                 monospace: true,
@@ -400,21 +371,15 @@ class _DeviceCard extends StatelessWidget {
 }
 
 class _PreparationCard extends StatelessWidget {
-  const _PreparationCard({
-    required this.controller,
-    required this.product,
-    required this.productFocus,
-  });
+  const _PreparationCard({required this.controller});
 
   final FlashController controller;
-  final TextEditingController product;
-  final FocusNode productFocus;
 
   @override
   Widget build(BuildContext context) {
     final prepared = controller.prepared;
     return SectionCard(
-      title: 'Answers and product',
+      title: 'Answers',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -431,31 +396,6 @@ class _PreparationCard extends StatelessWidget {
             ),
             const SizedBox(height: 10),
           ],
-          if (controller.productRequired) ...[
-            const HintText(
-              'The expected fastboot product is not in the device table. Read '
-              'it on the phone with `fastboot getvar product` and enter that '
-              'exact value. Preparation refuses to guess.',
-              key: ValueKey('productOverrideRequired'),
-              error: true,
-            ),
-            const SizedBox(height: 8),
-          ],
-          TextField(
-            key: const ValueKey('productOverride'),
-            controller: product,
-            focusNode: productFocus,
-            enabled: !controller.running,
-            decoration: InputDecoration(
-              labelText: 'Product override',
-              helperText:
-                  'Only needed when preparation reports the expected product '
-                  'is unconfirmed.',
-              helperMaxLines: 2,
-              border: const OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
           if (prepared != null) ...[
             const SizedBox(height: 12),
             if (prepared.prompts.isEmpty)
@@ -622,15 +562,7 @@ class _ConfirmationCard extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  'Product: ${prepared.expectedProduct}',
-                  key: const ValueKey('confirmProductValue'),
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontFamily: 'monospace',
-                  ),
-                ),
-                Text(
-                  'Connected product: ${prepared.product} · mode: '
-                  '${prepared.mode}',
+                  'Mode: ${prepared.mode}',
                   style: theme.textTheme.bodySmall,
                 ),
               ],
@@ -665,12 +597,9 @@ class _ConfirmationCard extends StatelessWidget {
                     !controller.running
                 ? (value) => controller.setAcknowledged(value == true)
                 : null,
-            title: Text(
-              'I confirm serial ${prepared.serial} and product '
-              '${prepared.expectedProduct}.',
-            ),
+            title: Text('I confirm serial ${prepared.serial}.'),
             subtitle: const Text(
-              'Changing the device, job, product or any answer clears this '
+              'Changing the device, job or any answer clears this '
               'confirmation and the token.',
             ),
             controlAffinity: ListTileControlAffinity.leading,

@@ -31,20 +31,18 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('13'),
-        answersFor('13', {'root': 'prepare-root', 'wipe': 'reboot'}),
+        answersFor({'root': 'prepare-root', 'wipe': 'reboot'}),
       );
 
       expect(plan.family, 'legacyBatch');
       expect(plan.template, 'oos/super');
-      expect(plan.identity.product, 'sun');
       expect(plan.isResolved, isTrue);
 
       final steps = execution(plan);
       expect(steps.first, isA<RequireMode>());
       expect((steps[0] as RequireMode).mode, FlashMode.bootloader);
-      expect(steps[1], isA<GetvarCheck>());
-      expect((steps[1] as GetvarCheck).name, 'product');
-      expect((steps[1] as GetvarCheck).expected, 'sun');
+      expect(steps[1], isA<Flash>());
+      expect((steps[1] as Flash).partition, 'boot_a');
 
       expect(flashPartitions(plan), [
         ..._bootFlashes,
@@ -82,9 +80,7 @@ void main() {
       expect(flashPartitions(plan), isNot(contains('system_a')));
 
       final confirmation = plan.confirmationText('SERIAL-13');
-      expect(confirmation.first, contains('13'));
-      expect(confirmation.first, contains('SERIAL-13'));
-      expect(confirmation.first, contains('sun'));
+      expect(confirmation.first, 'Flash 13, serial SERIAL-13');
       expect(
         () => plan.confirmationText('  '),
         throwsA(isA<FlashPlanException>()),
@@ -100,7 +96,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('13', region: 'CN'),
-        answersFor('13', {'bloat': 'debloat', 'wipe': 'wipe'}),
+        answersFor({'bloat': 'debloat', 'wipe': 'wipe'}),
       );
 
       expect(plan.family, 'legacyBatch');
@@ -136,7 +132,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('13', region: 'CN'),
-        answersFor('13', {'bloat': 'keep-bloat', 'wipe': 'reboot'}),
+        answersFor({'bloat': 'keep-bloat', 'wipe': 'reboot'}),
       );
       expect(flashPartitions(plan), isNot(contains('my_preload_a')));
       expect(flashes(plan).last.partition, 'super');
@@ -148,7 +144,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('13', region: 'CN'),
-        answersFor('13', {'wipe': 'reboot'}),
+        answersFor({'wipe': 'reboot'}),
       );
       expect(promptOf(plan, 'bloat').defaultChoice, isNull);
       expect(promptOf(plan, 'bloat').selectedSteps, isNull);
@@ -169,7 +165,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('13T'),
-        answersFor('13T', {'root': 'flash-signal', 'wipe': 'reboot'}),
+        answersFor({'root': 'flash-signal', 'wipe': 'reboot'}),
       );
       final steps = execution(plan);
       final setActiveIndex = steps.indexWhere((step) => step is SetActive);
@@ -208,7 +204,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('13', kind: 'Regional Flasher'),
-        answersFor('13', {'root': 'flash-signal', 'wipe': 'reboot'}),
+        answersFor({'root': 'flash-signal', 'wipe': 'reboot'}),
       );
       final steps = execution(plan);
       final setActiveIndex = steps.indexWhere((step) => step is SetActive);
@@ -230,7 +226,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('Ace6', region: 'CN'),
-        answersFor('Ace6', {'bloat': 'keep-bloat', 'wipe': 'reboot'}),
+        answersFor({'bloat': 'keep-bloat', 'wipe': 'reboot'}),
       );
       final partitions = flashPartitions(plan);
       expect(

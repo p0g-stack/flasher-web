@@ -1029,7 +1029,7 @@ void main() {
       await expectSuperFlash(
         fixture,
         selectionAce6,
-        answers: const {'wipe': 'reboot', 'product': 'canoe'},
+        answers: const {'wipe': 'reboot'},
         product: 'canoe',
         superSize: fixture.superSize('Ace6', 'IN'),
         withBase: true,
@@ -1173,7 +1173,7 @@ void main() {
         final prepared = await prepareFlash(
           package: package,
           selection: selectionAce6,
-          answers: const {'wipe': 'reboot', 'product': 'canoe'},
+          answers: const {'wipe': 'reboot'},
           serial: 'SERIAL-A',
           transport: FixtureTransport(FixtureDevice(product: 'canoe')),
           job: package.job,
@@ -1273,7 +1273,7 @@ void main() {
           final donorPrepared = await prepareFlash(
             package: donorPackage,
             selection: selectionAce6T,
-            answers: const {'wipe': 'reboot', 'product': 'canoe'},
+            answers: const {'wipe': 'reboot'},
             serial: 'SERIAL-A',
             transport: FixtureTransport(FixtureDevice(product: 'canoe')),
             job: donorPackage.job,
@@ -1438,41 +1438,6 @@ void main() {
     } finally {
       await package.close();
     }
-  });
-
-  test('the service probes the product before it opens a virtual package', () async {
-    final fixture = await super13Fixture(
-      builders: const [
-        ('SuperHybrid Flasher', '13', 'GLO', 'BUILD_SUPER.sh'),
-        ('Super Flasher', 'Ace5', 'GLO', 'BUILD_SUPER.sh'),
-      ],
-    );
-    addTearDown(fixture.dispose);
-    final device = FixtureDevice(product: 'canoe');
-    final service = FlasherService(
-      transportFactory: () => FixtureTransport(device),
-    );
-    final result = await service.prepareFlash({
-      'selection': {
-        'device': 'Oneplus Ace 5',
-        'kind': 'Super Flasher',
-        'region': 'GLO',
-      },
-      'serial': device.serial,
-      'upstreamBase': fixture.upstreamPath,
-      'virtual': {
-        'ota': {
-          'kind': 'file',
-          'file': '${fixture.root.path}/missing-ota.zip',
-        },
-        'bloat': {'kind': 'path', 'path': '${fixture.root.path}/missing'},
-      },
-    });
-    expect(result['productRequired'], isTrue);
-    expect(result['observedProduct'], 'canoe');
-    expect(result['serial'], device.serial);
-    expect(device.commands, ['getvar:product']);
-    expect(device.flashCommands, isEmpty);
   });
 
   test('a second virtual preparation evicts the first ticket', () async {

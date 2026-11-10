@@ -1,12 +1,9 @@
 /// Declarative flashing only: no transport, retries, or device writes.
 library;
 
-/// A fastboot mode, identified by the device's own getvar answers.
-///
-/// `superFastboot` is CANOE-BDS's bootloader replacement. It answers
-/// `getvar:canoe-bds` and may also say `is-userspace:no`, so probing
-/// `is-userspace` first would mistake it for the normal bootloader.
-enum FlashMode { bootloader, fastbootd, superFastboot, android }
+/// A fastboot mode, identified by the device's own `getvar is-userspace`
+/// answer.
+enum FlashMode { bootloader, fastbootd, android }
 
 enum FlashSlot { a, b }
 
@@ -54,14 +51,6 @@ final class RequireMode extends FlashStep {
   final FlashMode mode;
   @override
   String get text => 'Verify device mode is ${mode.name}';
-}
-
-final class GetvarCheck extends FlashStep {
-  const GetvarCheck(this.name, this.expected);
-  final String name;
-  final String expected;
-  @override
-  String get text => 'Require getvar $name = $expected';
 }
 
 final class Flash extends FlashStep {
@@ -139,31 +128,18 @@ final class Prompt extends FlashStep {
       'selected: ${selectedChoice ?? 'unanswered'})';
 }
 
-final class DeviceExpectation {
-  const DeviceExpectation({
-    required this.dev,
-    required this.product,
-    required this.confidence,
-    this.overrideText,
-  });
-  final String dev;
-  final String product;
-  final String confidence;
-  final String? overrideText;
-}
-
 /// Executors MUST stop at the first failure, pin the confirmed serial across
 /// reconnects, and never resend an uncertain write. Every reboot back into
 /// fastbootd is followed by an explicit mode check. The final reboot leaves
 /// fastboot, so it carries no fastboot mode check.
 final class FlashPlan {
   FlashPlan({
-    required this.identity,
+    required this.dev,
     required this.family,
     required this.template,
     required List<FlashStep> steps,
   }) : steps = List<FlashStep>.unmodifiable(steps);
-  final DeviceExpectation identity;
+  final String dev;
   final String family;
   final String template;
   final List<FlashStep> steps;
@@ -204,8 +180,7 @@ final class FlashPlan {
       throw const FlashPlanException('A device serial is required.');
     }
     return List<String>.unmodifiable([
-      'Flash ${identity.dev}, serial $serial, product ${identity.product}',
-      if (identity.overrideText != null) identity.overrideText!,
+      'Flash $dev, serial $serial',
       for (final step in steps) step.text,
     ]);
   }

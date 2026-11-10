@@ -43,31 +43,9 @@ void main() {
       expect(transport.opened, isEmpty);
     });
 
-    test('a product mismatch is refused', () async {
+    test('fastbootd is distinguished from the bootloader', () async {
       final package = _package();
-      final transport = _Transport(_State(product: 'moon'), 'SERIAL-A');
-      await expectLater(
-        prepareFlash(
-          package: package,
-          selection: _selection,
-          answers: _answers,
-          serial: 'SERIAL-A',
-          transport: transport,
-          job: 'job',
-        ),
-        throwsA(
-          isA<FlashException>().having(
-            (error) => error.message,
-            'message',
-            contains('reports product'),
-          ),
-        ),
-      );
-    });
-
-    test('Super Fastboot is distinguished from the bootloader', () async {
-      final package = _package();
-      final state = _State()..superFastboot = true;
+      final state = _State()..fastbootd = true;
       final transport = _Transport(state, 'SERIAL-A');
       final prepared = await prepareFlash(
         package: package,
@@ -77,7 +55,7 @@ void main() {
         transport: transport,
         job: 'job',
       );
-      expect(prepared.mode, FlashMode.superFastboot);
+      expect(prepared.mode, FlashMode.fastbootd);
       expect(prepared.modeOk, isFalse);
     });
 
@@ -87,7 +65,7 @@ void main() {
       final prepared = await prepareFlash(
         package: package,
         selection: _selection,
-        answers: const {'product': 'sun'},
+        answers: const {},
         serial: 'SERIAL-A',
         transport: transport,
         job: 'job',
@@ -116,7 +94,7 @@ void main() {
       expect(
         prepared.binding.matches({
           ...request,
-          'answers': {'product': 'sun', 'root': 'flash-signal'},
+          'answers': {'root': 'flash-signal'},
         }, storeKey: 'path|/tmp/output'),
         isFalse,
       );
@@ -439,7 +417,7 @@ void main() {
       },
     );
 
-    test('a retry refuses a changed serial, product or mode', () async {
+    test('a retry refuses a changed serial or mode', () async {
       final package = _package();
       final state = _State(failFlash: 'boot_b');
       final transport = _Transport(state, 'SERIAL-A');
@@ -471,25 +449,9 @@ void main() {
       expect(otherState.flashCommands, isEmpty);
       expect(otherState.commands, isEmpty);
 
-      // A product change while the device opened is refused before writes.
+      // A mode change during the retried step is caught afterwards.
       state.failFlash = null;
-      state.product = 'moon';
-      final wrongProduct = await executePreparedFlash(
-        prepared,
-        transport,
-        emit: (_) {},
-        previousReceipt: receipt,
-      );
-      expect(wrongProduct['status'], 'failed');
-      expect(
-        (wrongProduct['failure'] as Map)['message'],
-        contains('reports product "moon"'),
-      );
-      expect(state.flashCommands, ['boot_a', 'boot_b']);
-
-      // A product change during the retried step is caught afterwards.
-      state.product = 'sun';
-      state.productAfterFlash = 'moon';
+      state.fastbootdAfterFlash = true;
       final changed = await executePreparedFlash(
         prepared,
         transport,
@@ -500,6 +462,11 @@ void main() {
       expect(
         (changed['failure'] as Map)['message'],
         contains('identity or mode changed after the retried step'),
+      );
+      expect(
+        state.flashCommands,
+        ['boot_a', 'boot_b', 'boot_b'],
+        reason: 'only the failed step is sent again',
       );
     });
 
@@ -631,7 +598,6 @@ Selection get _selection => const Selection(
 );
 
 Map<String, String> get _answers => const {
-  'product': 'sun',
   'root': 'prepare-root',
   'wipe': 'reboot',
 };
@@ -760,21 +726,19 @@ final class _MemoryCursor implements FlashCursor {
 }
 
 final class _State {
-  _State({this.serial = 'SERIAL-A', this.product = 'sun', this.failFlash});
+  _State({this.serial = 'SERIAL-A', this.failFlash});
   String serial;
-  String product;
   String? failFlash;
   bool fastbootd = false;
-  bool superFastboot = false;
   bool android = false;
   bool loseFlashReply = false;
   String? loseRebootReply;
   int? partitionBytes;
   bool probeFailure = false;
 
-  /// Sets [product] after a successful `flash:` command, so a test can prove
-  /// the post-step identity check.
-  String? productAfterFlash;
+  /// Switches the device to fastbootd after a successful `flash:` command, so
+  /// a test can prove the post-step mode check.
+  bool fastbootdAfterFlash = false;
   final commands = <String>[];
   final flashCommands = <String>[];
 
@@ -839,8 +803,7 @@ final class _Session implements FastbootSession {
   Future<String> command(String command, {bool write = false}) async {
     if (_closed) throw StateError('closed');
     state.commands.add(command);
-    if (command == 'getvar:product') return state.product;
-    if (state.probeFailure && command == 'getvar:canoe-bds') {
+    if (state.probeFailure && command == 'getvar:is-userspace') {
       throw const LinkFailure(
         blame: 'host',
         name: 'SecurityError',
@@ -848,21 +811,12 @@ final class _Session implements FastbootSession {
         stage: 'probe',
       );
     }
+    if (command == 'getvar:is-userspace') {
+      return state.fastbootd ? 'yes' : 'no';
+    }
     if (command.startsWith('getvar:partition-size:') &&
         state.partitionBytes != null) {
       return '0x${state.partitionBytes!.toRadixString(16)}';
-    }
-    if (command == 'getvar:canoe-bds') {
-      if (state.superFastboot) return '1';
-      throw const LinkFailure(
-        blame: 'device',
-        name: 'FastbootFail',
-        message: 'unknown variable',
-        stage: 'command',
-      );
-    }
-    if (command == 'getvar:is-userspace') {
-      return state.fastbootd ? 'yes' : 'no';
     }
     if (command == 'getvar:max-download-size') return '0x4000';
     if (command == 'reboot-fastboot' || command == 'reboot' || command == 'reboot-bootloader') {
@@ -908,8 +862,8 @@ final class _Session implements FastbootSession {
           stage: 'flash',
         );
       }
-      if (state.productAfterFlash != null) {
-        state.product = state.productAfterFlash!;
+      if (state.fastbootdAfterFlash) {
+        state.fastbootd = true;
       }
       return '';
     }

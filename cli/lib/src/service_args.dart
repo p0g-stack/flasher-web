@@ -175,8 +175,6 @@ void printEvent(Map<String, Object?> event) {
 /// Prints the read-only plan and every prompt.
 void printFlashPreparation(Map<String, Object?> prepared) {
   final serial = prepared['serial'] ?? '?';
-  final product = prepared['product'] ?? '?';
-  final expected = prepared['expectedProduct'] ?? '?';
   final mode = prepared['mode'] ?? '?';
   final job = prepared['job'] ?? '?';
   final version = prepared['version'] ?? '?';
@@ -187,7 +185,6 @@ void printFlashPreparation(Map<String, Object?> prepared) {
     '${prepared['region'] ?? '?'}',
   );
   print('Serial: $serial');
-  print('Product: $product (expected $expected)');
   print('Mode: $mode');
   print('max-download-size: ${prepared['maxDownloadSize'] ?? '?'} bytes');
   final warnings = prepared['warnings'];

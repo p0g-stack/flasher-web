@@ -104,19 +104,11 @@ Future<Map<String, Object?>> executePreparedFlash(
     if (!rebootRetry && mode != requiredMode) {
       throw FlashException('The device is in ${mode.name}; step $startStep requires ${requiredMode.name}.');
     }
-    var product = await readProduct(first);
-    if (product != prepared.expectedProduct) {
-      throw FlashException(
-        'The device reports product "$product" after opening, not '
-        '"${prepared.expectedProduct}".',
-      );
-    }
     if (rebootRetry) {
       await first.command(requiredMode == FlashMode.fastbootd ? 'reboot-fastboot' : 'reboot-bootloader', write: true);
       await first.close();
       session = await _waitForSerial(transport, prepared, requiredMode, check, reconnectTimeout, reconnectPoll);
       mode = await probeFlashMode(session);
-      product = await readProduct(session);
       modeEnd = mode.name;
     }
     maxDownloadSize = parseDownloadSize(
@@ -126,7 +118,7 @@ Future<Map<String, Object?>> executePreparedFlash(
       'type': 'log',
       'text':
           'Flashing ${prepared.selection.device} '
-          '(${prepared.serial}), product $product, '
+          '(${prepared.serial}), '
           'max-download-size $maxDownloadSize.',
     });
 
@@ -153,8 +145,7 @@ Future<Map<String, Object?>> executePreparedFlash(
           markUncertain,
           (mode, _) async {
             // Reconnect after a reboot: only the confirmed serial is opened,
-            // and its product and mode are checked again before the next
-            // command.
+            // and its mode is checked again before the next command.
             final reopened = await _waitForSerial(
               transport,
               prepared,
@@ -181,7 +172,7 @@ Future<Map<String, Object?>> executePreparedFlash(
         session = next;
         if (previousReceipt != null && index == startStep && index + 1 < execution.length && next != null) {
           final expectedMode = step is RebootTo ? step.mode : requiredMode;
-          if (next.serial != prepared.serial || await readProduct(next) != prepared.expectedProduct ||
+          if (next.serial != prepared.serial ||
               await probeFlashMode(next) != expectedMode) {
             throw const FlashException('Device identity or mode changed after the retried step.');
           }
@@ -267,8 +258,6 @@ Future<Map<String, Object?>> executePreparedFlash(
     'dev': prepared.selection.dev,
     'kind': prepared.selection.kind,
     'region': prepared.selection.region,
-    'product': prepared.product,
-    'expectedProduct': prepared.expectedProduct,
     'modeStart': prepared.mode.name,
     'modeEnd': modeEnd,
     'maxDownloadSize': maxDownloadSize,
@@ -335,14 +324,6 @@ Future<FastbootSession?> _runStep(
         );
       }
       return session;
-    case GetvarCheck(:final name, :final expected):
-      final value = cleanGetvar(await need().command('getvar:$name'), name);
-      if (value != expected) {
-        throw FlashException(
-          'getvar $name returned "$value"; the package requires "$expected".',
-        );
-      }
-      return session;
     case Flash(:final partition, :final image):
       await _flashImage(
         need(),
@@ -368,7 +349,6 @@ Future<FastbootSession?> _runStep(
         FlashMode.fastbootd => 'reboot-fastboot',
         FlashMode.bootloader => 'reboot-bootloader',
         FlashMode.android => 'reboot',
-        FlashMode.superFastboot => 'reboot-bootloader',
       };
       await active.command(command, write: true);
       await active.close();
@@ -597,13 +577,6 @@ Future<FastbootSession> _waitForSerial(
           );
         }
         try {
-          final product = await readProduct(session);
-          if (product != prepared.expectedProduct) {
-            throw FlashException(
-              'After reconnecting, ${prepared.serial} reports product '
-              '"$product" instead of "${prepared.expectedProduct}".',
-            );
-          }
           final mode = await probeFlashMode(session);
           if (mode == expectedMode) return session;
           await session.close();

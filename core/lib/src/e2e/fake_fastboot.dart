@@ -84,7 +84,6 @@ final class _FakeDevice {
   String product = 'sun';
   String maxDownloadSize = '0x4000';
   bool fastbootd = false;
-  bool superFastboot = false;
   bool android = false;
   String? failFlash;
   bool failOnce = true;
@@ -99,7 +98,6 @@ final class _FakeDevice {
 
   FlashMode get mode {
     if (android) return FlashMode.android;
-    if (superFastboot) return FlashMode.superFastboot;
     if (fastbootd) return FlashMode.fastbootd;
     return FlashMode.bootloader;
   }
@@ -108,7 +106,6 @@ final class _FakeDevice {
     product = 'sun';
     maxDownloadSize = '0x4000';
     fastbootd = false;
-    superFastboot = false;
     android = false;
     failFlash = null;
     failOnce = true;
@@ -177,7 +174,6 @@ final class _FakeSession implements FastbootSession {
     if (_closed) throw StateError('closed');
     device.commands.add(command);
     if (command == 'getvar:product') return device.product;
-    if (command == 'getvar:canoe-bds') return 'no';
     if (command == 'getvar:is-userspace') {
       return device.fastbootd ? 'yes' : 'no';
     }

@@ -8,8 +8,6 @@
 /// mandatory image is missing.
 ///
 /// Owner decisions applied on top of the scripts:
-/// - the connected product is checked against the selected device before the
-///   first write;
 /// - every write names its destination, including an explicit `_a`/`_b`, and
 ///   `--slot=all` expands to both suffixes;
 /// - the plan stops at the first failure (executor rule) and never resends an
@@ -27,7 +25,6 @@
 library;
 
 import '../upstream/tables.dart';
-import 'identity.dart';
 import 'model.dart';
 import 'package_index.dart';
 
@@ -162,9 +159,7 @@ FlashFamily flashFamily(Selection selection) {
 /// [answers] maps a prompt id (`bloat`, `root`, `abl`, `wipe`) to one of its
 /// choice keys. An omitted answer uses the launcher's default; when the
 /// launcher has no default the prompt stays unanswered and
-/// [FlashPlan.executionSteps] refuses to run. `product` is the only
-/// non-prompt key: it supplies the expected `getvar product` when the device
-/// table marks it unknown, and must agree with the table when it is known.
+/// [FlashPlan.executionSteps] refuses to run.
 ///
 /// Every image the selected branches flash must exist in [package]; the
 /// launchers' own existence guards (X9U's logical list, NEO8's boot list) are
@@ -175,8 +170,7 @@ FlashPlan planFlash(
   Map<String, String> answers,
 ) {
   final family = flashFamily(selection);
-  final expectation = resolveDeviceExpectation(selection.dev, answers);
-  final usedAnswers = <String>{if (answers.containsKey('product')) 'product'};
+  final usedAnswers = <String>{};
   final folder = selection.imageFolder;
   final hasSuper = package.has(_superImage);
   final isSuper = selection.kind.contains('Super');
@@ -297,7 +291,6 @@ FlashPlan planFlash(
 
   final steps = <FlashStep>[
     const RequireMode(FlashMode.bootloader),
-    GetvarCheck('product', expectation.product),
     if (family == FlashFamily.neo8)
       const Instruct(
         'Use only with an unlocked Realme NEO8 on matching CN firmware. '
@@ -392,7 +385,7 @@ FlashPlan planFlash(
   }
   _preflight(package, steps);
   return FlashPlan(
-    identity: expectation,
+    dev: selection.dev,
     family: family.name,
     template: selection.template,
     steps: steps,

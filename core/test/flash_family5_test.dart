@@ -19,7 +19,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('NEO8', region: 'CN'),
-        answersFor('NEO8'),
+        answersFor(),
       );
 
       expect(plan.family, 'neo8');
@@ -63,7 +63,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('NEO8', region: 'CN'),
-        answersFor('NEO8'),
+        answersFor(),
       );
       expect(flashPartitions(plan), [
         'boot_a',

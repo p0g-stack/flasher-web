@@ -22,7 +22,7 @@ void main() {
         () => planFlash(
           package,
           selectionOf('13'),
-          answersFor('13', {'root': 'prepare-root', 'wipe': 'reboot'}),
+          answersFor({'root': 'prepare-root', 'wipe': 'reboot'}),
         ),
         throwsPlanError('vendor_boot.img'),
       );
@@ -34,7 +34,7 @@ void main() {
         () => planFlash(
           package,
           selectionOf('13', region: 'CN'),
-          answersFor('13', {'bloat': 'debloat', 'wipe': 'reboot'}),
+          answersFor({'bloat': 'debloat', 'wipe': 'reboot'}),
         ),
         throwsPlanError('OOS_FILES_HERE/my_preload.img'),
       );
@@ -45,7 +45,7 @@ void main() {
       final plan = planFlash(
         package,
         selectionOf('13', region: 'CN'),
-        answersFor('13', {'bloat': 'keep-bloat', 'wipe': 'reboot'}),
+        answersFor({'bloat': 'keep-bloat', 'wipe': 'reboot'}),
       );
       expect(plan.isResolved, isTrue);
       expect(flashPartitions(plan), isNot(contains('my_preload_a')));
@@ -56,7 +56,7 @@ void main() {
         () => planFlash(
           flashPackage(folder: 'COS_FILES_HERE'),
           selectionOf('15R', region: 'CN'),
-          answersFor('15R'),
+          answersFor(),
         ),
         throwsPlanError('No flasher family'),
       );
@@ -73,41 +73,13 @@ void main() {
       );
     });
 
-    test('an unconfirmed product needs the user override', () {
-      expect(
-        () => planFlash(
-          flashPackage(folder: 'OOS_FILES_HERE'),
-          selectionOf('15'),
-          const {},
-        ),
-        throwsPlanError('getvar product'),
-      );
-    });
-
-    test('the override is carried into the confirmation as unverified', () {
+    test('the confirmation names the device and the exact serial', () {
       final plan = planFlash(
         flashPackage(folder: 'OOS_FILES_HERE'),
         selectionOf('15'),
-        const {'product': 'phone-shows-this'},
+        const {},
       );
-      expect(plan.identity.product, 'phone-shows-this');
-      expect(plan.identity.confidence, contains('user override'));
-      expect(
-        plan.confirmationText('SERIAL').join('\n'),
-        contains('comes from the user'),
-      );
-      expect(plan.confirmationText('SERIAL').first, contains('SERIAL'));
-    });
-
-    test('a known product cannot be overridden', () {
-      expect(
-        () => planFlash(
-          flashPackage(folder: 'OOS_FILES_HERE'),
-          selectionOf('13'),
-          const {'product': 'not-sun'},
-        ),
-        throwsPlanError('conflicts'),
-      );
+      expect(plan.confirmationText('SERIAL').first, 'Flash 15, serial SERIAL');
     });
 
     test('an invalid prompt choice is refused', () {
@@ -115,7 +87,7 @@ void main() {
         () => planFlash(
           flashPackage(folder: 'COS_FILES_HERE'),
           selectionOf('13', region: 'CN'),
-          answersFor('13', {'bloat': 'maybe', 'wipe': 'reboot'}),
+          answersFor({'bloat': 'maybe', 'wipe': 'reboot'}),
         ),
         throwsPlanError('is not valid for "bloat"'),
       );
@@ -126,7 +98,7 @@ void main() {
         () => planFlash(
           flashPackage(folder: 'OOS_FILES_HERE'),
           selectionOf('15'),
-          answersFor('15', {'root': 'prepare-root'}),
+          answersFor({'root': 'prepare-root'}),
         ),
         throwsPlanError('No step in this plan uses the answer "root"'),
       );
@@ -136,7 +108,7 @@ void main() {
       'unanswered batch prompts block execution but still produce a plan',
       () {
         final package = flashPackage(folder: 'OOS_FILES_HERE');
-        final plan = planFlash(package, selectionOf('13'), answersFor('13'));
+        final plan = planFlash(package, selectionOf('13'), answersFor());
         expect(plan.isResolved, isFalse);
         expect(promptOf(plan, 'root').defaultChoice, isNull);
         expect(promptOf(plan, 'wipe').defaultChoice, isNull);
@@ -149,7 +121,7 @@ void main() {
         () => planFlash(
           flashPackage(folder: 'OTA_FILES_HERE', superImage: false),
           selectionOf('X9U'),
-          answersFor('X9U'),
+          answersFor(),
         ),
         throwsPlanError('requires super.img'),
       );
@@ -163,7 +135,7 @@ void main() {
             omit: ['OTA_FILES_HERE/boot.img'],
           ),
           selectionOf('X9U', kind: 'Regional Flasher'),
-          answersFor('X9U'),
+          answersFor(),
         ),
         throwsPlanError('boot.img is missing'),
       );
@@ -174,7 +146,7 @@ void main() {
         () => planFlash(
           flashPackage(folder: 'COS_FILES_HERE', superImage: false),
           selectionOf('NEO8', region: 'CN'),
-          answersFor('NEO8'),
+          answersFor(),
         ),
         throwsPlanError('super.img is required'),
       );
@@ -182,7 +154,7 @@ void main() {
         () => planFlash(
           flashPackage(folder: 'COS_FILES_HERE', boot: const []),
           selectionOf('NEO8', region: 'CN'),
-          answersFor('NEO8'),
+          answersFor(),
         ),
         throwsPlanError('boot.img is required'),
       );
@@ -229,23 +201,6 @@ void main() {
         () => PackageIndex.fromEntries(['a.img', 'a.img']),
         throwsPlanError('Duplicate'),
       );
-    });
-  });
-
-  group('device identity table', () {
-    test('OnePlus 13 is confirmed and the rest stay unknown', () {
-      expect(deviceIdentities['13']!.product, 'sun');
-      expect(deviceIdentities['13']!.evidence, ProductEvidence.observedGetvar);
-      expect(deviceIdentities['13']!.source, contains('xdaforums.com'));
-      expect(deviceIdentities['13R']!.product, isNull);
-      expect(deviceIdentities['13R']!.evidence, ProductEvidence.unknown);
-      expect(
-        deviceIdentities.values
-            .where((identity) => identity.product != null)
-            .map((identity) => identity.dev),
-        ['13'],
-      );
-      expect(deviceIdentities, hasLength(17));
     });
   });
 }

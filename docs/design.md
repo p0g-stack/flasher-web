@@ -408,15 +408,12 @@ device write:
    warns when the package has no whole-image SHA-256 map or is marked
    `test_fixture`.
 2. Requires the exact serial in the granted list, opens only that serial, and
-   reads product, mode and `max-download-size` with `getvar`. Preparation sends
+   reads mode and `max-download-size` with `getvar`. Preparation sends
    no write command.
 3. Resolves the template prompts. A prompt with a default is preselected; a
    prompt without one stays unanswered, and until an explicit answer arrives
    the result has `resolved: false` and an empty `token`.
-4. When the device table has no confirmed product mapping, returns
-   `productRequired` with the observed product instead of a token. The user
-   must verify the selected model and pass that product explicitly.
-5. Inspects every image a `Flash` step would send. For the virtual package this
+4. Inspects every image a `Flash` step would send. For the virtual package this
    reads no OTA or super bytes: the size, sparse geometry, part count and
    digest come from the manifest and the LP layout, and bloat images are
    hashed when the package is opened. From those it also checks the target
@@ -433,8 +430,8 @@ earlier one, and a changed OTA, BASE, donor or bloat makes it stale.
 
 `flash` consumes the token, rechecks the request against its binding, reopens
 the package, compares the snapshot digest, and takes the job lock. Execution
-starts in the normal bootloader, rechecks product and `max-download-size`, then
-follows the plan's expanded steps. It stops at the first failure.
+starts in the normal bootloader, rechecks the serial and `max-download-size`,
+then follows the plan's expanded steps. It stops at the first failure.
 
 Downloads are streamed in pieces of at most 1 MiB and split at the device's
 `max-download-size`:
@@ -447,7 +444,7 @@ Downloads are streamed in pieces of at most 1 MiB and split at the device's
 - in fastbootd, a reconstructed logical partition is resized before flashing.
 
 After a reboot it waits only for the confirmed serial, opens that exact device,
-and requires both the expected product and fastboot mode before the next
+and requires the expected fastboot mode before the next
 command; the wait is bounded (180 s, polled every second). If the final reboot
 is reached, it closes the fastboot session and reports Android mode as
 `android (unverified)`.
@@ -472,10 +469,10 @@ step and offers three explicit actions, all addressed by `runId`:
   returns the receipt as `stopped`. It is not a rollback: commands already sent
   stay applied, and an in-flight write may leave the phone partially written.
 
-A retry reopens the confirmed serial, rechecks product and mode (and the
+A retry reopens the confirmed serial, rechecks serial and mode (and the
 package size), and keeps the earlier steps and writes in the receipt. A retry
 that fails its own checks stays pausable and reports the reason instead of
-closing the run. Serial, product and mode are checked again after a retried
+closing the run. The serial and mode are checked again after a retried
 step succeeds, before continuing. A write whose completion is unknown marks the receipt
 `uncertain`; a complete device FAIL is a definite refusal. The session retires
 on transport or protocol failure, independently of the public blame.
@@ -486,7 +483,7 @@ The result carries a receipt with status, `runId`, job, device, kind, region,
 serial, OTA version, ARB index, the package map (`image_sha256` including
 `super.img` and the super inputs, `vulnerableAbl`, `abl_source`), the step list
 with per-step status, writes (image, partition, bytes, parts, part index),
-start and end modes, expected and observed product, `max-download-size`,
+start and end modes, `max-download-size`,
 failure evidence with its step, uncertainty, cleanup errors, timestamps and the
 strategy that ran, plus the virtual snapshot. Verification is `unverified`:
 fastboot `OKAY` is not a readback hash. The receipt is the only record; the

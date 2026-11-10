@@ -64,7 +64,7 @@ can still fail when the destination drive fills.
 | `Stream<Map> saveOta(Map req)` | `{"ota": {"kind": "catalog", "entry": <release>}, "apiBase": String?, "destination": FileSystemFileHandle \| {"kind": "stream", "id", "channel"} \| {"kind": "path", "path"}}` | `started`/`progress` events; last is `{"type": "result", "label", "bytes", "sha256"}`. Copies the OTA byte for byte outside the stores; no budget check and no resume, so a restart begins at zero and rereads blocks the edge cache already holds |
 | `Future<Map> inspectOta(Map req)` | `{"ota": OtaInput, "apiBase": String}` | `{"version", "fields": {...metadata}, "partitions": {name: size}, "length": int, "stored": bool, "arb": {"major","minor","index"}?, "device": String?, "securityPatch": String?}` |
 | `Future<Map> fastbootDevices()` | – | `{"devices": [{"serial", "label", "transport"}], "error"?: FailureMap}` |
-| `Future<Map> prepareFlash(Map req)` | see below | prepared map, `productRequired` map, or `{"error": FailureMap}` |
+| `Future<Map> prepareFlash(Map req)` | see below | prepared map or `{"error": FailureMap}` |
 | `Stream<Map> flash(Map req)` | prepared request + `{"confirmationToken": String}` | `run`/`step`/`log`/`progress`/`waiting`/`failure` events; last is `{"type": "result", "runId", "status", "canRetry", "receipt"}` |
 | `Stream<Map> retryStep(Map req)` | `{"runId": String}` | same events as `flash` |
 | `Stream<Map> rebootRetry(Map req)` | `{"runId": String}` | same events as `flash` |
@@ -125,18 +125,10 @@ it must equal the derived `virtual-<16 hex>` identity, otherwise preparation is
 refused.
 
 The call is read-only. It opens the granted device with the exact serial for
-`getvar` reads (product, mode, `max-download-size`), and, once the plan is
+`getvar` reads (mode, `max-download-size`), and, once the plan is
 resolved, checks the target partitions' sizes. It sends no write.
 
-When the device table has no confirmed product mapping for the selected model
-and no `product` answer was supplied, the result is not a prepared map:
-
-```text
-{"productRequired": true, "serial", "observedProduct": String, "message": String}
-```
-
-Pass the verified `product` answer and prepare again. A product mismatch is
-refused before a token is returned. A link failure or a domain
+A link failure or a domain
 `FlashException` returns `{"error": FailureMap}`; domain failures use
 `blame: "user"`, `name: "FlashException"` and `stage: "prepare"`. Other errors
 are thrown. Invalid OTA inputs, unsupported kinds, missing conversion inputs,
@@ -145,8 +137,8 @@ missing X9U choices and failed bloat checks are refused before any device write.
 A resolved result has these keys:
 
 ```text
-{"token": String, "serial", "product", "expectedProduct", "productMatches": bool,
- "mode": "bootloader"|"fastbootd"|"superFastboot"|"android", "modeOk": bool,
+{"token": String, "serial",
+ "mode": "bootloader"|"fastbootd"|"android", "modeOk": bool,
  "maxDownloadSize": int, "resolved": true, "job", "format": "virtual",
  "version", "device", "dev", "kind", "region",
  "steps": [String], "executionSteps": [String],
@@ -206,10 +198,10 @@ client.
 
 Execution guarantees:
 
-- Starts in the normal bootloader after a product check, then follows the
-  expanded plan and stops at the first failure.
+- Starts in the normal bootloader after a serial and mode check, then follows
+  the expanded plan and stops at the first failure.
 - After a reboot, waits only for the confirmed serial, then requires the
-  expected product and fastboot mode before the next command (180 s, polled
+  expected fastboot mode before the next command (180 s, polled
   every second).
 - Splits downloads at `max-download-size`; sparse parts preserve the original
   block geometry and offsets; a raw image is split only when its size is a
@@ -231,11 +223,11 @@ A paused run is identified by the `runId` the stream reported. `retryStep`
 resends the failed step from byte zero and then continues with the remaining
 steps; `rebootRetry` first reboots to the mode that step requires
 (`reboot-bootloader`, or `reboot-fastboot` for fastbootd) and waits for that
-mode. Both reopen the confirmed serial, recheck product and mode, keep the
+mode. Both reopen the confirmed serial, recheck serial and mode, keep the
 earlier `steps` and `writes` in the receipt, and stream the same events as
 `flash`. A retry whose input or device checks fail emits `failure` and stays
 pausable; the receipt's failure has `stage: "retry-preflight"`.
-After the retried step succeeds, the executor checks serial, product and mode
+After the retried step succeeds, the executor checks serial and mode
 again before proceeding to the next step.
 
 `stopRun` accepts an active or paused run, stops future commands, and returns
@@ -250,7 +242,7 @@ Receipt:
  "otaVersion", "status", "stepIndex": int?, "reason": String?,
  "package": {...build.json, "image_sha256": {path: sha256}}, "arb",
  "image_sha256": {path: sha256},
- "expectedProduct", "modeStart", "modeEnd", "maxDownloadSize",
+ "modeStart", "modeEnd", "maxDownloadSize",
  "startedAt", "finishedAt", "steps": [{"index", "title", "status"}],
  "writes": [{"image", "partition", "bytes", "part"?, "parts", "status"}],
  "verification": {"status": "unverified", "detail": String},
