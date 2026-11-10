@@ -120,7 +120,7 @@ store uses an unknown estimate: only the app cap applies, not the origin quota.
 
 Optional and disposable. Per catalog entry: `ota-cache/<digest>.json` (the
 inventory: label, catalog size, ETag, bytes written, complete flag, full-file
-SHA-256, use timestamps), `<digest>.part` while downloading, `<digest>.zip`
+SHA-256, use timestamps), `<digest>.downloadx.part` while downloading, `<digest>.zip`
 when complete, and `<digest>.downloadx.json`, the chunk layout of the
 [`downloadx`](https://pub.dev/packages/downloadx) engine. `<digest>` is a
 canonical digest of the catalog entry with signed-URL query strings and ranking
