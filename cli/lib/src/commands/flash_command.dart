@@ -247,8 +247,11 @@ class FlashCommand extends Command<int> {
       final status = '${result['status']}';
       if (status != 'failed' && status != 'uncertain') break;
       if (result['canRetry'] != true || runId == null) break;
-      final choice = _askRetry();
-      if (choice == 'stop') {
+      final receiptValue = result['receipt'];
+      final options = receiptValue is Map && receiptValue['recoveryActions'] is List
+          ? (receiptValue['recoveryActions']! as List).cast<Map>() : <Map>[];
+      final choice = _askRecovery(options, '${request['serial']}');
+      if (choice == FlashRecovery.stopRun) {
         final stopped = await service.stopRun({'runId': runId});
         final stoppedReceipt = stopped['receipt'];
         final receipt = stoppedReceipt is Map
@@ -258,9 +261,18 @@ class FlashCommand extends Command<int> {
         await _writeReceipt(receipt, receiptOption: receiptOption, runId: runId);
         return 2;
       }
-      stream = choice == 'reboot'
-          ? service.rebootRetry({'runId': runId})
-          : service.retryStep({'runId': runId});
+      final recoveryRequest = <String, Object?>{'runId': runId,
+        'confirmedSerial': request['serial'], 'powerCycled': choice == FlashRecovery.recoverPowerCycle};
+      stream = switch (choice) {
+        FlashRecovery.retryRead => service.retryRead(recoveryRequest),
+        FlashRecovery.reconnectDevice => service.reconnectDevice(recoveryRequest),
+        FlashRecovery.recoverBootloader => service.recoverBootloader(recoveryRequest),
+        FlashRecovery.recoverFastbootd => service.recoverFastbootd(recoveryRequest),
+        FlashRecovery.recoverPowerCycle => service.recoverPowerCycle(recoveryRequest),
+        FlashRecovery.rewriteStep => service.rewriteStep(recoveryRequest),
+        FlashRecovery.wipeSuper => service.wipeSuper(recoveryRequest),
+        FlashRecovery.stopRun => throw StateError('Stop was handled above.'),
+      };
     }
     printFlashResult(result);
     final receipt = result['receipt'];
@@ -282,27 +294,30 @@ class FlashCommand extends Command<int> {
     };
   }
 
-  /// Asks through stdin while it is a terminal; anything else stops.
-  String _askRetry() {
-    if (!stdin.hasTerminal) {
-      stderr.writeln('No terminal for a retry choice; stopping.');
-      return 'stop';
+  FlashRecovery _askRecovery(List<Map> options, String serial) {
+    if (!stdin.hasTerminal) return FlashRecovery.stopRun;
+    final actions = [
+      for (final option in options)
+        if (option['action'] != 'stopRun') FlashRecovery.values.byName(option['action']! as String),
+    ];
+    for (var index = 0; index < actions.length; index++) {
+      stdout.writeln('${index + 1}. ${recoveryLabel(actions[index])}');
     }
-    while (true) {
-      stdout.write(
-        '[r]etry step / re[b]oot to fastboot and retry / [s]top [s]: ',
-      );
-      final line = stdin.readLineSync();
-      if (line == null) return 'stop';
-      switch (line.trim().toLowerCase()) {
-        case '' || 's' || 'stop':
-          return 'stop';
-        case 'r' || 'retry':
-          return 'retry';
-        case 'b' || 'reboot':
-          return 'reboot';
-      }
+    stdout.write('Recovery number, or Enter to stop: ');
+    final action = recoveryChoice(stdin.readLineSync() ?? '', actions);
+    if (action == FlashRecovery.wipeSuper || action == FlashRecovery.rewriteStep) {
+      stdout.writeln(action == FlashRecovery.wipeSuper
+          ? 'Clear all logical system partitions on $serial. The phone cannot boot until this run completes.'
+          : 'Rewrite the failed step on $serial from byte zero. Earlier writes stay applied.');
+      stdout.write('Type $serial to confirm: ');
+      if (stdin.readLineSync() != serial) return FlashRecovery.stopRun;
     }
+    if (action == FlashRecovery.recoverPowerCycle) {
+      stdout.writeln('For $serial: unplug, hold Power for 15 seconds, enter bootloader with Volume-Down + Power, reconnect.');
+      stdout.write('Type power-cycled when done (otherwise stop): ');
+      if (stdin.readLineSync() != 'power-cycled') return FlashRecovery.stopRun;
+    }
+    return action;
   }
 
   Future<void> _writeReceipt(
@@ -320,4 +335,11 @@ class FlashCommand extends Command<int> {
       stderr.writeln('ERROR: Cannot write the receipt: $error');
     }
   }
+}
+
+/// Unknown/empty input always stops; only a displayed action can be selected.
+FlashRecovery recoveryChoice(String input, List<FlashRecovery> actions) {
+  final number = int.tryParse(input.trim());
+  return number != null && number > 0 && number <= actions.length
+      ? actions[number - 1] : FlashRecovery.stopRun;
 }

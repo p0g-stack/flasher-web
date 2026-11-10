@@ -49,14 +49,11 @@ final class FakeFlasherApi implements FlasherApi {
   bloatStream;
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   flashStream;
-  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
-  retryStepStream;
-  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
-  rebootRetryStream;
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)? recoveryStream;
   Future<Map<String, Object?>> Function(Map<String, Object?> request)?
   stopResult;
-  Map<String, Object?>? lastRetryStepRequest;
-  Map<String, Object?>? lastRebootRetryRequest;
+  Map<String, Object?>? lastRecoveryRequest;
+  String? lastRecoveryAction;
   Map<String, Object?>? lastStopRequest;
 
   Map<String, Object?> Function(Map<String, Object?> request)?
@@ -131,21 +128,27 @@ final class FakeFlasherApi implements FlasherApi {
     return flashStream?.call(request) ?? const Stream.empty();
   }
 
-  @override
-  Stream<Map<String, Object?>> retryStep(Map<String, Object?> request) {
-    lastRetryStepRequest = request;
-    final handler = retryStepStream;
-    if (handler == null) throw StateError('No retryStep stream scripted.');
+  Stream<Map<String, Object?>> _recover(String action, Map<String, Object?> request) {
+    lastRecoveryAction = action;
+    lastRecoveryRequest = request;
+    final handler = recoveryStream;
+    if (handler == null) throw StateError('No recovery stream scripted.');
     return handler(request);
   }
-
   @override
-  Stream<Map<String, Object?>> rebootRetry(Map<String, Object?> request) {
-    lastRebootRetryRequest = request;
-    final handler = rebootRetryStream;
-    if (handler == null) throw StateError('No rebootRetry stream scripted.');
-    return handler(request);
-  }
+  Stream<Map<String, Object?>> retryRead(Map<String, Object?> request) => _recover('retryRead', request);
+  @override
+  Stream<Map<String, Object?>> reconnectDevice(Map<String, Object?> request) => _recover('reconnectDevice', request);
+  @override
+  Stream<Map<String, Object?>> recoverBootloader(Map<String, Object?> request) => _recover('recoverBootloader', request);
+  @override
+  Stream<Map<String, Object?>> recoverFastbootd(Map<String, Object?> request) => _recover('recoverFastbootd', request);
+  @override
+  Stream<Map<String, Object?>> recoverPowerCycle(Map<String, Object?> request) => _recover('recoverPowerCycle', request);
+  @override
+  Stream<Map<String, Object?>> rewriteStep(Map<String, Object?> request) => _recover('rewriteStep', request);
+  @override
+  Stream<Map<String, Object?>> wipeSuper(Map<String, Object?> request) => _recover('wipeSuper', request);
 
   @override
   Future<Map<String, Object?>> stopRun(Map<String, Object?> request) async {

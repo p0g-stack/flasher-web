@@ -66,8 +66,13 @@ can still fail when the destination drive fills.
 | `Future<Map> fastbootDevices()` | – | `{"devices": [{"serial", "label", "transport"}], "error"?: FailureMap}` |
 | `Future<Map> prepareFlash(Map req)` | see below | prepared map or `{"error": FailureMap}` |
 | `Stream<Map> flash(Map req)` | prepared request + `{"confirmationToken": String}` | `run`/`step`/`log`/`progress`/`waiting`/`failure` events; last is `{"type": "result", "runId", "status", "canRetry", "receipt"}` |
-| `Stream<Map> retryStep(Map req)` | `{"runId": String}` | same events as `flash` |
-| `Stream<Map> rebootRetry(Map req)` | `{"runId": String}` | same events as `flash` |
+| `Stream<Map> retryRead(Map req)` | `{"runId": String}` | Retry only a permitted read-only step |
+| `Stream<Map> reconnectDevice(Map req)` | `{"runId": String}` | Reopen the same serial and probe before permitted continuation |
+| `Stream<Map> recoverBootloader(Map req)` | `{"runId": String}` | Explicit bootloader reboot; uncertainty does not authorize replay |
+| `Stream<Map> recoverFastbootd(Map req)` | `{"runId": String}` | Explicit fastbootd reboot; uncertainty does not authorize replay |
+| `Stream<Map> recoverPowerCycle(Map req)` | `{"runId": String, "powerCycled": true}` | Probe after physical recovery; remains paused |
+| `Stream<Map> rewriteStep(Map req)` | `{"runId": String, "confirmedSerial": String}` | Explicit whole-step rewrite/reconciliation |
+| `Stream<Map> wipeSuper(Map req)` | `{"runId": String, "confirmedSerial": String}` | Clear super under the policy in flow.md; restart logical section |
 | `Future<Map> stopRun(Map req)` | `{"runId": String}` | `{"receipt": {...}}` with `status: "stopped"` |
 | `Stream<Map> exportVirtual(Map req)` | `{"selection": Sel, "virtual": Virtual, "apiBase": String, "upstreamBase": String, "destination": Destination}` | step/progress events; last is `{"type": "result", "job", "format": "zip", "sha256", "bytes", "entries", "receipt"}` |
 
@@ -209,26 +214,31 @@ Execution guarantees:
 - Sends at most 1 MiB per transport write. A failed or uncertain operation
   retires the session and reports `sessionRetired`; a complete device FAIL
   does not.
-- Sends no wipe or root command. Formatting and rooting remain manual on the
-  phone.
+- Sends no userdata format or root command. Regional `wipeSuper` recovery is
+  separately confirmed; see [flow.md](flow.md).
 - If the final reboot is reached, it closes the session; Android mode is not
   probed and the receipt says `android (unverified)`.
 - Cancelling the stream subscription stops future commands and waits for the
   in-flight command to return. It is not a rollback, and the caller gets no
   receipt; `stopRun` is the call that returns one.
 
-### `retryStep`, `rebootRetry`, `stopRun`
+### Explicit recovery and `stopRun`
 
-A paused run is identified by the `runId` the stream reported. `retryStep`
-resends the failed step from byte zero and then continues with the remaining
-steps; `rebootRetry` first reboots to the mode that step requires
-(`reboot-bootloader`, or `reboot-fastboot` for fastbootd) and waits for that
-mode. Both reopen the confirmed serial, recheck serial and mode, keep the
-earlier `steps` and `writes` in the receipt, and stream the same events as
-`flash`. A retry whose input or device checks fail emits `failure` and stays
-pausable; the receipt's failure has `stage: "retry-preflight"`.
-After the retried step succeeds, the executor checks serial and mode
-again before proceeding to the next step.
+[flow.md](flow.md) is authoritative for preconditions, commands and certainty.
+Every result receipt includes `recoveryActions`, a list of `{action, label,
+confirmationRequired, powerCycleRequired}` maps. An action not offered by core
+is refused without consuming the paused run. `rewriteStep` and `wipeSuper`
+require `confirmedSerial` exactly equal to the run's serial. Physical recovery
+requires `powerCycled: true`. All actions recheck package identity and run the
+consistency probe; a failed preflight stays paused and preserves uncertainty.
+Connection-only recovery does not replay an uncertain mutation.
+
+Streams also emit `connection` events (`state`, `serial`, optional `mode`).
+Every run event carries a `flow` snapshot (`connection`, `phase`, `certainty`),
+so clients do not equate ready with confirmed writing. `superPreflight` reports
+usable capacity, allocated bytes, peak planned allocation, free bytes,
+shortfall and snapshot status. Receipts retain the assessment and
+`wipeSuperPending` when a clear-super attempt lacks confirmed completion.
 
 `stopRun` accepts an active or paused run, stops future commands, and returns
 the receipt with `status: "stopped"`; an unknown or already finished run

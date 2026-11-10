@@ -32,6 +32,7 @@ crc32fast = "1"
 anyhow = "1"
 miniz_oxide = "0.9"
 ota-payload = { path = "crates/ota-payload" }
+lp-super = { path = "crates/lp-super" }
 # Native USB / browser WebUSB fastboot transport, shared with the CLI through
 # this crate's thin frb shim.
 fastboot-link = { path = "crates/fastboot-link" }

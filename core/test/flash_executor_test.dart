@@ -240,7 +240,7 @@ void main() {
 
   test('execution rechecks both variables before its first write or recovery reboot', () async {
     for (final variable in ['max-download-size', 'is-userspace']) {
-      for (final rebootRetry in [false, true]) {
+      for (final recovery in [null, FlashRecovery.recoverBootloader]) {
         final state = _State();
         final transport = _Transport(state, state.serial);
         final prepared = await prepareFlash(package: _package(), selection: _selection,
@@ -248,7 +248,7 @@ void main() {
         state.probeReplies['getvar:$variable'] = variable == 'max-download-size'
             ? ['0x4000', '0x2000'] : ['no', 'yes'];
         final receipt = await executePreparedFlash(prepared, transport,
-          emit: (_) {}, rebootRetry: rebootRetry);
+          emit: (_) {}, recovery: recovery);
         expect(receipt['status'], 'failed');
         expect((receipt['failure'] as Map)['name'], 'InconsistentDeviceAnswers');
         expect(state.writeCommands, isEmpty);
@@ -328,6 +328,7 @@ void main() {
         transport,
         emit: (_) {},
         previousReceipt: receipt,
+        recovery: FlashRecovery.rewriteStep,
       );
       expect(retried['status'], 'succeeded', reason: '${retried['failure']}');
       expect(
@@ -389,6 +390,7 @@ void main() {
         transport,
         emit: (_) {},
         previousReceipt: receipt,
+        recovery: FlashRecovery.rewriteStep,
       );
       expect(retried['status'], 'succeeded', reason: '${retried['failure']}');
       expect(
@@ -410,66 +412,24 @@ void main() {
       );
     });
 
-    test(
-      'a reboot retry reboots to the failed step mode and rechecks identity',
-      () async {
-        final state = _State()..loseRebootReply = 'reboot-fastboot';
-        final transport = _Transport(state, 'SERIAL-A');
-        final prepared = await prepareFlash(
-          package: _package(),
-          selection: _selection,
-          answers: _answers,
-          serial: 'SERIAL-A',
-          transport: transport,
-          job: 'job',
-        );
-        final receipt = await executePreparedFlash(
-          prepared,
-          transport,
-          emit: (_) {},
-        );
-        expect(receipt['status'], 'uncertain');
-        final failedStep = receipt['stepIndex'] as int;
-        final flashesSoFar = state.flashCommands.length;
-        final boots = state.flashCommands.where((name) => name == 'boot_a').length;
-
-        // The user plugs the phone back in: the retry reboots to the mode the
-        // failed step needs, then continues from that step.
-        state.loseRebootReply = null;
-        state.fastbootd = false;
-        final retried = await executePreparedFlash(
-          prepared,
-          transport,
-          emit: (_) {},
-          previousReceipt: receipt,
-          rebootRetry: true,
-        );
-        expect(retried['status'], 'succeeded', reason: '${retried['failure']}');
-        expect(
-          state.commands.where((command) => command == 'reboot-bootloader'),
-          hasLength(1),
-          reason: 'the device is put in the mode the failed step requires',
-        );
-        expect(
-          state.commands.where((command) => command == 'reboot-fastboot'),
-          hasLength(2),
-          reason: 'the failed reboot step itself is sent again',
-        );
-        expect(retried['steps'], isNot(isEmpty));
-        expect(
-          state.flashCommands.length,
-          flashesSoFar,
-          reason: 'no earlier flash is replayed',
-        );
-        expect(
-          state.flashCommands.where((name) => name == 'boot_a'),
-          hasLength(boots),
-        );
-        expect(state.commands, contains('set_active:a'));
-        expect(state.android, isTrue);
-        expect(failedStep, lessThan(prepared.plan.executionSteps.length));
-      },
-    );
+    test('reboot recovery never replays an uncertain write', () async {
+      final state = _State()..loseRebootReply = 'reboot-fastboot';
+      final transport = _Transport(state, state.serial);
+      final prepared = await prepareFlash(package: _package(), selection: _selection,
+        answers: _answers, serial: state.serial, transport: transport, job: 'job');
+      final receipt = await executePreparedFlash(prepared, transport, emit: (_) {});
+      expect(receipt['uncertain'], isTrue);
+      final count = state.flashCommands.length;
+      state.loseRebootReply = null;
+      final recovered = await executePreparedFlash(prepared, transport, emit: (_) {},
+        previousReceipt: receipt, recovery: FlashRecovery.recoverBootloader);
+      expect(recovered['uncertain'], isTrue);
+      expect(recovered['status'], 'uncertain');
+      expect(state.flashCommands, hasLength(count));
+      final rewritten = await executePreparedFlash(prepared, transport, emit: (_) {},
+        previousReceipt: recovered, recovery: FlashRecovery.rewriteStep);
+      expect(rewritten['status'], 'succeeded', reason: '${rewritten['failure']}');
+    });
 
     test('a retry refuses a changed serial or mode', () async {
       final package = _package();
@@ -498,6 +458,7 @@ void main() {
         other,
         emit: (_) {},
         previousReceipt: receipt,
+        recovery: FlashRecovery.rewriteStep,
       );
       expect(wrongSerial['status'], 'failed');
       expect(otherState.flashCommands, isEmpty);
@@ -511,6 +472,7 @@ void main() {
         transport,
         emit: (_) {},
         previousReceipt: receipt,
+        recovery: FlashRecovery.rewriteStep,
       );
       expect(changed['status'], 'failed');
       expect(
@@ -642,6 +604,48 @@ void main() {
       expect(state.flashCommands, isEmpty);
     });
   });
+  test('logical preflight counts unknown other-slot/cow allocations and gates wipe', () async {
+    expect(await loadNative(), isTrue);
+    final state = _State()..downloadLimit = '0x100000';
+    state.allocations['old_b-cow'] = state.superSize - superReserve;
+    final prepared = await _logicalPrepared(state);
+    final transport = _Transport(state, state.serial);
+    final spec = WipeSuperSpec(state.superSize, ['system']);
+    final receipt = await executePreparedFlash(prepared, transport, emit: (_) {}, wipeSuperSpec: spec);
+    expect((receipt['failure'] as Map)['name'], 'SuperSpaceRequired');
+    expect(state.writeCommands, ['reboot-fastboot']);
+    expect((receipt['superPreflight'] as Map)['shortfall'], 4096);
+    final writes = state.writeCommands.length;
+    state.snapshotStatus = 'merging';
+    final refused = await executePreparedFlash(prepared, transport, emit: (_) {},
+      previousReceipt: receipt, recovery: FlashRecovery.wipeSuper, wipeSuperSpec: spec);
+    expect(refused['status'], 'failed');
+    expect(state.writeCommands, hasLength(writes));
+    expect(state.downloads, 0);
+    state.snapshotStatus = 'none';
+    final accepted = await executePreparedFlash(prepared, transport, emit: (_) {},
+      previousReceipt: refused, recovery: FlashRecovery.wipeSuper, wipeSuperSpec: spec);
+    expect(accepted['status'], 'succeeded', reason: '${accepted['failure']}');
+    expect(state.writeCommands.skip(writes).first, 'flash:super');
+    expect(state.writeCommands.where((command) => command == 'reboot-fastboot'), hasLength(1));
+    expect(state.writeCommands, contains('flash:system_a'));
+  });
+
+  test('wipe recovery sends nothing after inconsistent replies', () async {
+    final state = _State()..downloadLimit = '0x100000';
+    state.allocations['old_b'] = state.superSize - superReserve;
+    final prepared = await _logicalPrepared(state);
+    final transport = _Transport(state, state.serial);
+    final spec = WipeSuperSpec(state.superSize, ['system']);
+    final receipt = await executePreparedFlash(prepared, transport, emit: (_) {}, wipeSuperSpec: spec);
+    final writes = state.writeCommands.length;
+    state.probeReplies['getvar:max-download-size'] = ['0x100000', '0x200000'];
+    final result = await executePreparedFlash(prepared, transport, emit: (_) {},
+      previousReceipt: receipt, recovery: FlashRecovery.wipeSuper, wipeSuperSpec: spec);
+    expect((result['failure'] as Map)['name'], 'InconsistentDeviceAnswers');
+    expect(state.writeCommands, hasLength(writes));
+    expect(state.downloads, 0);
+  });
 }
 
 Selection get _selection => const Selection(
@@ -667,6 +671,20 @@ Map<String, Object?> _request() => {
   'answers': _answers,
   'upstreamBase': '',
 };
+
+Future<PreparedFlash> _logicalPrepared(_State state) async {
+  final base = await prepareFlash(package: _package(), selection: _selection,
+    answers: _answers, serial: state.serial, transport: _Transport(state, state.serial), job: 'job');
+  return PreparedFlash(token: base.token, serial: base.serial, mode: base.mode,
+    maxDownloadSize: base.maxDownloadSize, selection: base.selection, answers: base.answers,
+    job: base.job, format: base.format, version: base.version,
+    plan: FlashPlan(dev: '13', family: 'regional', template: '', steps: const [
+      RequireMode(FlashMode.bootloader), RebootTo(FlashMode.fastbootd),
+      DeleteLogical('system_a'), CreateLogical('system_a', 1),
+      Flash('system_a', 'OOS_FILES_HERE/boot.img'),
+    ]), package: base.package, images: base.images, binding: base.binding,
+    createdAt: base.createdAt, warnings: base.warnings);
+}
 
 _FakePackage _package() {
   final files = <String, Uint8List>{'super.img': Uint8List(5 * 4096)};
@@ -793,6 +811,10 @@ final class _State {
   final probeReplies = <String, List<Object>>{};
   final writeCommands = <String>[];
   int downloads = 0;
+  int superSize = 16 * 1024 * 1024;
+  String snapshotStatus = 'none';
+  String downloadLimit = '0x4000';
+  final allocations = <String, int>{};
 
   /// Switches the device to fastbootd after a successful `flash:` command, so
   /// a test can prove the post-step mode check.
@@ -858,6 +880,18 @@ final class _Session implements FastbootSession {
   String get serial => state.serial;
 
   @override
+  Future<FastbootCommandResult> commandWithMessages(String command, {bool write = false}) async =>
+      FastbootCommandResult(await this.command(command, write: write),
+        messages: command == 'getvar:all' ? [
+          {'kind': 'INFO', 'text': 'partition-size:super:${state.superSize}'},
+          {'kind': 'INFO', 'text': 'is-logical:super:no'},
+          for (final entry in state.allocations.entries) ...[
+            {'kind': 'INFO', 'text': 'partition-size:${entry.key}:${entry.value}'},
+            {'kind': 'INFO', 'text': 'is-logical:${entry.key}:yes'},
+          ],
+        ] : const []);
+
+  @override
   Future<String> command(String command, {bool write = false}) async {
     if (_closed) throw StateError('closed');
     state.commands.add(command);
@@ -883,7 +917,8 @@ final class _Session implements FastbootSession {
         state.partitionBytes != null) {
       return '0x${state.partitionBytes!.toRadixString(16)}';
     }
-    if (command == 'getvar:max-download-size') return '0x4000';
+    if (command == 'getvar:max-download-size') return state.downloadLimit;
+    if (command == 'getvar:snapshot-update-status') return state.snapshotStatus;
     if (command == 'reboot-fastboot' || command == 'reboot' || command == 'reboot-bootloader') {
       if (command == 'reboot-fastboot') {
         state.fastbootd = true;

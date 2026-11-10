@@ -14,6 +14,8 @@ import '../catalog/ota_catalog.dart';
 import '../e2e/fake_fastboot.dart';
 import '../facts/facts.dart';
 import '../flash/executor.dart';
+import '../flash/flow.dart';
+import '../flash/wipe_super.dart';
 import '../flash/model.dart' as flash_model;
 import '../flash/op_decoder.dart';
 import '../flash/prepare.dart' as flash_prepare;
@@ -425,6 +427,8 @@ base class FlasherService {
             Map<String, Object?>.unmodifiable(
               Map<String, Object?>.from(virtual['bloat']! as Map),
             ),
+            selection.kind.contains('Super') ? null : WipeSuperSpec(
+              tables.superSize(selection.dev, selection.region), tables.superParts),
           );
         }
         return prepared.toMap();
@@ -452,19 +456,44 @@ base class FlasherService {
     return controller.stream;
   }
 
-  /// Explicitly resends the failed step from byte zero, then continues.
   @squadronMethod
-  Stream<Map<String, Object?>> retryStep(Map<String, Object?> req) =>
-    _resume(req, reboot: false);
-
-  /// Reboots to the failed step's required mode before resending it.
+  Stream<Map<String, Object?>> retryRead(Map<String, Object?> req) =>
+    _resume(req, FlashRecovery.retryRead);
   @squadronMethod
-  Stream<Map<String, Object?>> rebootRetry(Map<String, Object?> req) =>
-    _resume(req, reboot: true);
+  Stream<Map<String, Object?>> reconnectDevice(Map<String, Object?> req) =>
+    _resume(req, FlashRecovery.reconnectDevice);
+  @squadronMethod
+  Stream<Map<String, Object?>> recoverBootloader(Map<String, Object?> req) =>
+    _resume(req, FlashRecovery.recoverBootloader);
+  @squadronMethod
+  Stream<Map<String, Object?>> recoverFastbootd(Map<String, Object?> req) =>
+    _resume(req, FlashRecovery.recoverFastbootd);
+  @squadronMethod
+  Stream<Map<String, Object?>> recoverPowerCycle(Map<String, Object?> req) =>
+    _resume(req, FlashRecovery.recoverPowerCycle);
+  @squadronMethod
+  Stream<Map<String, Object?>> rewriteStep(Map<String, Object?> req) =>
+    _resume(req, FlashRecovery.rewriteStep);
+  @squadronMethod
+  Stream<Map<String, Object?>> wipeSuper(Map<String, Object?> req) =>
+    _resume(req, FlashRecovery.wipeSuper);
 
-  Stream<Map<String, Object?>> _resume(Map<String, Object?> req, {required bool reboot}) {
+  Stream<Map<String, Object?>> _resume(Map<String, Object?> req, FlashRecovery action) {
+    final paused = _paused[req['runId']];
+    if (paused == null) throw const flash_model.FlashException('Unknown or non-paused flash run.');
+    if (!recoveryActions(paused.entry.prepared.plan.executionSteps, paused.receipt,
+        canWipeSuper: paused.entry.wipeSuperSpec?.canWipe ?? false).contains(action)) {
+      throw const flash_model.FlashException('This recovery action is not allowed.');
+    }
+    if ((action == FlashRecovery.rewriteStep || action == FlashRecovery.wipeSuper) &&
+        req['confirmedSerial'] != paused.entry.prepared.serial) {
+      throw const flash_model.FlashException('Confirm the exact serial before a destructive recovery.');
+    }
+    if (action == FlashRecovery.recoverPowerCycle && req['powerCycled'] != true) {
+      throw const flash_model.FlashException('Follow the physical power-cycle instructions first.');
+    }
     final controller = StreamController<Map<String, Object?>>();
-    final run = _FlashRun(this, req, controller, retry: true, reboot: reboot);
+    final run = _FlashRun(this, req, controller, recovery: action);
     controller.onListen = () { unawaited(run.start()); };
     controller.onCancel = run.cancel;
     return controller.stream;
@@ -485,10 +514,11 @@ base class FlasherService {
 }
 
 final class _PreparedEntry {
-  const _PreparedEntry(this.prepared, this.lockKey, this.store);
+  const _PreparedEntry(this.prepared, this.lockKey, this.store, this.wipeSuperSpec);
   final flash_prepare.PreparedFlash prepared;
   final String lockKey;
   final Map<String, Object?>? store;
+  final WipeSuperSpec? wipeSuperSpec;
 }
 
 final class _PausedFlash {
@@ -499,19 +529,21 @@ final class _PausedFlash {
 }
 
 final class _FlashRun {
-  _FlashRun(this._service, this._req, this._controller, {this.retry = false, this.reboot = false});
+  _FlashRun(this._service, this._req, this._controller, {this.recovery});
   final FlasherService _service;
   final Map<String, Object?> _req;
   final StreamController<Map<String, Object?>> _controller;
-  final bool retry;
-  final bool reboot;
+  final FlashRecovery? recovery;
+  bool get retry => recovery != null;
+  FlashFlowState _flow = const FlashFlowState();
   final FlashCancellation _cancellation = FlashCancellation();
   final Completer<void> _done = Completer<void>();
   Map<String, Object?>? _receipt;
   bool _cancelled = false;
   bool _stopped = false;
   void _emit(Map<String, Object?> event) {
-    if (!_cancelled && !_controller.isClosed) _controller.add(event);
+    _flow = _flow.onEvent(event);
+    if (!_cancelled && !_controller.isClosed) _controller.add({...event, 'flow': _flow.toMap()});
   }
 
   Future<void> start() async {
@@ -540,8 +572,9 @@ final class _FlashRun {
         if (entry == null) throw const flash_model.FlashException('Unknown, expired or used confirmation token.');
         request = Map<String, Object?>.from(_req);
       }
+      if (previous != null) _flow = FlashFlowState.fromReceipt(previous);
       _service._active[id] = this;
-      _receipt = {
+      _receipt = previous ?? {
         'version': 1, 'runId': id, 'job': entry.prepared.job,
         'serial': entry.prepared.serial, 'device': entry.prepared.selection.device,
         'kind': entry.prepared.selection.kind, 'region': entry.prepared.selection.region,
@@ -571,11 +604,13 @@ final class _FlashRun {
       _service._jobLocks[entry.lockKey] = id;
       final receipt = await applyConfirmedFlash(entry.prepared.withPackage(package),
         _service._fastbootTransport(), await PlaceInfo.current(),
-        emit: _emit, cancellation: _cancellation, previousReceipt: previous, rebootRetry: reboot);
+        emit: _emit, cancellation: _cancellation, previousReceipt: previous,
+        recovery: recovery, wipeSuperSpec: entry.wipeSuperSpec);
       receipt['runId'] = id;
       receipt['virtual'] = await package.snapshot();
       receipt['persistenceWarnings'] = <String>[];
       if (_stopped) receipt['status'] = 'stopped';
+      receipt['recoveryActions'] = _recoveryMaps(entry, receipt);
       _receipt = receipt;
       paused = !_cancelled && !_stopped && (receipt['status'] == 'failed' || receipt['status'] == 'uncertain');
       if (paused) _service._paused[id] = _PausedFlash(entry, request, receipt);
@@ -584,10 +619,11 @@ final class _FlashRun {
     } on Object catch (error, stack) {
       if (retry && entry != null && id != null && previous != null && retryRequest != null && !_cancelled && !_stopped) {
         final failure = error is LinkFailure ? error.toMap()
-          : error is flash_model.FlashException ? error.failure(stage: 'retry-preflight', stack: '$stack')
-          : <String, Object?>{'message': '$error', 'stage': 'retry-preflight', 'stack': '$stack'};
+          : error is flash_model.FlashException ? error.failure(stage: 'recovery-inputs', stack: '$stack')
+          : <String, Object?>{'message': '$error', 'stage': 'recovery-inputs', 'stack': '$stack'};
         final receipt = <String, Object?>{...previous, 'reason': failure['message'],
           'failure': failure, 'finishedAt': DateTime.now().toUtc().toIso8601String()};
+        receipt['recoveryActions'] = _recoveryMaps(entry, receipt);
         _receipt = receipt;
         paused = true;
         _service._paused[id] = _PausedFlash(entry, retryRequest, receipt);
@@ -628,6 +664,14 @@ final class _FlashRun {
     await _done.future;
   }
 }
+
+List<Map<String, Object?>> _recoveryMaps(_PreparedEntry entry, Map<String, Object?> receipt) => [
+  for (final action in recoveryActions(entry.prepared.plan.executionSteps, receipt,
+      canWipeSuper: entry.wipeSuperSpec?.canWipe ?? false))
+    {'action': action.name, 'label': recoveryLabel(action),
+      'confirmationRequired': action == FlashRecovery.rewriteStep || action == FlashRecovery.wipeSuper,
+      'powerCycleRequired': action == FlashRecovery.recoverPowerCycle},
+];
 
 String _storeKey(Object? value) {
   if (value is! Map) return 'missing';

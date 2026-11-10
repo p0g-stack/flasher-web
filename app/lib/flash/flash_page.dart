@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flasher_web_core/flasher_web_core.dart' show FlashRecovery;
 
 import '../widgets/common.dart';
 import 'device_sheet.dart';
@@ -94,7 +95,7 @@ class _FlashPageState extends State<FlashPage> {
                   controller.canRetry ||
                   controller.stopping) ...[
                 const SizedBox(height: 16),
-                _FailureCard(controller: controller),
+                _RecoveryCard(controller: controller),
               ],
               if (controller.terminal) ...[
                 const SizedBox(height: 16),
@@ -761,8 +762,8 @@ class _ExecutionCard extends StatelessWidget {
   }
 }
 
-class _FailureCard extends StatelessWidget {
-  const _FailureCard({required this.controller});
+class _RecoveryCard extends StatelessWidget {
+  const _RecoveryCard({required this.controller});
 
   final FlashController controller;
 
@@ -801,33 +802,22 @@ class _FailureCard extends StatelessWidget {
               error: true,
             ),
           const SizedBox(height: 8),
-          const HintText(
-            'Earlier steps stay written. A retry reopens the same serial, '
-            'rechecks it and writes the failed step again from byte zero. '
-            'Nothing is resent automatically.',
-          ),
+          HintText(uncertain
+              ? 'The write is not confirmed. Reconnecting does not settle it. '
+                  'Save the receipt before choosing a deliberate rewrite or physical recovery.'
+              : 'Earlier steps stay applied. No command is resent automatically.'),
           if (canRetry) ...[
             const SizedBox(height: 10),
             Wrap(
               spacing: 10,
               runSpacing: 8,
               children: [
-                FilledButton.icon(
-                  key: const ValueKey('retryFlashStep'),
-                  onPressed: controller.stopping
-                      ? null
-                      : controller.retryFailedStep,
-                  icon: const Icon(Icons.replay, size: 18),
-                  label: const Text('Retry step'),
-                ),
-                OutlinedButton.icon(
-                  key: const ValueKey('rebootRetryFlashStep'),
-                  onPressed: controller.stopping
-                      ? null
-                      : controller.rebootAndRetry,
-                  icon: const Icon(Icons.restart_alt, size: 18),
-                  label: const Text('Reboot to fastboot and retry'),
-                ),
+                for (final option in controller.recoveryOptions)
+                  OutlinedButton(
+                    key: ValueKey('recover-${option['action']}'),
+                    onPressed: controller.stopping ? null : () => _recover(context, option),
+                    child: Text('${option['label']}'),
+                  ),
                 TextButton.icon(
                   key: const ValueKey('stopFlashRun'),
                   onPressed: controller.stopping ? null : controller.stop,
@@ -843,6 +833,40 @@ class _FailureCard extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _recover(BuildContext context, Map<String, Object?> option) async {
+    final action = FlashRecovery.values.byName(option['action']! as String);
+    final serial = controller.serial;
+    if (serial == null) return;
+    final destructive = option['confirmationRequired'] == true;
+    final physical = option['powerCycleRequired'] == true;
+    if (destructive || physical) {
+      final input = TextEditingController();
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('${option['label']}'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(action == FlashRecovery.wipeSuper
+                ? 'Clear all logical system partitions on $serial. The phone cannot boot until flashing completes. Type its serial to confirm.'
+                : physical
+                    ? 'For $serial: unplug USB, hold Power for 15 seconds, then enter bootloader with Volume-Down + Power and reconnect. This does not settle an uncertain write.'
+                    : 'Rewrite the failed step on $serial from byte zero. Earlier writes remain applied. Type its serial to confirm.'),
+            if (destructive) TextField(controller: input, decoration: const InputDecoration(labelText: 'Device serial')),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            TextButton(onPressed: () {
+              if (!destructive || input.text == serial) Navigator.pop(context, true);
+            }, child: Text(physical ? 'I have power-cycled it' : 'Confirm')),
+          ],
+        ),
+      );
+      input.dispose();
+      if (confirmed != true) return;
+    }
+    await controller.recover(action, confirmedSerial: destructive ? serial : null, powerCycled: physical);
   }
 }
 

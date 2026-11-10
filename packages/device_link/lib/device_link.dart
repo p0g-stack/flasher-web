@@ -107,12 +107,20 @@ abstract interface class FastbootTransport {
   Future<FastbootSession> open(String serial);
 }
 
+/// The final payload and ordered INFO/TEXT evidence of one command.
+final class FastbootCommandResult {
+  const FastbootCommandResult(this.value, {this.messages = const []});
+  final String value;
+  final List<Map<String, String>> messages;
+}
+
 /// One exclusive connection. Only explicitly retired failures end its lifetime.
 abstract interface class FastbootSession {
   String get serial;
 
   /// Returns the final OKAY payload. Complete FAIL replies are device errors.
   Future<String> command(String command, {bool write = false});
+  Future<FastbootCommandResult> commandWithMessages(String command, {bool write = false});
   Future<void> beginDownload(int length);
 
   /// Bounded pieces, not a whole image. Length must match beginDownload.

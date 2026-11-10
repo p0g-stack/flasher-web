@@ -12,11 +12,14 @@ library;
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:device_link/device_link.dart';
 import 'package:logging/logging.dart';
 
 import 'model.dart';
+import 'flow.dart';
+import 'wipe_super.dart';
 import 'prepare.dart';
 import 'sparse.dart';
 import 'virtual.dart';
@@ -52,19 +55,21 @@ Future<Map<String, Object?>> executePreparedFlash(
   Duration reconnectTimeout = const Duration(seconds: 180),
   Duration reconnectPoll = const Duration(seconds: 1),
   Map<String, Object?>? previousReceipt,
-  bool rebootRetry = false,
+  FlashRecovery? recovery,
+  WipeSuperSpec? wipeSuperSpec,
 }) async {
   final cancel = cancellation ?? FlashCancellation();
   final startedAt = previousReceipt?['startedAt'] as String? ?? DateTime.now().toUtc().toIso8601String();
-  final startStep = previousReceipt?['stepIndex'] as int? ?? 0;
+  var startStep = previousReceipt?['stepIndex'] as int? ?? 0;
   final execution = prepared.plan.executionSteps;
   if (startStep < 0 || startStep >= execution.length) throw const FlashException('Invalid failed step.');
-  var requiredMode = FlashMode.bootloader;
-  for (var i = 0; i <= startStep; i++) {
-    final step = execution[i];
-    if (step is RequireMode) requiredMode = step.mode;
-    if (i < startStep && step is RebootTo) requiredMode = step.mode;
+  if (previousReceipt != null && (recovery == null ||
+      !recoveryActions(execution, previousReceipt, canWipeSuper: wipeSuperSpec?.canWipe ?? false).contains(recovery))) {
+    throw const FlashException('This recovery action is not allowed for the paused run.');
   }
+  if (recovery == FlashRecovery.wipeSuper) startStep = logicalSectionStart(execution);
+  if (startStep < 0) throw const FlashException('This plan has no logical section.');
+  final requiredMode = requiredModeAt(execution, startStep);
   if (!prepared.resolved) {
     throw const FlashException(
       'The plan still has unanswered prompts; execution is refused.',
@@ -81,12 +86,22 @@ Future<Map<String, Object?>> executePreparedFlash(
   ];
   final cleanupErrors = <String>[];
   var status = 'succeeded';
-  var uncertain = false;
+  var uncertain = previousReceipt?['uncertain'] == true;
   Map<String, Object?>? failure;
   var modeEnd = prepared.mode.name;
   var maxDownloadSize = prepared.maxDownloadSize;
   FastbootSession? session;
   var stepIndex = startStep;
+  Map<String, Object?>? superPreflight = previousReceipt?['superPreflight'] is Map
+      ? Map<String, Object?>.from(previousReceipt!['superPreflight']! as Map) : null;
+  var wipePending = previousReceipt?['wipeSuperPending'] == true;
+  var wipeRequired = previousReceipt?['wipeSuperRequired'] == true || recovery == FlashRecovery.wipeSuper;
+  var connectionOnly = false;
+
+  void connection(FlashConnection state, {FlashMode? mode}) => emit({
+    'type': 'connection', 'state': state.name, 'serial': prepared.serial,
+    if (mode != null) 'mode': mode.name,
+  });
 
   void check() {
     if (cancel.isCancelled) throw const _Cancelled();
@@ -96,24 +111,84 @@ Future<Map<String, Object?>> executePreparedFlash(
 
   try {
     check();
-    final first = await _openExact(transport, prepared.serial);
+    connection(FlashConnection.opening);
+    final reopened = recovery == FlashRecovery.reconnectDevice || recovery == FlashRecovery.recoverPowerCycle
+        ? await _waitForSerial(transport, prepared,
+            recovery == FlashRecovery.recoverPowerCycle ? null : requiredMode,
+            check, reconnectTimeout, reconnectPoll) : null;
+    final first = reopened?.session ?? await _openExact(transport, prepared.serial);
     session = first;
-    final readiness = await probeFastbootConsistency(first);
+    connection(FlashConnection.probing);
+    final readiness = reopened?.readiness ?? await probeFastbootConsistency(first);
     var mode = readiness.mode;
     maxDownloadSize = readiness.maxDownloadSize;
     _log.info('flash ${prepared.serial}: mode ${mode.name}');
     modeEnd = mode.name;
-    if (!rebootRetry && mode != requiredMode) {
-      throw FlashException('The device is in ${mode.name}; step $startStep requires ${requiredMode.name}.');
-    }
-    if (rebootRetry) {
-      await first.command(requiredMode == FlashMode.fastbootd ? 'reboot-fastboot' : 'reboot-bootloader', write: true);
+    final rebootMode = switch (recovery) {
+      FlashRecovery.recoverBootloader => FlashMode.bootloader,
+      FlashRecovery.recoverFastbootd => FlashMode.fastbootd,
+      _ => null,
+    };
+    if (rebootMode != null) {
+      connection(FlashConnection.transitioning, mode: rebootMode);
+      await first.command(rebootMode == FlashMode.fastbootd ? 'reboot-fastboot' : 'reboot-bootloader', write: true);
       await first.close();
-      final reopened = await _waitForSerial(transport, prepared, requiredMode, check, reconnectTimeout, reconnectPoll);
+      final reopened = await _waitForSerial(transport, prepared, rebootMode, check, reconnectTimeout, reconnectPoll);
       session = reopened.session;
       mode = reopened.readiness.mode;
       maxDownloadSize = reopened.readiness.maxDownloadSize;
       modeEnd = mode.name;
+    }
+    connection(FlashConnection.ready, mode: mode);
+    connectionOnly = previousReceipt != null && (
+      recovery == FlashRecovery.recoverPowerCycle ||
+      (uncertain && recovery != FlashRecovery.rewriteStep && recovery != FlashRecovery.wipeSuper));
+    if (!connectionOnly && mode != requiredMode) {
+      throw FlashException('The device is in ${mode.name}; step $startStep requires ${requiredMode.name}.');
+    }
+    if (connectionOnly) {
+      status = uncertain ? 'uncertain' : 'failed';
+      failure = {...Map<String, Object?>.from(previousReceipt['failure'] as Map),
+        'name': 'RecoveryReady', 'sessionRetired': false, 'disconnectObserved': false,
+        'message': 'The phone answers consistently in ${mode.name}. Choose the next recovery action; nothing was replayed.'};
+    }
+    if (recovery == FlashRecovery.wipeSuper) {
+      final spec = wipeSuperSpec!;
+      await requireNoSnapshots(session);
+      final image = spec.buildImage();
+      if (image.length > maxDownloadSize) throw const FlashException('Wipe-super image exceeds max-download-size.');
+      check();
+      connection(FlashConnection.active, mode: mode);
+      wipePending = true;
+      var submitted = false;
+      try {
+        await session.beginDownload(image.length);
+        for (var offset = 0; offset < image.length; offset += _transportChunk) {
+          await session.writeDownload(Uint8List.sublistView(image, offset, math.min(offset + _transportChunk, image.length)));
+        }
+        await session.endDownload();
+        check();
+        submitted = true;
+        await session.command('flash:super', write: true);
+        writes.add({'partition': 'super', 'image': 'wipe-super', 'bytes': image.length,
+          'parts': 1, 'status': 'ok'});
+        wipePending = false;
+        wipeRequired = false;
+        if (superPreflight != null) superPreflight['cleared'] = true;
+        // All earlier logical attempts were replaced by this metadata rewrite.
+        for (final write in writes) {
+          if (prepared.logicalPartitions.contains(write['partition']) || write['image'] == 'wipe-super') {
+            if (write['status'] == 'uncertain') write['resolvedBy'] = 'wipe-super';
+          }
+        }
+        uncertain = false;
+      } catch (error) {
+        final lost = submitted && (error is! LinkFailure || error.uncertain);
+        uncertain = uncertain || lost;
+        writes.add({'partition': 'super', 'image': 'wipe-super', 'bytes': image.length,
+          'parts': 1, 'status': lost ? 'uncertain' : 'failed'});
+        rethrow;
+      }
     }
     emit({
       'type': 'log',
@@ -123,11 +198,25 @@ Future<Map<String, Object?>> executePreparedFlash(
           'max-download-size $maxDownloadSize.',
     });
 
-    for (var index = startStep; index < execution.length; index++) {
+    var logicalChecked = recovery == FlashRecovery.wipeSuper;
+    for (var index = startStep; !connectionOnly && index < execution.length; index++) {
       stepIndex = index;
-      uncertain = false;
       check();
       final step = execution[index];
+      if (!logicalChecked && wipeSuperSpec != null &&
+          (step is DeleteLogical || step is CreateLogical ||
+           (step is Flash && prepared.logicalPartitions.contains(step.partition)))) {
+        if (modeEnd != FlashMode.fastbootd.name) throw const FlashException('Logical preflight requires fastbootd.');
+        superPreflight = (await assessSuperSpace(session!, prepared, wipeSuperSpec, index)).toMap();
+        emit({'type': 'superPreflight', ...superPreflight});
+        logicalChecked = true;
+        if (superPreflight['needsWipe'] == true) {
+          throw const LinkFailure(blame: LinkBlame.user, source: 'flow',
+            name: 'SuperSpaceRequired', stage: 'super-preflight',
+            message: "This phone's super still holds another system (for example a custom ROM). Clear it?");
+        }
+      }
+      connection(FlashConnection.active);
       emit({
         'type': 'step',
         'index': index + 1,
@@ -135,7 +224,10 @@ Future<Map<String, Object?>> executePreparedFlash(
         'title': step.text,
       });
       try {
-        final next = await _runStep(
+        final reconciled = previousReceipt != null && index == startStep &&
+            recovery == FlashRecovery.rewriteStep &&
+            await _reconcileStep(session!, step, emit);
+        final next = reconciled ? session : await _runStep(
           session,
           step,
           prepared,
@@ -156,6 +248,8 @@ Future<Map<String, Object?>> executePreparedFlash(
               reconnectPoll,
             );
             maxDownloadSize = reopened.readiness.maxDownloadSize;
+            modeEnd = reopened.readiness.mode.name;
+            connection(FlashConnection.ready, mode: reopened.readiness.mode);
             return reopened.session;
           },
           (isFinal) {
@@ -172,6 +266,15 @@ Future<Map<String, Object?>> executePreparedFlash(
           }
         }
         steps.add({'index': index + 1, 'title': step.text, 'status': 'ok'});
+        if (previousReceipt != null && index == startStep && recovery == FlashRecovery.rewriteStep) {
+          for (final write in writes) {
+            if (write['status'] == 'uncertain' &&
+                step is Flash && write['partition'] == step.partition) {
+              write['resolvedBy'] = 'rewrite';
+            }
+          }
+          uncertain = writes.any((write) => write['status'] == 'uncertain' && write['resolvedBy'] == null);
+        }
       } catch (error) {
         final stepStatus = _statusFor(error, uncertain);
         steps.add({
@@ -217,10 +320,13 @@ Future<Map<String, Object?>> executePreparedFlash(
       'stepIndex': stepIndex,
     };
   } finally {
+    connection(FlashConnection.closing);
     if (session != null) {
       await _close(session, cleanupErrors);
     }
   }
+  connection(failure?['disconnectObserved'] == true || failure?['sessionRetired'] == true
+      ? FlashConnection.lost : FlashConnection.stopped);
 
   if (status == 'cancelled') {
     _log.info('flash ${prepared.serial}: cancelled');
@@ -269,6 +375,12 @@ Future<Map<String, Object?>> executePreparedFlash(
     },
     'failure': failure,
     'uncertain': uncertain,
+    'writeCertainty': uncertain ? WriteCertainty.uncertain.name :
+      status == 'succeeded' ? WriteCertainty.confirmed.name : WriteCertainty.refused.name,
+    'wipeSuperPending': wipePending,
+    'wipeSuperRequired': wipePending || wipeRequired,
+    'superPreflight': ?superPreflight,
+    if (recovery != null) 'recovery': recovery.name,
     'cleanupErrors': cleanupErrors,
   };
   if (status == 'failed' || status == 'uncertain') {
@@ -276,6 +388,38 @@ Future<Map<String, Object?>> executePreparedFlash(
       'reason': failure?['message'] ?? 'Flash failed.'});
   }
   return receipt;
+}
+
+/// Reconcile uncertain logical mutations before deciding whether to resend.
+Future<bool> _reconcileStep(FastbootSession session, FlashStep step, FlashEventSink emit) async {
+  if (step is DeleteLogical || step is CreateLogical) {
+    final name = step is DeleteLogical ? step.name : (step as CreateLogical).name;
+    final flag = cleanGetvar(await session.command('getvar:is-logical:$name'), 'is-logical:$name');
+    int? size;
+    try {
+      size = parsePartitionBytes(cleanGetvar(await session.command('getvar:partition-size:$name'), 'partition-size:$name'));
+    } on LinkFailure catch (error) {
+      final message = error.message.toLowerCase();
+      if (error.blame != LinkBlame.device || error.sessionRetired || error.uncertain ||
+          !(message.contains('not found') || message.contains("doesn't exist") || message.contains('does not exist'))) {
+        rethrow;
+      }
+    }
+    if (flag != 'yes' && flag != 'no') throw const FlashException('Logical state could not be reconciled.');
+    if (flag == 'no' && size != null) throw FlashException('Refusing to mutate non-logical partition $name.');
+    if (step is DeleteLogical) return size == null;
+    final create = step as CreateLogical;
+    if (flag == 'yes') {
+      if (size == null) throw const FlashException('Logical size could not be reconciled.');
+      if (size != create.size) await session.command('resize-logical-partition:$name:${create.size}', write: true);
+      emit({'type': 'log', 'text': 'Reconciled existing logical partition $name.'});
+      return true;
+    }
+    return false;
+  }
+  if (step is RebootTo && step.mode != FlashMode.android) return await probeFlashMode(session) == step.mode;
+  if (step is SetActive) return cleanGetvar(await session.command('getvar:current-slot'), 'current-slot') == step.slot.name;
+  return false;
 }
 
 Future<FastbootSession?> _runStep(
@@ -399,6 +543,7 @@ Future<void> _flashImage(
     resizeLogical: true,
     createdLogical: prepared.logicalPartitions.contains(partition),
   );
+  check();
   final source = await prepared.package.open(image);
   final cursor = await source.cursor();
   try {
@@ -433,7 +578,6 @@ Future<void> _flashImage(
         guard.phase = 1;
         var left = source.length;
         while (left > 0) {
-          check();
           final size = math.min(_transportChunk, left);
           final bytes = await cursor.readExact(size);
           guard.phase = 2;
@@ -441,10 +585,9 @@ Future<void> _flashImage(
           left -= size;
           await progress(size);
         }
-        check();
         await session.endDownload();
-        guard.phase = 3;
         check();
+        guard.phase = 3;
         guard.phase = 4;
         await session.command('flash:$partition', write: true);
         guard.phase = 5;
@@ -484,7 +627,6 @@ Future<void> _flashImage(
           ),
         );
         for (final piece in part.pieces) {
-          check();
           final totalSize = switch (piece.type) {
             sparseRaw => sparseChunkHeaderBytes + piece.dataSize,
             sparseFill => sparseChunkHeaderBytes + 4,
@@ -502,7 +644,6 @@ Future<void> _flashImage(
             await cursor.skipTo(piece.dataOffset);
             var left = piece.dataSize;
             while (left > 0) {
-              check();
               final size = math.min(_transportChunk, left);
               await session.writeDownload(await cursor.readExact(size));
               left -= size;
@@ -513,7 +654,6 @@ Future<void> _flashImage(
           }
         }
         if (index == parts.length - 1) await cursor.skipTo(source.length);
-        check();
         await session.endDownload();
         guard.phase = 3;
         check();
@@ -550,14 +690,15 @@ Future<void> _flashImage(
 Future<({FastbootSession session, FastbootReadiness readiness})> _waitForSerial(
   FastbootTransport transport,
   PreparedFlash prepared,
-  FlashMode expectedMode,
+  FlashMode? expectedMode,
   void Function() check,
   Duration timeout,
   Duration poll,
 ) async {
   final deadline = DateTime.now().add(timeout);
   LinkFailure? last;
-  while (DateTime.now().isBefore(deadline)) {
+  final maxAttempts = math.max(1, timeout.inSeconds + 1);
+  for (var attempt = 0; attempt < maxAttempts && DateTime.now().isBefore(deadline); attempt++) {
     check();
     try {
       final discovery = await transport.devices();
@@ -575,7 +716,7 @@ Future<({FastbootSession session, FastbootReadiness readiness})> _waitForSerial(
         }
         try {
           final readiness = await probeFastbootConsistency(session);
-          if (readiness.mode == expectedMode) return (session: session, readiness: readiness);
+          if (expectedMode == null || readiness.mode == expectedMode) return (session: session, readiness: readiness);
           await session.close();
         } on Object {
           await session.close();
@@ -590,7 +731,7 @@ Future<({FastbootSession session, FastbootReadiness readiness})> _waitForSerial(
   }
   throw FlashException(
     'Timed out after ${timeout.inSeconds}s waiting for '
-    '${prepared.serial} to return in ${expectedMode.name}.'
+    '${prepared.serial} to return in ${expectedMode?.name ?? 'fastboot'}.'
     '${last == null ? '' : ' Last error: $last'}',
   );
 }

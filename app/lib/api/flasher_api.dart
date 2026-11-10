@@ -44,8 +44,13 @@ abstract interface class FlasherApi {
   /// one result carrying the receipt.
   Stream<Map<String, Object?>> flash(Map<String, Object?> request);
 
-  Stream<Map<String, Object?>> retryStep(Map<String, Object?> request);
-  Stream<Map<String, Object?>> rebootRetry(Map<String, Object?> request);
+  Stream<Map<String, Object?>> retryRead(Map<String, Object?> request);
+  Stream<Map<String, Object?>> reconnectDevice(Map<String, Object?> request);
+  Stream<Map<String, Object?>> recoverBootloader(Map<String, Object?> request);
+  Stream<Map<String, Object?>> recoverFastbootd(Map<String, Object?> request);
+  Stream<Map<String, Object?>> recoverPowerCycle(Map<String, Object?> request);
+  Stream<Map<String, Object?>> rewriteStep(Map<String, Object?> request);
+  Stream<Map<String, Object?>> wipeSuper(Map<String, Object?> request);
   Future<Map<String, Object?>> stopRun(Map<String, Object?> request);
 
   /// The 10 GiB app budget and the platform estimate.

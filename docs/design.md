@@ -449,33 +449,30 @@ command; the wait is bounded (180 s, polled every second). If the final reboot
 is reached, it closes the fastboot session and reports Android mode as
 `android (unverified)`.
 
-The plan never sends a wipe or root command. Formatting data and rooting stay
-manual on the phone; the plan only carries the instruction or the
-prepare-root/flash-signal choice.
+The normal plan sends no userdata wipe or root command; those remain manual.
+Regional recovery can explicitly clear super after a serial-naming confirmation.
 
-### Failure, retry and stop
+### Failure and explicit recovery
 
-A failure emits `{"type": "failure", "stepIndex", "status", "reason"}` with the
-0-based index of the failed execution step and continues with a `result`
-carrying `canRetry`. Nothing is resent automatically. The page shows the failed
-step and offers three explicit actions, all addressed by `runId`:
+[flow.md](flow.md) owns the independent connection/run/certainty states and the
+recovery table. `flow.dart` classifies allowed actions in core; the receipt
+contains `recoveryActions`, and app/CLI render only those choices. The service
+exposes `retryRead`, `reconnectDevice`, `recoverBootloader`, `recoverFastbootd`,
+`recoverPowerCycle`, `rewriteStep`, `wipeSuper`, and `stopRun`. Every recovery
+rechecks input identity and protocol consistency before writing. Physical
+recovery and reboot do not settle uncertain writes or replay them automatically.
+Logical mutations reconcile `is-logical` and `partition-size` before replay.
 
-- `retryStep({runId})` resends the failed step from byte zero and continues
-  with the following steps;
-- `rebootRetry({runId})` reboots to the mode the failed step requires
-  (`reboot-bootloader` or `reboot-fastboot`), waits for that mode, then
-  resends the failed step;
-- `stopRun({runId})` stops future commands, waits for the in-flight one, and
-  returns the receipt as `stopped`. It is not a rollback: commands already sent
-  stay applied, and an in-flight write may leave the phone partially written.
-
-A retry reopens the confirmed serial, rechecks serial and mode (and the
-package size), and keeps the earlier steps and writes in the receipt. A retry
-that fails its own checks stays pausable and reports the reason instead of
-closing the run. The serial and mode are checked again after a retried
-step succeeds, before continuing. A write whose completion is unknown marks the receipt
-`uncertain`; a complete device FAIL is a definite refusal. The session retires
-on transport or protocol failure, independently of the public blame.
+`wipe_super.dart` inventories `getvar all` INFO/TEXT, including both slots and
+unknown/cow allocations, and simulates peak allocation in plan order before the
+logical section. A shortfall pauses rather than clearing automatically. The
+same recovery is offered for logical create/resize `Not enough space`.
+`wipeSuper` requires fastbootd, upstream size/names, a fresh snapshot status of
+exactly `none`, and exact-serial confirmation. The `lp-super` frb entry point
+builds a sparse metadata-only image, sent by download + `flash:super`. After
+OKAY execution restarts at the logical section, never the physical bootloader
+writes. Interrupted wipe remains uncertain. Attempt history is retained;
+`resolvedBy` marks an uncertain write superseded by a completed rewrite.
 
 ### Receipt
 

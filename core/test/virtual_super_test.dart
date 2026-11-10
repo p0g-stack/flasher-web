@@ -1605,12 +1605,15 @@ void main() {
       );
       final firstAttempt = [...device.flashCommands];
       expect(firstAttempt, contains('super'));
+      expect(() => service.retryRead({'runId': runId}), throwsA(isA<FlashException>()));
+      expect(() => service.rewriteStep({'runId': runId, 'confirmedSerial': 'other'}),
+        throwsA(isA<FlashException>()));
 
       // Nothing is resent until the user asks; the retry starts at the
       // failed step and keeps the earlier steps.
       device.failFlash = null;
       final retried = <Map<String, Object?>>[];
-      await for (final event in service.retryStep({'runId': runId})) {
+      await for (final event in service.rewriteStep({'runId': runId, 'confirmedSerial': device.serial})) {
         retried.add(event);
       }
       expect(retried.first['type'], 'run');

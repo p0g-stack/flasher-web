@@ -121,8 +121,9 @@ before any preparation. Answer template prompts with repeated
 `--answer id=value`, and check the serial line before confirming.
 Do not guess answers or confirm a different phone.
 
-On a failure the command asks `[r]etry step / re[b]oot to fastboot and retry /
-[s]top`, and stops when stdin is not a terminal. The receipt is written to
+On failure the command offers only the explicit actions allowed by the shared
+[recovery table](docs/flow.md), defaults to Stop, and stops without a terminal.
+Destructive recovery requires typing the exact serial again. The receipt goes to
 `--receipt PATH` or `./receipt-<runId>.json`. Exit codes: 0 succeeded, 2 policy
 stop (plan only, unanswered prompt, stopped run), 1 failed,
 uncertain or an error, 64 for a usage error.
@@ -220,19 +221,19 @@ cache, and a downloaded copy lands outside the store.
 
 Execution stops at the first failing step (a USB drop, a hash mismatch, a
 device FAIL reply) and reports the step, its status and the reason. Nothing is
-resent automatically. The user chooses:
+resent automatically. Core supplies the allowed recovery actions: read-only
+retry, same-serial reconnect, explicit bootloader/fastbootd reboot, physical
+power-cycle check, deliberate whole-step rewrite, clear super, or Stop.
+Connection readiness does not settle a write whose completion is unknown.
+An uncertain write is never replayed by reconnecting or rebooting.
 
-- **Retry step** — reopens the confirmed serial, rechecks serial and mode,
-  and writes the failed step again from byte zero, then continues.
-- **Reboot to fastboot and retry** — reboots to the mode the failed step needs
-  and then does the same.
-- **Stop** — ends the run; commands already sent stay applied.
-
-After the retried step succeeds, the serial and mode are checked again
-before continuing with the remaining steps.
-
-A write whose completion is unknown is reported as uncertain, and a retry is
-an explicit choice, never a reaction to a lost acknowledgement.
+Regional plans check peak logical allocation in fastbootd before their logical
+section. Old other-slot/custom-ROM/cow allocations can require **Clear super**.
+It is never automatic: name the serial again, require snapshot status `none`,
+then flash a metadata-only sparse super image and restart logical writes.
+The phone cannot boot until flashing completes. No userdata format is sent.
+See [docs/flow.md](docs/flow.md) for preconditions, commands, certainty and the
+guided-screen/lifecycle contract.
 
 The receipt is the only record: status, device, serial, OTA version, ARB index,
 the per-image SHA-256 map (including `super.img` and, for X9U, the ABL source),

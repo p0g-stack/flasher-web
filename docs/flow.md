@@ -34,8 +34,8 @@ write. The service, not a widget or CLI, decides which actions are offered.
 |---|---|---|---|
 | Retry read / `retryRead` | Failed read-only step; synchronized session; no uncertain write | Fresh exact-serial open, consistency reads, failed read and remaining plan | Previous uncertainty unchanged; subsequent writes need normal checks |
 | Reconnect / `reconnectDevice` | Lost/disconnected/retired session; not an uncertain mutating step | Wait for same serial, consistency reads, resume refused/read-only step | Reconnect alone never settles a write |
-| Reboot bootloader / `recoverBootloader` | Known mode mismatch or step requires bootloader; no uncertain mutating step | Consistency reads, `reboot-bootloader`, wait same serial, consistency reads, resume | Reboot does not settle earlier writes |
-| Reboot fastbootd / `recoverFastbootd` | Known mode mismatch or step requires fastbootd; no uncertain mutating step | Consistency reads, `reboot-fastboot`, wait same serial, consistency reads, resume | Reboot does not settle earlier writes |
+| Reboot bootloader / `recoverBootloader` | Known mode mismatch or step requires bootloader | Consistency reads, `reboot-bootloader`, wait same serial, consistency reads; resume only if no uncertain mutation | An uncertain run remains paused for explicit rewrite |
+| Reboot fastbootd / `recoverFastbootd` | Known mode mismatch or step requires fastbootd | Consistency reads, `reboot-fastboot`, wait same serial, consistency reads; resume only if no uncertain mutation | An uncertain run remains paused for explicit rewrite |
 | Power cycled / `recoverPowerCycle` | Inconsistent answers or silent device; person has unplugged, held Power for 15 s, then entered bootloader with Volume-Down + Power | No reset command; wait same serial, consistency reads; uncertain mutation still needs explicit rewrite | Uncertainty remains until reconciled/replaced |
 | Rewrite from byte zero / `rewriteStep` | Uncertain mutating step; explicit acknowledgement; consistent same-serial session in required mode | Full image from byte zero; logical create/delete first query `is-logical` and `partition-size`, reconcile observed state | Only completed replacement/reconciliation settles that operation; keep attempt history |
 | Clear super / `wipeSuper` | Regional logical section blocked by capacity/preflight or logical create/resize FAIL `Not enough space`; explicit confirmation naming serial; fastbootd; snapshot status exactly `none`; known upstream size/names | Consistency reads, fresh snapshot check, sparse metadata-only image download, `flash:super`; restart logical section | OKAY confirms super metadata rewrite, not readback. Interrupted flash is uncertain. Phone cannot boot until run completes |
@@ -74,8 +74,8 @@ virtual A/B, the two `qti_dynamic_partitions_a/_b` groups each sized super minus
 4 MiB, and every upstream `SUPER_PARTS` name in both slots at size zero. The
 wire operation is download + `flash:super`, **not** `update-super:super:wipe`.
 AOSP `wipe_super` generates a sparse `WriteToImageFile(..., true)` image then
-calls `do_flash`; its device FlashHandler refuses super flashing during an
-active snapshot update. See [fastboot.cpp](https://android.googlesource.com/platform/system/core/+/refs/heads/main/fastboot/fastboot.cpp),
+calls `do_flash`. Snapshot protections vary by device and operation; do not rely
+on firmware rejecting an unsafe wipe. See [fastboot.cpp](https://android.googlesource.com/platform/system/core/+/refs/heads/main/fastboot/fastboot.cpp),
 [commands.cpp](https://android.googlesource.com/platform/system/core/+/refs/heads/main/fastboot/device/commands.cpp),
 [images.cpp](https://android.googlesource.com/platform/system/core/+/refs/heads/main/fs_mgr/liblp/images.cpp)
 and [writer.cpp](https://android.googlesource.com/platform/system/core/+/refs/heads/main/fs_mgr/liblp/writer.cpp).

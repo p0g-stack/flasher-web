@@ -110,7 +110,11 @@ final class _NativeFastbootSession implements FastbootSession {
   bool get _downloading => _expected > 0;
 
   @override
-  Future<String> command(String command, {bool write = false}) {
+  Future<String> command(String command, {bool write = false}) async =>
+      (await commandWithMessages(command, write: write)).value;
+
+  @override
+  Future<FastbootCommandResult> commandWithMessages(String command, {bool write = false}) {
     return _invoke('command', (handle) async {
       final reply = await rust.fastbootCommand(
         handle: handle,
@@ -119,7 +123,9 @@ final class _NativeFastbootSession implements FastbootSession {
       );
       _throwIfFailure(reply.failure);
       _logMessages(reply.messages);
-      return reply.value;
+      return FastbootCommandResult(reply.value, messages: [
+        for (final message in reply.messages) {'kind': message.kind, 'text': message.text},
+      ]);
     });
   }
 

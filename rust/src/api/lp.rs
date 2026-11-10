@@ -12,6 +12,12 @@ use sha2::{Digest, Sha256};
 
 use anyhow::Result;
 
+/// Metadata-only sparse super image, equivalent to AOSP fastboot wipe-super.
+#[frb(sync)]
+pub fn build_wipe_super_image(super_size: u64, partition_names: Vec<String>) -> Result<Vec<u8>> {
+    Ok(lp_super::generate_wipe_super(super_size, &partition_names)?)
+}
+
 pub const GEOMETRY_MAGIC: u32 = 0x616c_4467;
 pub const HEADER_MAGIC: u32 = 0x414c_5030;
 pub const METADATA_MAJOR_VERSION: u16 = 10;

@@ -170,6 +170,14 @@ final class _FakeSession implements FastbootSession {
   String get serial => device.serial;
 
   @override
+  Future<FastbootCommandResult> commandWithMessages(String command, {bool write = false}) async =>
+      FastbootCommandResult(await this.command(command, write: write),
+        messages: command == 'getvar:all' ? [
+          {'kind': 'INFO', 'text': 'snapshot-update-status:none'},
+          {'kind': 'INFO', 'text': 'partition-size:super:0x400000000'},
+        ] : const []);
+
+  @override
   Future<String> command(String command, {bool write = false}) async {
     if (_closed) throw StateError('closed');
     device.commands.add(command);
@@ -179,6 +187,8 @@ final class _FakeSession implements FastbootSession {
     }
     if (command == 'getvar:max-download-size') return device.maxDownloadSize;
     if (command == 'getvar:current-slot') return 'a';
+    if (command == 'getvar:snapshot-update-status') return 'none';
+    if (command.startsWith('getvar:is-logical:')) return 'no';
     if (command == 'reboot-fastboot') {
       device.fastbootd = true;
       device.android = false;

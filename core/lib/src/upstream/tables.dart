@@ -140,6 +140,7 @@ final class Selection {
 final class UpstreamTables {
   UpstreamTables({
     this.commit = '',
+    this.superParts = const [],
     required Map<String, String> devices,
     required Map<String, RegionSizes> regionSizes,
     required Iterable<BuilderEntry> builders,
@@ -159,6 +160,9 @@ final class UpstreamTables {
           builder;
     }
   }
+
+  /// Ordered names from native_pipeline.py SUPER_PARTS, never inferred from OTA contents.
+  final List<String> superParts;
 
   factory UpstreamTables.fromJson(Object? json) {
     final root = _object(json, 'tables.json');
@@ -210,6 +214,9 @@ final class UpstreamTables {
       devices: devices,
       regionSizes: regionSizes,
       builders: builders,
+      superParts: root['super_parts'] == null ? const [] :
+        List<String>.unmodifiable((root['super_parts']! as List).map((value) =>
+          _string(value, 'super_parts'))),
     );
     return tables;
   }

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flasher_web_core/flasher_web_core.dart' show FlashRecovery;
 import 'package:web_usb_grant/web_usb_grant.dart';
 
 import '../api/flasher_api.dart';
@@ -662,13 +663,10 @@ final class FlashController extends ChangeNotifier {
           '$number${_failureReason == null ? '' : ' — $_failureReason'}',
         );
         _guidance = _failureStatus == 'uncertain'
-            ? 'Step $number may have been written without a confirmed '
-                  'reply. Retry that step, reboot the phone to fastboot and '
-                  'retry, or stop. Nothing is resent automatically; do not '
-                  'retry blindly, check the phone first.'
-            : 'Step $number failed. Retry that step from byte zero, reboot the '
-                  'phone to fastboot and retry, or stop. Earlier steps stay '
-                  'applied and nothing is resent automatically.';
+            ? 'The result is not confirmed. Nothing will be resent automatically. '
+                'A new connection does not settle the write. Save the receipt and choose an explicit recovery.'
+            : 'The run stopped at the first failure. Earlier steps stay applied. '
+                'Choose an applicable recovery or stop; nothing is resent automatically.';
       case 'step':
         _waiting = null;
         _regrantMessage = null;
@@ -735,14 +733,11 @@ final class FlashController extends ChangeNotifier {
         switch (_phase) {
           case FlashPhase.failed:
             _guidance ??=
-                'The flash stopped at the first failure. Retry that step, '
-                'reboot the phone to fastboot and retry, or stop. Nothing is '
-                'resent automatically.';
+                'The run stopped at the first failure. Choose an explicit recovery or stop.';
           case FlashPhase.uncertain:
             _guidance ??=
                 'A write may have reached the phone without confirmation. '
-                'Retry that step, reboot to fastboot and retry, or stop. Do '
-                'not retry blindly: check the affected partitions first.';
+                'Nothing is resent automatically. A new connection does not settle the write.';
           case FlashPhase.succeeded:
             _guidance =
                 'The OTA was flashed in place from its own bytes and no local '
@@ -880,14 +875,13 @@ final class FlashController extends ChangeNotifier {
     await _stoppingFuture;
   }
 
-  /// Retries the failed step from byte zero on the same run. Earlier steps
-  /// stay written and the service reopens and rechecks the exact serial.
-  Future<void> retryFailedStep() => _resume(reboot: false);
+  List<Map<String, Object?>> get recoveryOptions => [
+    if (_receipt?['recoveryActions'] is List)
+      for (final value in _receipt!['recoveryActions']! as List)
+        if (value is Map && value['action'] != 'stopRun') Map<String, Object?>.from(value),
+  ];
 
-  /// Reboots the phone to the failed step's required mode, then retries it.
-  Future<void> rebootAndRetry() => _resume(reboot: true);
-
-  Future<void> _resume({required bool reboot}) async {
+  Future<void> recover(FlashRecovery action, {String? confirmedSerial, bool powerCycled = false}) async {
     final runId = _runId;
     if (runId == null || !_canRetry || running || _disposed) return;
     final stepNumber = (_failureStep ?? 0) + 1;
@@ -925,16 +919,23 @@ final class FlashController extends ChangeNotifier {
     _cancelNote = null;
     _waiting = null;
     _phase = FlashPhase.running;
-    _log.add(
-      reboot
-          ? 'Reboot to fastboot and retry requested for step $stepNumber.'
-          : 'Retry requested for step $stepNumber from byte zero.',
-    );
+    _log.add('Recovery ${action.name} requested for step $stepNumber.');
     _notify();
-    final request = <String, Object?>{'runId': runId};
+    final request = <String, Object?>{'runId': runId,
+      'confirmedSerial': ?confirmedSerial,
+      if (powerCycled) 'powerCycled': true};
     try {
-      _subscription =
-          (reboot ? api.rebootRetry(request) : api.retryStep(request)).listen(
+      final stream = switch (action) {
+        FlashRecovery.retryRead => api.retryRead(request),
+        FlashRecovery.reconnectDevice => api.reconnectDevice(request),
+        FlashRecovery.recoverBootloader => api.recoverBootloader(request),
+        FlashRecovery.recoverFastbootd => api.recoverFastbootd(request),
+        FlashRecovery.recoverPowerCycle => api.recoverPowerCycle(request),
+        FlashRecovery.rewriteStep => api.rewriteStep(request),
+        FlashRecovery.wipeSuper => api.wipeSuper(request),
+        FlashRecovery.stopRun => throw StateError('Use stopRun to stop.'),
+      };
+      _subscription = stream.listen(
             _onEvent,
             onError: _onError,
             onDone: _onDone,

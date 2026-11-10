@@ -27,6 +27,8 @@ export 'src/e2e/fake_fastboot.dart'
         fakeFastbootTransport;
 export 'src/facts/facts.dart';
 export 'src/flash/executor.dart';
+export 'src/flash/flow.dart';
+export 'src/flash/wipe_super.dart';
 export 'src/flash/model.dart';
 export 'src/flash/ota_source.dart';
 export 'src/flash/package.dart';

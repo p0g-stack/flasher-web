@@ -364,6 +364,7 @@ dependencies = [
  "flate2",
  "flutter_rust_bridge",
  "futures",
+ "lp-super",
  "miniz_oxide",
  "ota-payload",
  "sha2 0.10.9",

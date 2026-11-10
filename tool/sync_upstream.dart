@@ -266,6 +266,13 @@ void _writeSnapshot(Directory out, _Upstream upstream, _Lock lock) {
   final tables = _parseTables(
     upstream.require('.github/workflows/build_tools.yml'),
   );
+  final nativePipeline = utf8.decode(upstream.require('flasher_builder/native_pipeline.py'));
+  final superParts = RegExp(r"SUPER_PARTS\s*=\s*\(([\s\S]*?)\)").firstMatch(nativePipeline);
+  if (superParts == null) _fail('native_pipeline.py has no SUPER_PARTS tuple');
+  final names = RegExp(r"'([a-z0-9_]+)'").allMatches(superParts.group(1)!)
+      .map((match) => match.group(1)!).toList();
+  if (names.isEmpty || names.toSet().length != names.length) _fail('Invalid SUPER_PARTS');
+  tables['super_parts'] = names;
   _writeBytes(
     File(_join(out.path, 'tables.json')),
     Uint8List.fromList(

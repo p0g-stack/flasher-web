@@ -4,6 +4,8 @@ import '../facts/facts.dart';
 import '../strategy/objective.dart';
 import '../strategy/strategy.dart';
 import 'executor.dart';
+import 'flow.dart';
+import 'wipe_super.dart';
 import 'model.dart';
 import 'prepare.dart';
 
@@ -17,11 +19,12 @@ Future<Map<String, Object?>> applyConfirmedFlash(
   required FlashEventSink emit,
   required FlashCancellation cancellation,
   Map<String, Object?>? previousReceipt,
-  bool rebootRetry = false,
+  FlashRecovery? recovery,
+  WipeSuperSpec? wipeSuperSpec,
 }) async {
   final objective = Objective<PreparedFlash, Map<String, Object?>>('flash', [
-    _NativeFastboot(transport, emit, cancellation, previousReceipt, rebootRetry),
-    _WebUsbFastboot(transport, emit, cancellation, previousReceipt, rebootRetry),
+    _NativeFastboot(transport, emit, cancellation, previousReceipt, recovery, wipeSuperSpec),
+    _WebUsbFastboot(transport, emit, cancellation, previousReceipt, recovery, wipeSuperSpec),
   ]);
   final plan = await objective.plan(input, place);
   final receipt = await objective.apply(plan, Confirmation.of(plan));
@@ -35,12 +38,13 @@ Future<Map<String, Object?>> applyConfirmedFlash(
 
 abstract base class _FastbootWrite
     extends WriteStrategy<PreparedFlash, Map<String, Object?>> {
-  const _FastbootWrite(this.transport, this.emit, this.cancellation, this.previousReceipt, this.rebootRetry);
+  const _FastbootWrite(this.transport, this.emit, this.cancellation, this.previousReceipt, this.recovery, this.wipeSuperSpec);
   final FastbootTransport transport;
   final FlashEventSink emit;
   final FlashCancellation cancellation;
   final Map<String, Object?>? previousReceipt;
-  final bool rebootRetry;
+  final FlashRecovery? recovery;
+  final WipeSuperSpec? wipeSuperSpec;
 
   @override
   Future<List<String>> plan(PreparedFlash input, PlaceInfo place) async {
@@ -58,12 +62,13 @@ abstract base class _FastbootWrite
         emit: emit,
         cancellation: cancellation,
         previousReceipt: previousReceipt,
-        rebootRetry: rebootRetry,
+        recovery: recovery,
+        wipeSuperSpec: wipeSuperSpec,
       );
 }
 
 final class _NativeFastboot extends _FastbootWrite {
-  const _NativeFastboot(super.transport, super.emit, super.cancellation, super.previousReceipt, super.rebootRetry);
+  const _NativeFastboot(super.transport, super.emit, super.cancellation, super.previousReceipt, super.recovery, super.wipeSuperSpec);
   @override
   String get name => 'native_fastboot';
   @override
@@ -71,7 +76,7 @@ final class _NativeFastboot extends _FastbootWrite {
 }
 
 final class _WebUsbFastboot extends _FastbootWrite {
-  const _WebUsbFastboot(super.transport, super.emit, super.cancellation, super.previousReceipt, super.rebootRetry);
+  const _WebUsbFastboot(super.transport, super.emit, super.cancellation, super.previousReceipt, super.recovery, super.wipeSuperSpec);
   @override
   String get name => 'webusb_fastboot';
   @override
