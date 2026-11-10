@@ -1,7 +1,7 @@
 /// The headers OnePlus's OTA CDN expects, as `remote_zip.HEADERS` sends them.
 ///
-/// The edge worker's `/api/ota` route adds these itself; a direct range read
-/// (the CLI) must send them too.
+/// The edge worker's block fill adds these itself; a direct range read (the
+/// CLI's `{"kind": "url"}` input) must send them too.
 library;
 
 const Map<String, String> otaRequestHeaders = {

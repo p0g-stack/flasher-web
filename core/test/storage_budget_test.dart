@@ -37,66 +37,18 @@ void main() {
     );
   });
 
-  test('a planned write that fits passes without eviction', () async {
+  test('a planned write that fits passes', () async {
     final estimate = _Estimate(usage: 100, quota: 5000);
-    var evictions = 0;
     final budget = StorageBudget(estimateSource: estimate, cap: 1000);
-    await budget.ensure(900, evict: (needed) async {
-      evictions++;
-      return 0;
-    });
-    expect(evictions, 0);
+    await budget.ensure(900);
     await budget.ensure(0);
-  });
-
-  test('eviction frees least recently used space until it fits', () async {
-    final estimate = _Estimate(usage: 1000, quota: 0);
-    final budget = StorageBudget(estimateSource: estimate, cap: 1000);
-    final shortfalls = <int>[];
-    await budget.ensure(500, evict: (needed) async {
-      shortfalls.add(needed);
-      estimate.usage -= 300;
-      return 300;
-    });
-    expect(shortfalls, [500, 200]);
-    expect(estimate.usage, 400);
-  });
-
-  test('freed bytes count even when the platform still reports them', () async {
-    // navigator.storage.estimate() can lag a deletion. The evictor's returned
-    // bytes keep the loop honest until the reading catches up.
-    final estimate = _Estimate(usage: 1000, quota: 0);
-    final budget = StorageBudget(estimateSource: estimate, cap: 1000);
-    var calls = 0;
-    await budget.ensure(500, evict: (needed) async {
-      calls++;
-      return 600;
-    });
-    expect(calls, 1);
-    expect(estimate.usage, 1000, reason: 'the fake never updates');
-  });
-
-  test('a default evictor is used when the call passes none', () async {
-    final estimate = _Estimate(usage: 1000, quota: 0);
-    var calls = 0;
-    final budget = StorageBudget(
-      estimateSource: estimate,
-      cap: 1000,
-      evictDefault: (needed) async {
-        calls++;
-        estimate.usage -= 1000;
-        return 1000;
-      },
-    );
-    await budget.ensure(500);
-    expect(calls, 1);
   });
 
   test('a shortfall names needed, available, cap, usage and quota', () async {
     final estimate = _Estimate(usage: 900, quota: 2000);
     final budget = StorageBudget(estimateSource: estimate, cap: 1000);
     await expectLater(
-      budget.ensure(500, evict: (needed) async => 0),
+      budget.ensure(500),
       throwsA(
         isA<BudgetException>()
             .having((error) => error.needed, 'needed', 500)
@@ -113,20 +65,12 @@ void main() {
     );
   });
 
-  test('a write larger than the cap is refused before any eviction', () async {
+  test('a write larger than the cap is refused', () async {
     final budget = StorageBudget(
       estimateSource: _Estimate(usage: 0, quota: 0),
       cap: 1000,
     );
-    var calls = 0;
-    await expectLater(
-      budget.ensure(2000, evict: (needed) async {
-        calls++;
-        return 2000;
-      }),
-      throwsA(isA<BudgetException>()),
-    );
-    expect(calls, 0);
+    await expectLater(budget.ensure(2000), throwsA(isA<BudgetException>()));
   });
 
   test('a negative plan is an argument error', () async {

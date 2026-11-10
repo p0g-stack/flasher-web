@@ -88,6 +88,28 @@ final class BlockOtaSource implements StreamingByteSource {
     }
   }
 
+  /// Opens the catalog release [entry]: its `id` and, when present, the size
+  /// the catalog declares, which must equal the manifest length.
+  static Future<BlockOtaSource> openCatalog(
+    Map<String, dynamic> entry, {
+    String apiBase = '',
+    String? bucketBase,
+    http.Client? client,
+  }) {
+    final id = entry['id'];
+    if (id is! String) {
+      throw ArgumentError('A catalog release id is required.');
+    }
+    final size = entry['size'];
+    return open(
+      id: id,
+      apiBase: apiBase,
+      bucketBase: bucketBase,
+      expectedLength: size is int && size > 0 ? size : null,
+      client: client,
+    );
+  }
+
   static Uri _base(String value) => Uri.parse(value.isEmpty || value.endsWith('/') ? value : '$value/');
 
   /// Bound the response before buffering it, including error responses. Never
@@ -274,5 +296,63 @@ final class BlockOtaSource implements StreamingByteSource {
     while (_waiters.isNotEmpty) {
       _waiters.removeFirst().complete();
     }
+  }
+}
+
+/// Bytes per ranged read when a catalog OTA is copied out of the block cache.
+const int blockReadChunkBytes = 8 << 20;
+
+/// Ranges kept in flight ahead of the consumer: 8 × 8 MiB = 64 MiB resident.
+const int blockReadWindow = 8;
+
+/// Reads [source] from byte zero in order, keeping at most [window] ranges of
+/// [chunkBytes] in flight.
+///
+/// The window bounds memory: at most `window * chunkBytes` bytes wait ahead of
+/// the consumer, which is also why [chunkBytes] and [window] may not describe
+/// more than 64 MiB together. Bytes reach the consumer in file order whatever
+/// order the reads complete in, and a failed range fails the stream at its
+/// turn instead of after the bytes that follow it. A copy has no resume: a
+/// reopened one starts at zero, which is cheap while the blocks stay cached.
+Stream<Uint8List> orderedReads(
+  ByteSource source, {
+  int chunkBytes = blockReadChunkBytes,
+  int window = blockReadWindow,
+}) async* {
+  if (chunkBytes <= 0 ||
+      window < 1 ||
+      window > blockReadWindow ||
+      chunkBytes > (64 << 20) ~/ window) {
+    throw ArgumentError('invalid OTA read window');
+  }
+  final pending =
+      <Future<({Uint8List? bytes, Object? error, StackTrace? stack})>>[];
+  var offset = 0;
+  void fill() {
+    while (pending.length < window && offset < source.length) {
+      final length = math.min(chunkBytes, source.length - offset);
+      // A later range can fail before the ordered consumer reaches it, so the
+      // error is captured here rather than left unobserved.
+      pending.add(
+        source.read(offset, length).then<
+          ({Uint8List? bytes, Object? error, StackTrace? stack})
+        >(
+          (bytes) => (bytes: bytes, error: null, stack: null),
+          onError: (Object error, StackTrace stack) =>
+              (bytes: null, error: error, stack: stack),
+        ),
+      );
+      offset += length;
+    }
+  }
+
+  fill();
+  while (pending.isNotEmpty) {
+    final result = await pending.removeAt(0);
+    if (result.error case final Object error) {
+      Error.throwWithStackTrace(error, result.stack!);
+    }
+    yield result.bytes!;
+    fill();
   }
 }

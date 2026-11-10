@@ -31,12 +31,10 @@ import '../pipeline/local_source.dart';
 import '../pipeline/ota.dart';
 import '../pipeline/ota_headers.dart';
 import '../storage/budget.dart';
-import '../storage/catalog_ota_source.dart';
+import '../storage/block_ota_source.dart';
 import '../storage/estimate.dart';
 import '../storage/export_sink.dart';
 import '../storage/hashing.dart';
-import '../storage/ota_cache.dart';
-import '../storage/ota_destination.dart';
 import '../storage/storage.dart';
 import '../upstream/tables.dart';
 import 'flasher_service.activator.g.dart';
@@ -147,18 +145,11 @@ base class FlasherService {
       for (final asset in manifest.assets.values)
         for (final part in asset.transportParts) part.assetName: part.bytes,
     };
-    final cache = _otaCache(
-      workspace,
-      apiBase,
-    );
     final store = BloatStore(
       workspace: workspace,
       manifest: manifest,
       gunzip: RustGunzip.new,
-      budget: _budgetFor(
-        req['store'],
-        evict: (needed) => cache.evict(bytesNeeded: needed),
-      ),
+      budget: _budgetFor(req['store']),
     );
     yield {
       'type': 'step',
@@ -193,100 +184,14 @@ base class FlasherService {
     yield {'type': 'result', 'bloat': _statusMap(status)};
   }
 
-  /// The storage cap, the origin's usage and the cached OTAs of [store].
+  /// The app storage cap and the platform's usage and quota for [store].
   ///
-  /// `items` is the UI's cache list, most recently used first: `key` (catalog
-  /// entry digest), `label`, `bytes` (durable data), `allocated` (file extent),
-  /// `complete`, `lastUsed` (ISO-8601 UTC).
+  /// `available` is what one more file may use under
+  /// `min(cap - usage, quota - usage)`. A store the platform cannot measure (a
+  /// folder the user picked) is bounded by the cap alone.
   @squadronMethod
-  Future<Map<String, Object?>> storageBudget(Map<String, Object?> req) async {
-    final workspace = await _openStoreWorkspace(req['store']);
-    final cache = _otaCache(
-      workspace,
-      req['apiBase'] as String? ?? '',
-    );
-    final report = await _budgetFor(req['store']).snapshot();
-    final entries = await cache.entries();
-    return {
-      'cap': report.cap,
-      'usage': report.usage,
-      'quota': report.quota,
-      'available': report.available,
-      'items': [
-        for (final entry in entries.reversed)
-          {
-            'key': entry.key,
-            'label': entry.label,
-            'bytes': entry.bytes,
-            'allocated': await cache.allocatedBytes(entry),
-            'complete': entry.complete,
-            'lastUsed': entry.lastUsedAt.toIso8601String(),
-          },
-      ],
-    };
-  }
-
-  /// Downloads or resumes one catalog OTA into the cache under [store].
-  ///
-  /// The request names `store` (where `ota-cache/` lives) and
-  /// `ota: {"kind": "catalog", "entry": <release>}`; `apiBase` selects the
-  /// same-origin proxy. Events are `started`, `progress` and a final `result`.
-  /// The download is checked against the storage cap first and may evict the
-  /// least recently used cached OTA to make room.
-  @squadronMethod
-  Stream<Map<String, Object?>> cacheOta(Map<String, Object?> req) async* {
-    final input = req['ota'];
-    if (input is! Map || input['kind'] != 'catalog') {
-      throw const BuildException('Only a catalog OTA can be cached.');
-    }
-    final value = input['entry'];
-    if (value is! Map) {
-      throw const BuildException('Select an OTA catalog version.');
-    }
-    final entry = Map<String, dynamic>.from(value);
-    final workspace = await _openStoreWorkspace(req['store']);
-    final apiBase = req['apiBase'] as String? ?? '';
-    final cache = _otaCache(
-      workspace,
-      apiBase,
-    );
-    final budget = _budgetFor(
-      req['store'],
-      evict: (needed) => cache.evict(bytesNeeded: needed),
-    );
-    final label = otaEntryLabel(entry);
-    await for (final event in cache.download(entry, budget: budget)) {
-      switch (event) {
-        case OtaCacheStarted(:final key, :final total, :final resumedFrom):
-          yield {
-            'type': 'started',
-            'key': key,
-            'label': label,
-            'total': total,
-            'resumedFrom': resumedFrom,
-          };
-        case OtaCacheProgress(:final key, :final bytes, :final total):
-          yield {
-            'type': 'progress',
-            'key': key,
-            'label': label,
-            'done': bytes,
-            'total': total,
-          };
-        case OtaCacheFinished(:final entry):
-          yield {
-            'type': 'result',
-            'key': entry.key,
-            'label': entry.label,
-            'bytes': entry.bytes,
-            'complete': entry.complete,
-            'sha256': entry.sha256,
-            'etag': entry.etag,
-            'lastUsed': entry.lastUsedAt.toIso8601String(),
-          };
-      }
-    }
-  }
+  Future<Map<String, Object?>> storageBudget(Map<String, Object?> req) async =>
+      _budgetMap(await _budgetFor(req['store']).snapshot());
 
   /// Copies one catalog OTA, byte for byte, into a file outside the stores.
   ///
@@ -297,6 +202,11 @@ base class FlasherService {
   /// `progress` and a final `result` with `label`, `bytes` and `sha256`. The
   /// copy needs no app storage and is not checked against the budget; a
   /// cancelled or failed copy leaves a partial file at the destination.
+  ///
+  /// Bytes come from the pinned block cache in file order with a bounded
+  /// read-ahead window, so nothing larger than that window is resident. There
+  /// is no resume: a restarted copy begins at zero and rereads blocks the edge
+  /// cache already holds.
   @squadronMethod
   Stream<Map<String, Object?>> saveOta(Map<String, Object?> req) async* {
     final input = req['ota'];
@@ -308,68 +218,25 @@ base class FlasherService {
       throw const BuildException('Select an OTA catalog version.');
     }
     final entry = Map<String, dynamic>.from(value);
-    final label = otaEntryLabel(entry);
-    final destination = req['destination'];
-    final streamed = destination is Map && destination['kind'] == 'stream';
-    final sources = _catalogSources(
-      req['apiBase'] as String? ?? '',
-    );
-    if (!streamed) {
-      final workspace = await openOtaDestination(
-        destination,
-        otaEntryDigest(entry),
-      );
-      final cache = OtaCache(workspace: workspace, sources: sources);
-      await for (final event in cache.download(entry)) {
-        switch (event) {
-          case OtaCacheStarted(:final total, :final resumedFrom):
-            yield {
-              'type': 'started',
-              'label': label,
-              'total': total,
-              'resumedFrom': resumedFrom,
-            };
-          case OtaCacheProgress(:final bytes, :final total):
-            yield {
-              'type': 'progress',
-              'label': label,
-              'done': bytes,
-              'total': total,
-            };
-          case OtaCacheFinished(:final entry):
-            yield {
-              'type': 'result',
-              'label': label,
-              'bytes': entry.length,
-              'sha256': entry.sha256,
-            };
-        }
-      }
-      return;
-    }
+    final label = _entryLabel(entry);
     final declared = entry['size'] is int ? entry['size'] as int : 0;
-    final reader = await CatalogOtaReader.open(sources, entry);
+    final source = await BlockOtaSource.openCatalog(
+      entry,
+      apiBase: req['apiBase'] as String? ?? '',
+    );
     ByteSink? sink;
     try {
-      final total = reader.length;
+      final total = source.length;
       if (declared > 0 && declared != total) {
         throw BuildException(
           'The OTA server reports $total bytes but the catalog says $declared.',
         );
       }
-      sink = await openExportSink(destination);
-      yield {
-        'type': 'started',
-        'label': label,
-        'total': total,
-        'resumedFrom': 0,
-      };
+      sink = await openExportSink(req['destination']);
+      yield {'type': 'started', 'label': label, 'total': total};
       final hasher = StreamingSha256();
       var written = 0;
-      await for (final bytes in orderedOtaReads(
-        reader,
-        chunkBytes: _saveChunkBytes,
-      )) {
+      await for (final bytes in orderedReads(source)) {
         await sink.write(bytes, written);
         hasher.add(bytes);
         written += bytes.length;
@@ -391,34 +258,8 @@ base class FlasherService {
       };
     } finally {
       await sink?.close();
-      await reader.close();
+      await source.close();
     }
-  }
-
-  /// Deletes one cached OTA by its catalog entry digest.
-  @squadronMethod
-  Future<Map<String, Object?>> evictCachedOta(Map<String, Object?> req) async {
-    final key = req['key'];
-    if (key is! String || key.isEmpty) {
-      throw const BuildException('Missing cached OTA key.');
-    }
-    final workspace = await _openStoreWorkspace(req['store']);
-    final cache = _otaCache(
-      workspace,
-      req['apiBase'] as String? ?? '',
-    );
-    final matching = (await cache.entries()).where(
-      (entry) => entry.key == key,
-    );
-    final before = matching.isEmpty ? null : matching.first;
-    final removed = await cache.remove(key);
-    final report = await _budgetFor(req['store']).snapshot();
-    return {
-      'key': key,
-      'removed': removed,
-      'freed': removed ? before?.bytes ?? 0 : 0,
-      'storage': _budgetMap(report),
-    };
   }
 
   /// Streams the virtual package as a flasher ZIP into the destination the
@@ -978,41 +819,30 @@ Future<Workspace> _openStoreWorkspace(Object? value) async {
   return openStore(Map<String, Object?>.from(value));
 }
 
-/// The OTA cache over [workspace], keyed by catalog entry digest.
-///
-/// The cache directory is `ota-cache/` inside the store that also holds the
-/// bloat images, so a user who picks one folder gets one place for app data.
-OtaCache _otaCache(
-  Workspace workspace,
-  String apiBase,
-) => OtaCache(workspace: workspace, sources: _catalogSources(apiBase));
-
-/// Catalog OTA bytes use the same edge block source on every host.
-CatalogOtaSourceFactory _catalogSources(String apiBase) =>
-    CatalogOtaSourceFactory(apiBase: apiBase);
-
-/// Bytes per ranged read while a catalog OTA is copied to a file.
-const int _saveChunkBytes = 8 << 20;
+/// A short human label for a catalog entry: device, region and version.
+String _entryLabel(Map<String, dynamic> entry) {
+  final parts = <String>[];
+  for (final field in ['device', 'region', 'version']) {
+    final value = entry[field];
+    if (value is String && value.isNotEmpty) parts.add(value);
+  }
+  if (parts.isNotEmpty) return parts.join(' / ');
+  final id = entry['id'];
+  return id is String && id.isNotEmpty ? id : 'OTA';
+}
 
 /// The storage budget for [store].
 ///
 /// OPFS and a VM path have a platform capacity reading. A folder the user
 /// picked is outside the origin's quota, so only the app cap applies; the
 /// platform cannot report how full it is.
-StorageBudget _budgetFor(
-  Object? store, {
-  Future<int> Function(int needed)? evict,
-}) {
+StorageBudget _budgetFor(Object? store) {
   final kind = store is Map ? '${store['kind']}' : '';
   if (kind == 'directory') {
-    return StorageBudget(
-      estimateSource: const UnknownStorageEstimate(),
-      evictDefault: evict,
-    );
+    return StorageBudget(estimateSource: const UnknownStorageEstimate());
   }
   return StorageBudget(
     estimateSource: PlatformStorageEstimateSource(path: _storePath(store)),
-    evictDefault: evict,
   );
 }
 
@@ -1042,7 +872,7 @@ Future<OtaArchive> _openOtaArchive(Map<String, Object?> req) async {
   final apiBase = req['apiBase'] as String? ?? '';
   final kind = input['kind'];
   final place = await PlaceInfo.current();
-  final proxied =
+  final browser =
       place.facts.has(Fact.fsOpfs) || place.facts.has(Fact.fsPicker);
   switch (kind) {
     case 'file':
@@ -1055,9 +885,17 @@ Future<OtaArchive> _openOtaArchive(Map<String, Object?> req) async {
           'Select a full OTA file or enter its HTTPS download URL.',
         );
       }
+      // A browser cannot read a signed CDN URL itself: the CDN sends no CORS
+      // headers. The page offers a local file or a catalog version instead.
+      if (browser) {
+        throw const BuildException(
+          'A browser cannot read an OTA from a URL. Choose a catalog version '
+          'or a local file.',
+        );
+      }
       final source = await HttpRangeSource.open(
-        _otaUri(apiBase, url, proxied: proxied),
-        headers: proxied ? const {} : otaRequestHeaders,
+        Uri.parse(url),
+        headers: otaRequestHeaders,
       );
       return _guarded(source, () => OtaArchive.open(source, remote: true));
     case 'catalog':
@@ -1066,13 +904,14 @@ Future<OtaArchive> _openOtaArchive(Map<String, Object?> req) async {
         throw const BuildException('Select an OTA catalog version.');
       }
       final release = Map<String, dynamic>.from(entry);
-      final remote = await CatalogOtaSourceFactory(
+      final source = await BlockOtaSource.openCatalog(
+        release,
         apiBase: apiBase,
         bucketBase: req['otaBucketBase'] as String?,
-      ).open(release);
+      );
       return _guarded(
-        remote.source,
-        () => OtaArchive.open(remote.source, remote: true),
+        source,
+        () => OtaArchive.open(source, remote: true),
       );
     default:
       throw BuildException('Unknown OTA input: $kind.');
@@ -1102,11 +941,6 @@ Uri _apiUri(String apiBase, String path) {
       ? base.path
       : '${base.path}/';
   return base.replace(path: '$prefix$path');
-}
-
-Uri _otaUri(String apiBase, String url, {required bool proxied}) {
-  if (!proxied) return Uri.parse(url);
-  return _apiUri(apiBase, 'api/ota').replace(queryParameters: {'u': url});
 }
 
 Map<String, Object?> _statusMap(BloatStatus status) => {

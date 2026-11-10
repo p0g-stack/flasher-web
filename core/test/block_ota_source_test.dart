@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flasher_web_core/src/storage/block_ota_source.dart';
+import 'package:flasher_web_core/src/storage/contracts.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:test/test.dart';
@@ -160,4 +161,67 @@ void main() {
     expect(blocks, 1);
     await source.close();
   });
+
+  test('ordered reads emit file order within the window', () async {
+    final bytes = Uint8List.fromList(List.generate(20, (n) => n));
+    final source = _MemorySource(bytes);
+    final chunks = await orderedReads(source, chunkBytes: 4, window: 3).toList();
+    expect(chunks.map((chunk) => chunk.toList()), [
+      [0, 1, 2, 3],
+      [4, 5, 6, 7],
+      [8, 9, 10, 11],
+      [12, 13, 14, 15],
+      [16, 17, 18, 19],
+    ]);
+    expect(source.peak, lessThanOrEqualTo(3), reason: 'the window is a bound');
+    expect(source.requested, [0, 4, 8, 12, 16]);
+  });
+
+  test('ordered reads fail at the failing range and never widen', () async {
+    final bytes = Uint8List.fromList(List.generate(20, (n) => n));
+    final source = _MemorySource(bytes, failAt: 8);
+    final seen = <List<int>>[];
+    await expectLater(
+      orderedReads(source, chunkBytes: 4, window: 2).forEach(
+        (chunk) => seen.add(chunk.toList()),
+      ),
+      throwsA(isA<StateError>()),
+    );
+    expect(seen, [
+      [0, 1, 2, 3],
+      [4, 5, 6, 7],
+    ]);
+    await expectLater(
+      orderedReads(source, chunkBytes: 8 << 20, window: 9).toList(),
+      throwsArgumentError,
+    );
+    await expectLater(
+      orderedReads(source, chunkBytes: 16 << 20, window: 5).toList(),
+      throwsArgumentError,
+    );
+  });
+}
+
+final class _MemorySource implements ByteSource {
+  _MemorySource(this.bytes, {this.failAt});
+
+  final Uint8List bytes;
+  final int? failAt;
+  final requested = <int>[];
+  int active = 0;
+  int peak = 0;
+
+  @override
+  int get length => bytes.length;
+
+  @override
+  Future<Uint8List> read(int offset, int length) async {
+    requested.add(offset);
+    active++;
+    if (active > peak) peak = active;
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+    active--;
+    if (offset == failAt) throw StateError('range $offset failed');
+    return Uint8List.sublistView(bytes, offset, offset + length);
+  }
 }

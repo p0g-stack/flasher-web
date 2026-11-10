@@ -2,17 +2,16 @@
 /// whether one more file fits.
 ///
 /// The cap exists because a local-first PWA keeps a bounded working set in the
-/// origin's storage: verified bloat images (at most about 1.72 GiB raw), an
-/// optional least-recently-used cache of catalog OTA ZIPs, small metadata and
-/// the service-worker shell. Local OTA files are read in place, so they cost
-/// nothing. [StorageBudget] answers one question before a write: after this
-/// many more bytes, does the origin still fit?
+/// origin's storage: verified bloat images (at most about 1.72 GiB raw), small
+/// metadata and the service-worker shell. Local OTA files are read in place,
+/// so they cost nothing. [StorageBudget] answers one question before a write:
+/// after this many more bytes, does the origin still fit?
 ///
 /// The estimate is injected ([StorageEstimateSource]) because only the caller
 /// knows where the bytes will go: the browser reports `navigator.storage`
 /// estimate for its own origin, and a VM process measures the volume it writes
-/// to. [StorageBudget] itself is pure Dart, so the arithmetic and the eviction
-/// loop are tested without a browser.
+/// to. [StorageBudget] itself is pure Dart, so the arithmetic is tested without
+/// a browser.
 library;
 
 import 'dart:math' as math;
@@ -20,9 +19,9 @@ import 'dart:math' as math;
 /// The most this app may ever keep in its browser storage: 10 GiB.
 ///
 /// The origin usage reported by `navigator.storage.estimate()` counts every
-/// byte the origin stores, including the service-worker shell and the OTA
-/// cache. A write is refused once `usage + planned` would pass this cap, even
-/// when the platform would allow more.
+/// byte the origin stores, including the service-worker shell. A write is
+/// refused once `usage + planned` would pass this cap, even when the platform
+/// would allow more.
 const int appStorageCapBytes = 10 * 1024 * 1024 * 1024;
 
 /// A platform capacity reading.
@@ -77,7 +76,7 @@ final class StorageBudgetReport {
   final int available;
 }
 
-/// A planned write does not fit, even after eviction freed what it could.
+/// A planned write does not fit.
 final class BudgetException implements Exception {
   const BudgetException({
     required this.needed,
@@ -90,7 +89,7 @@ final class BudgetException implements Exception {
   /// Bytes the caller wanted to add.
   final int needed;
 
-  /// Bytes the budget can still take, after eviction.
+  /// Bytes the budget can still take.
   final int available;
 
   /// [appStorageCapBytes], or the cap this budget was built with.
@@ -108,31 +107,18 @@ final class BudgetException implements Exception {
       'are free under the ${_sizes(cap)} app cap '
       '(usage ${_sizes(usage)}, platform quota '
       '${quota > 0 ? _sizes(quota) : 'unknown'}). '
-      'Free space by deleting a cached OTA or bloat image and retry.';
+      'Free space in the app storage and retry.';
 }
 
-/// The cap, the platform estimate and the eviction loop in one place.
+/// The cap and the platform estimate in one place.
 final class StorageBudget {
-  StorageBudget({
-    required this.estimateSource,
-    this.cap = appStorageCapBytes,
-    this.evictDefault,
-  });
+  StorageBudget({required this.estimateSource, this.cap = appStorageCapBytes});
 
   /// Where usage and quota come from.
   final StorageEstimateSource estimateSource;
 
   /// The self-imposed ceiling on top of the platform quota.
   final int cap;
-
-  /// The evictor [ensure] uses when the call passes none: it must free about
-  /// [needed] bytes of disposable cache and return the bytes it freed. Wiring
-  /// it to the OTA cache's least-recently-used eviction lets a bloat download
-  /// make room for itself.
-  final Future<int> Function(int needed)? evictDefault;
-
-  /// How many eviction rounds one [ensure] may run before giving up.
-  static const int _maxEvictionPasses = 32;
 
   Future<StorageEstimate?> estimate() => estimateSource.estimate();
 
@@ -160,53 +146,17 @@ final class StorageBudget {
     );
   }
 
-  /// Makes room for [bytes] more bytes or throws [BudgetException].
+  /// Throws [BudgetException] unless [bytes] more bytes fit.
   ///
-  /// When the budget is short, [evict] (or the constructor's evictor) is
-  /// asked to free at least the shortfall and returns the bytes it freed. The
-  /// estimate is read again after each round, so an eviction that the platform
-  /// has not accounted for yet is still counted through the returned bytes.
-  /// A callback that frees nothing ends the loop and the exception names the
-  /// shortfall: `needed`, `available`, `cap`, `usage` and `quota`.
-  ///
-  /// [bytes] is the planned increase, not the final file size, so a resumed
-  /// download passes only the bytes it has still to write.
-  Future<void> ensure(
-    int bytes, {
-    Future<int> Function(int needed)? evict,
-  }) async {
+  /// [bytes] is the planned increase, not the final file size.
+  Future<void> ensure(int bytes) async {
     if (bytes < 0) {
       throw ArgumentError.value(bytes, 'bytes', 'must not be negative');
     }
     if (bytes == 0) return;
-
-    final free = evict ?? evictDefault;
-    var availableBytes = await available();
+    final availableBytes = await available();
     if (bytes <= availableBytes) return;
-
-    if (bytes > cap || free == null) {
-      throw await _shortfall(bytes, availableBytes);
-    }
-
-    // Credit covers a platform whose usage reading lags a deletion. Once the
-    // reading catches up, the credit is dropped so freed bytes are not counted
-    // twice.
-    var credit = 0;
-    for (var pass = 0; pass < _maxEvictionPasses; pass++) {
-      final shortfall = bytes - availableBytes - credit;
-      if (shortfall <= 0) return;
-      final freed = await free(shortfall);
-      if (freed <= 0) break;
-      final after = await available();
-      if (after > availableBytes) {
-        availableBytes = after;
-        credit = 0;
-      } else {
-        credit += freed;
-      }
-    }
-    if (bytes <= availableBytes + credit) return;
-    throw await _shortfall(bytes, availableBytes + credit);
+    throw await _shortfall(bytes, availableBytes);
   }
 
   int _availableFrom(StorageEstimate? estimate) {

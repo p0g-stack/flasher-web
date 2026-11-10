@@ -160,24 +160,22 @@ Future<Map<String, ({Uint8List bytes, int mode})>> exportEntries(
   return zipEntriesOf(workspace, 'virtual.zip');
 }
 
-/// A loopback stand-in for the edge worker's `/api/catalog`, `/api/resolve`
-/// and `/api/ota` routes, serving fixture OTA ZIPs with HTTP ranges.
+/// A loopback stand-in for the edge worker's `/api/catalog` proxy, so the
+/// catalog client runs over real HTTP.
 final class FakeCatalogServer {
-  FakeCatalogServer._(this._server, this._catalog, this._otas);
+  FakeCatalogServer._(this._server, this._catalog);
 
   final HttpServer _server;
   final Map<String, dynamic> _catalog;
-  final Map<String, Uint8List> _otas;
 
   /// Request lines the server answered, in order.
   final requests = <String>[];
 
   static Future<FakeCatalogServer> start({
     required Map<String, dynamic> catalog,
-    required Map<String, Uint8List> otas,
   }) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    final result = FakeCatalogServer._(server, catalog, otas);
+    final result = FakeCatalogServer._(server, catalog);
     server.listen(result._handle);
     return result;
   }
@@ -191,28 +189,9 @@ final class FakeCatalogServer {
     final response = request.response;
     requests.add('${request.method} ${request.uri}');
     try {
-      final path = request.uri.path;
-      if (request.method == 'GET' && path == '/api/catalog') {
+      if (request.method == 'GET' && request.uri.path == '/api/catalog') {
         response.headers.contentType = ContentType.json;
         response.write(jsonEncode(_catalog));
-      } else if (request.method == 'POST' && path == '/api/resolve') {
-        final body = await utf8.decoder.bind(request).join();
-        final entry = jsonDecode(body) as Map<String, dynamic>;
-        response.headers.contentType = ContentType.json;
-        response.write(
-          jsonEncode({'url': '$apiBase/ota/${entry['id']}.zip'}),
-        );
-      } else if (request.method == 'GET' && path.startsWith('/ota/')) {
-        final id = path.substring('/ota/'.length);
-        final bytes = _otas[id.endsWith('.zip')
-            ? id.substring(0, id.length - 4)
-            : id];
-        if (bytes == null) {
-          response.statusCode = HttpStatus.notFound;
-        } else {
-          await _range(request, response, bytes);
-          return;
-        }
       } else {
         response.statusCode = HttpStatus.notFound;
       }
@@ -221,44 +200,6 @@ final class FakeCatalogServer {
       response.statusCode = HttpStatus.internalServerError;
       await response.close();
     }
-  }
-
-  Future<void> _range(
-    HttpRequest request,
-    HttpResponse response,
-    Uint8List bytes,
-  ) async {
-    final total = bytes.length;
-    final header = request.headers.value(HttpHeaders.rangeHeader);
-    if (header == null) {
-      response.statusCode = HttpStatus.ok;
-      response.headers.contentLength = total;
-      response.add(bytes);
-      await response.close();
-      return;
-    }
-    final match = RegExp(r'^bytes=(\d+)-(\d*)$').firstMatch(header.trim());
-    if (match == null) {
-      response.statusCode = HttpStatus.badRequest;
-      await response.close();
-      return;
-    }
-    final start = int.parse(match.group(1)!);
-    final requestedEnd = match.group(2)!.isEmpty
-        ? total - 1
-        : int.parse(match.group(2)!);
-    if (start >= total || requestedEnd < start) {
-      response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
-      response.headers.set('content-range', 'bytes */$total');
-      await response.close();
-      return;
-    }
-    final end = math.min(requestedEnd, total - 1);
-    response.statusCode = HttpStatus.partialContent;
-    response.headers.set('content-range', 'bytes $start-$end/$total');
-    response.headers.contentLength = end - start + 1;
-    response.add(Uint8List.sublistView(bytes, start, end + 1));
-    await response.close();
   }
 }
 
@@ -820,9 +761,6 @@ void main() {
         ],
       );
       addTearDown(fixture.dispose);
-      final donorBytes = await File(
-        '${fixture.root.path}/ota/donor.zip',
-      ).readAsBytes();
       final server = await FakeCatalogServer.start(
         catalog: {
           'api_version': '1',
@@ -850,7 +788,6 @@ void main() {
             },
           ],
         },
-        otas: {'donor-cn': donorBytes},
       );
       addTearDown(server.close);
 

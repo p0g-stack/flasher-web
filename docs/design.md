@@ -22,7 +22,7 @@ before it is flashed or exported, and a flash leaves only a receipt.
 | Reusable payload crate | `rust/crates/ota-payload/` | I/O-free parsing and operation decoding for Android update payloads, plus SHA-256. Port of otaripper and the upstream Python full-OTA check; builds for native and wasm. |
 | Reusable fastboot crate | `rust/crates/fastboot-link/` | Discovery, exclusive serial selection, the fastboot state machine and streaming downloads over native nusb or browser WebUSB. No frb or Dart dependency. |
 | Dart link package | `packages/device_link/` | Pure-Dart transport/session interfaces, device and failure records. No I/O, Flutter or frb dependency. |
-| Core | `core/` (pure Dart) | Upstream tables and selection rules, storage interfaces, the virtual package, flash plans, preparation and execution, bloat and OTA cache stores, catalog client. Drives I/O and calls Rust. |
+| Core | `core/` (pure Dart) | Upstream tables and selection rules, storage interfaces, the virtual package, flash plans, preparation and execution, the bloat store, the block OTA reader, catalog client. Drives I/O and calls Rust. |
 | CLI | `cli/` | `flasher_web flash`, `export`, `bloat`, `devices`, `facts` and `serve`, running the same service natively (dart:io + the native library). |
 | App | `app/` (Flutter web) | The setup, flash, environment and documentation pages, and the app's service worker. The page owns permission choosers; the service runs in a Squadron Web Worker. |
 | Edge worker | `worker/` (Cloudflare Workers) | Serves `app/build/web` and the same-origin `/api/*` routes the browser cannot do itself (CORS). Local: `wrangler dev`. |
@@ -53,7 +53,6 @@ Pinned in `upstream.lock` (repository + commit `bdea12a`). Produced by
 | `GET /api/block-config` | `{publicBase: string \| null}` from `OTA_PUBLIC_BASE`. Null selects Worker-only access through the same block reader. |
 | `GET /api/manifest?id=<catalog-id>` | Discover/probe a catalog release and publish its pinned block manifest; no signed URL reaches the client. |
 | `GET /api/block?id=<catalog-id>&v=<identity>&n=<block>` | Read/fill one aligned block through the authenticated Garage S3 API. Reject a different manifest identity with 409. |
-| `GET\|HEAD /api/ota?u=<url>` | Legacy Range proxy for explicit URL inputs, not catalog reads. Allowlisted hosts and validated redirects only; retained while explicit URL input exists. |
 | `GET /api/bloat/<asset_name>` | Proxy `https://github.com/koaaN/Flasher_Builder/releases/download/bloat-assets-v1/<asset_name>` (following the redirect); `Range` passed through. Asset names validated against `[A-Za-z0-9._-]+`. |
 
 The Worker stores validated catalog OTA blocks in the owner's Garage bucket;
@@ -93,8 +92,8 @@ HTTP range source (`fetch` on web, `HttpClient` on io). Paths are
 A service store is one of `{"kind": "directory", "handle": …}` (a folder the
 user picked), `{"kind": "opfs"}` or `{"kind": "path", "path": …}` (VM). The
 bloat store is the only workspace the app writes: verified bloat images at
-their manifest paths (minus `bloat/`), plus `ota-cache/` when a catalog OTA is
-kept offline.
+their manifest paths (minus `bloat/`). Nothing else, and no OTA copy, is
+written there.
 
 Exports do not use a workspace at all. The destination is the save picker's
 `FileSystemFileHandle`, `{"kind": "stream", "id", "channel"}` for the service
@@ -105,17 +104,16 @@ worker download, or `{"kind": "path", "path"}` on the VM; each is opened as a
 
 `core/lib/src/storage/budget.dart` holds one self-imposed ceiling,
 `appStorageCapBytes` = 10 GiB, because the browser keeps a bounded working set
-in the origin's storage: verified bloat (at most about 1.72 GiB raw), the
-optional catalog OTA cache, small metadata and the service-worker shell. Local
-OTA files are read in place and cost nothing.
+in the origin's storage: verified bloat (at most about 1.72 GiB raw), small
+metadata and the service-worker shell. An OTA is not part of it: a local file
+is read in place, a catalog release comes from the edge block cache, and a
+downloaded copy goes outside the store.
 
 `StorageBudget.ensure(bytes)` compares the planned increase with
-`min(cap - usage, quota - usage)` and, when short, asks an evictor to free the
-shortfall (the OTA cache's least-recently-used entries) and re-reads the
-estimate, with a bounded number of passes. A source that cannot measure
-anything yields an unknown estimate, so the cap is the only limit and the
-shortfall is reported rather than guessed. `BudgetException` names `needed`,
-`available`, `cap`, `usage` and `quota`.
+`min(cap - usage, quota - usage)` and refuses the write when it does not fit. A
+source that cannot measure anything yields an unknown estimate, so the cap is
+the only limit, and the shortfall is reported rather than guessed.
+`BudgetException` names `needed`, `available`, `cap`, `usage` and `quota`.
 
 For a picked bloat folder the browser cannot measure free disk space, so the
 store uses an unknown estimate: only the app cap applies, not the origin quota.
@@ -124,8 +122,9 @@ store uses an unknown estimate: only the app cap applies, not the origin quota.
 
 Catalog reads never download or retain a whole OTA in browser storage.
 `storage/block_ota_source.dart` is the same `ByteSource` on browser and
-native/CLI hosts. Local files remain read-in-place. Legacy local-cache and
-download code is not part of this reader and is removed in the UI cutover.
+native/CLI hosts. Local files remain read-in-place. There is no local OTA cache
+and no in-browser download engine: a catalog copy for the user is `saveOta`,
+which streams this source to a file outside the stores.
 
 **Identity.** A generation is `(catalog id, upstream strong ETag, byte length)`.
 The catalog documents `id` as stable, but it is not a byte validator: pin the
@@ -306,15 +305,16 @@ and hashing the image:
 | Chrome, local file | 66.5 s (45 MiB/s) | 13.1 s (227 MiB/s) |
 | Dart VM, local file | 50.3 s (59 MiB/s) | 9.1 s (326 MiB/s) |
 
-Through the local `/api/ota` proxy, one 2 MiB range at a time read 12 MiB/s;
-four 8 MiB ranges at once read 118 MiB/s.
+Through the old local Range proxy, one 2 MiB range at a time read 12 MiB/s;
+four 8 MiB ranges at once read 118 MiB/s. That established the eight-range
+window the block reader and a saved copy both use.
 
 An OTA input is one of:
 
 - `{"kind": "file", "file": <web File | io path>}` — read in place.
-- `{"kind": "url", "url": …}` — HTTP ranges, direct on the VM and through
-  `/api/ota` in the browser (a browser needs the proxy for CORS and CDN
-  headers; the VM sends OnePlus's OTA headers itself).
+- `{"kind": "url", "url": …}` — HTTP ranges with OnePlus's OTA headers, on the
+  CLI only. A browser refuses this input: the CDN sends no CORS headers, and
+  the page never creates it.
 - `{"kind": "catalog", "entry": <release>}` — `BlockOtaSource` reads the pinned
   generation through the public Garage endpoint, filling misses through the
   Worker; the catalog's declared size must equal the observed manifest length.
@@ -322,6 +322,13 @@ An OTA input is one of:
 Only ZIP metadata, `META-INF/com/android/metadata` and the payload manifest are
 read before streaming; each image's bytes are verified against its partition
 SHA-256 as they are consumed.
+
+**Saving a copy.** `saveOta` reads one catalog generation in order from
+`BlockOtaSource` and writes it to the destination `exportVirtual` uses, with a
+bounded window of eight 8 MiB ranges (64 MiB resident) and the archive's
+SHA-256 computed as the bytes pass. There is no resume state and no second
+copy in the stores: a restart begins at zero, which costs nothing for blocks
+the edge cache already holds.
 
 ### `super.img`
 
@@ -577,12 +584,13 @@ cached.
 
 - `core/test/` covers the virtual package and super (sparse parity against an
   independent layout construction, DONT_CARE tail, streaming digests, mutation
-  refusals), the OTA part source, preparation, the executor (splitting,
-  reconnects, uncertain writes, explicit retries), the export stream, the OTA
-  cache, the storage budget, upstream tables and the catalog.
+  refusals), the OTA part source, the block OTA reader, preparation, the
+  executor (splitting, reconnects, uncertain writes, explicit retries), the
+  export stream, the storage budget, upstream tables and the catalog.
 - `app/test/` drives the pages with a fake bridge and a fake fastboot transport.
 - `cli/test/` covers the request builders, exit codes and the retry lifecycle.
-- `worker/test/` covers the range proxy and the other `/api/*` routes.
+- `worker/test/` covers the catalog proxy, the block routes and the other
+  `/api/*` routes.
 - `rust/` tests the crates and the frb surface.
 
 Real OTA flashing on a real phone remains unqualified: the tests use a fake

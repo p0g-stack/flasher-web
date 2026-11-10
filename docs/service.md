@@ -13,7 +13,7 @@ web, these browser objects passed by reference (structured clone): `File`,
 
 ```text
 OtaInput = {"kind": "file", "file": <web File | io path String>}
-         | {"kind": "url", "url": String}                    // HTTP(S); the browser goes through /api/ota
+         | {"kind": "url", "url": String}                    // HTTP(S); CLI only, a browser refuses it
          | {"kind": "catalog", "entry": <catalog release map>}
 Virtual  = {"ota": OtaInput, "base"?: OtaInput, "bloat": Store, "vulnerableAbl"?: bool}
 Store    = {"kind": "directory", "handle": <FileSystemDirectoryHandle>}   // a folder the user picked (Chromium)
@@ -37,26 +37,17 @@ X9U, refused elsewhere). A request that names an output store is refused; an
 Ace 6T IN/GLO ODM donor is chosen from the catalog, never supplied by the
 caller.
 
-## Storage cap and cached OTAs
+## Storage cap
 
-The app bounds what it stores at 10 GiB (`appStorageCapBytes`). The same store
-holds the verified bloat images and, when the user keeps one catalog release
-offline, `ota-cache/`. `downloadBloat` and `cacheOta` check the planned bytes
-against `min(cap - usage, quota - usage)` before writing and may evict the
-least recently used cached OTA to make room; a write that still does not fit is
-refused with a `BudgetException` naming `needed`, `available`, `cap`, `usage`
-and `quota`. Usage and quota come from `navigator.storage.estimate()` in the
-browser and from the volume on the VM; a source that cannot measure anything
-leaves the cap as the only limit. Local OTA files are read in place and never
-counted.
-
-Each `storageBudget.items` entry reports `bytes` (durable downloaded data) and
-`allocated` (the current logical file extent, zero if missing). A sparse
-`<key>.downloadx.part` can have an allocation much larger than `bytes`; that
-extent is already included in `usage`. Resuming the same catalog entry needs
-only `max(0, catalog size - allocated)` additional space. Allocation belonging
-to a different entry is not credited, and the service rechecks the file before
-resuming.
+The app bounds what it stores at 10 GiB (`appStorageCapBytes`). The store holds
+only the verified bloat images. `downloadBloat` checks the planned bytes against
+`min(cap - usage, quota - usage)` before writing; a write that does not fit is
+refused with a `BudgetException` naming `needed`, `available`, `cap`, `usage` and
+`quota`. Usage and quota come from `navigator.storage.estimate()` in the browser
+and from the volume on the VM; a source that cannot measure anything leaves the
+cap as the only limit. OTA bytes are never stored there: a local file is read in
+place, a catalog release comes from the edge block cache, and `saveOta` writes
+its copy to the user's destination.
 
 For a picked directory, an unknown estimate deliberately avoids applying the
 origin's quota to that folder. Only the app cap applies, and filesystem writes
@@ -69,10 +60,8 @@ can still fail when the destination drive fills.
 | `Future<Map> environment()` | – | `{"facts": [...], "native": bool, "upstream": "<commit>", "storage": {"opfs": bool, "picker": bool, "handle": bool, "persisted": bool, "quota": int, "usage": int}}` |
 | `Future<Map> bloatStatus(Map req)` | `{"selection": Sel, "store": Store, "upstreamBase": String}` | `{"total": int, "downloaded": int, "bytes": int, "ready": bool}` |
 | `Stream<Map> downloadBloat(Map req)` | same as `bloatStatus` + `"apiBase": String` | events (below); last is `{"type": "result", "bloat": {...status}}` |
-| `Future<Map> storageBudget(Map req)` | `{"store": Store, "apiBase": String?}` | `{"cap": int, "usage": int, "quota": int, "available": int, "items": [{"key", "label", "bytes", "allocated", "complete", "lastUsed"}]}` |
-| `Stream<Map> cacheOta(Map req)` | `{"store": Store, "ota": {"kind": "catalog", "entry": <release>}, "apiBase": String?}` | `started`/`progress` events; last is `{"type": "result", "key", "label", "bytes", "complete", "sha256", "etag", "lastUsed"}` |
-| `Stream<Map> saveOta(Map req)` | `{"ota": {"kind": "catalog", "entry": <release>}, "apiBase": String?, "destination": FileSystemFileHandle \| {"kind": "stream", "id", "channel"} \| {"kind": "path", "path"}}` | `started`/`progress` events (as for `cacheOta`, without `key`); last is `{"type": "result", "label", "bytes", "sha256"}`. Copies the OTA byte for byte outside the stores; no budget check. A file or path destination resumes from its recorded ranges when the same destination is passed again; a stream destination cannot resume |
-| `Future<Map> evictCachedOta(Map req)` | `{"store": Store, "key": String}` | `{"key", "removed": bool, "freed": int, "storage": {"cap", "usage", "quota", "available"}}` |
+| `Future<Map> storageBudget(Map req)` | `{"store": Store}` | `{"cap": int, "usage": int, "quota": int, "available": int}` |
+| `Stream<Map> saveOta(Map req)` | `{"ota": {"kind": "catalog", "entry": <release>}, "apiBase": String?, "destination": FileSystemFileHandle \| {"kind": "stream", "id", "channel"} \| {"kind": "path", "path"}}` | `started`/`progress` events; last is `{"type": "result", "label", "bytes", "sha256"}`. Copies the OTA byte for byte outside the stores; no budget check and no resume, so a restart begins at zero and rereads blocks the edge cache already holds |
 | `Future<Map> inspectOta(Map req)` | `{"ota": OtaInput, "apiBase": String}` | `{"version", "fields": {...metadata}, "partitions": {name: size}, "length": int, "stored": bool, "arb": {"major","minor","index"}?, "device": String?, "securityPatch": String?}` |
 | `Future<Map> fastbootDevices()` | – | `{"devices": [{"serial", "label", "transport"}], "error"?: FailureMap}` |
 | `Future<Map> prepareFlash(Map req)` | see below | prepared map, `productRequired` map, or `{"error": FailureMap}` |
@@ -102,28 +91,22 @@ images.
 Every selected image is verified by size and raw SHA-256; a present image is
 kept, a missing one is fetched through `/api/bloat/`, gunzipped and joined.
 
-## Cache events
+## Save events
 
 ```text
-{"type": "started",  "key": String, "label": String, "total": int, "resumedFrom": int}
-{"type": "progress", "key": String, "label": String, "done": int, "total": int}
-{"type": "result",   "key", "label", "bytes", "complete", "sha256", "etag", "lastUsed"}
+{"type": "started",  "label": String, "total": int}
+{"type": "progress", "label": String, "done": int, "total": int}
+{"type": "result",   "label", "bytes", "sha256"}
 ```
 
-`key` is the catalog entry digest. Only a catalog OTA can be cached; other
-inputs throw. `resumedFrom` counts the bytes already on disk, which may be
-scattered ranges rather than a prefix. Cancelling the stream leaves the partial
-file and its chunk layout in place for the next download of the same entry.
-
-Positional downloads deliver validated HTTP response-body chunks to downloadx
-as they arrive, rather than buffering an entire 8 MiB range. Progress and the
-30-second network-idle timeout therefore follow arriving bytes. Link refresh is
-shared and allowed only before a range emits its first body byte; a mid-body
-failure is retried by downloadx from the bytes already written. OPFS/IO durable
-checkpoints have a one-second floor, checked by the progress tick, rather than
-flushing on every body chunk. Staged file-picker writes still checkpoint after
-512 MiB; pause/failure/completion commits the latest snapshot. Progress can lead
-the durable resume checkpoint. Full-file SHA-256 still uses a final read-back.
+Only a catalog OTA can be saved; other inputs throw. Bytes are read from the
+pinned block generation in file order through a window of at most eight 8 MiB
+ranges (64 MiB resident), written sequentially and hashed in the same pass. A
+range that fails fails the copy; nothing is retried automatically. Cancelling
+the stream leaves a partial file at the destination and no resume state, so the
+next save starts at zero — cheap, because the blocks stay in the edge cache.
+The browser's streamed download additionally drops the partial file when the
+page aborts it.
 
 ## Flash contract
 
