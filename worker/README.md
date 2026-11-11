@@ -1,6 +1,6 @@
-# flasher_web worker
+# flasher-web worker
 
-Cloudflare Worker for `flasher_web`. It serves the Flutter web build
+Cloudflare Worker for flasher-web. It serves the Flutter web build
 (`../app/build/web`) and the same-origin `/api/*` routes that the browser
 cannot call directly:
 

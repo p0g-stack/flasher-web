@@ -1,4 +1,4 @@
-# flasher_web
+# flasher-web
 
 Flash a OnePlus full OTA straight to a phone over fastboot, or save the same
 package as one ZIP: a port of

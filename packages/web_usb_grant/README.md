@@ -89,7 +89,7 @@ repository or publication is created by this change.
 
 LGPL-3.0-or-later (`LICENSE`, with the incorporated GPL text in `COPYING`),
 matching p0g-stack's common license direction. Original implementation is
-extracted from flasher_web; binding declarations follow the
+extracted from flasher-web; binding declarations follow the
 [WICG WebUSB specification](https://wicg.github.io/webusb/).
 
 MIT consumers such as trezor_flutter can retain their own application license,

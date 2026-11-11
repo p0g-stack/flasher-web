@@ -1,4 +1,4 @@
-# flasher_web design
+# flasher-web design
 
 A browser and CLI port of
 [koaaN/Flasher_Builder](https://github.com/koaaN/Flasher_Builder). The user
