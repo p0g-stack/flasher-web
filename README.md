@@ -39,6 +39,13 @@ Design: [docs/design.md](docs/design.md). Service contract:
 | `rust/crates/fastboot-link/` | reusable USB discovery, serial-bound sessions and streaming fastboot | native nusb / browser WebUSB, no frb |
 | `worker/` | Cloudflare Worker: the static site plus `/api/catalog`, `/api/resolve`, `/api/manifest`, `/api/block`, `/api/bloat` | Cloudflare Workers (`wrangler dev` locally) |
 
+This repository is Dart (with Flutter) and Rust. `worker/` is the one
+exception: it is TypeScript, because Cloudflare Workers hosts the site and
+`wrangler` (Node) builds, serves and deploys a Worker whatever language it is
+written in. The Worker holds hosting code only: the static site, the catalog
+proxy and the block cache. OTA decoding, verification, fastboot and ZIP
+output stay in `core/` and `rust/`.
+
 ## Fastboot connection safety
 
 Responsibility (`LinkBlame`: host, user, device, unknown) is independent of
@@ -91,7 +98,7 @@ For UI work, run the page with hot reload against the same Worker:
 
 ```sh
 (cd worker && npx wrangler dev --port 8787)   # /api/* for the page
-(cd app && flutter run -d web-server)         # http://127.0.0.1:8780
+(cd app && flutter run -d web-server --print-dtd)   # http://127.0.0.1:8780
 ```
 
 `app/web_dev_config.yaml` fixes the port and forwards `/api/` to
@@ -99,6 +106,8 @@ For UI work, run the page with hot reload against the same Worker:
 widget code; after changing `core/` services run `bash tool/build_workers.sh`,
 after changing `rust/src/api/` run `bash tool/rust.sh`, then `R` (hot
 restart). The Rust wasm and the workers are never rebuilt by `flutter run`.
+`--print-dtd` puts the app on Dart's tooling daemon, so the Dart MCP server
+can reload and inspect it; without it, type `r` or `R` into `flutter run`.
 
 ## CLI
 
