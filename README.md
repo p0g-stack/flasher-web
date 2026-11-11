@@ -87,6 +87,19 @@ Bootstrap also builds the native library, which the CLI and the Dart tests
 load (`rust/target/release/libflasher_web_native.so` on Linux). The web build
 needs `app/build/web`, which the `build web` step writes; the Worker serves it.
 
+For UI work, run the page with hot reload against the same Worker:
+
+```sh
+(cd worker && npx wrangler dev --port 8787)   # /api/* for the page
+(cd app && flutter run -d web-server)         # http://127.0.0.1:8780
+```
+
+`app/web_dev_config.yaml` fixes the port and forwards `/api/` to
+`127.0.0.1:8787`. The dev server serves `app/web/` as it is: `r` reloads
+widget code; after changing `core/` services run `bash tool/build_workers.sh`,
+after changing `rust/src/api/` run `bash tool/rust.sh`, then `R` (hot
+restart). The Rust wasm and the workers are never rebuilt by `flutter run`.
+
 ## CLI
 
 `cli/` runs the same service classes natively, so the CLI and the page share

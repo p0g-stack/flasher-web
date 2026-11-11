@@ -1,0 +1,9 @@
+# `flutter run -d web-server` reads this from app/. The page calls `/api/*` on
+# its own origin, so the dev server forwards those to `wrangler dev`
+# (README: Start). Loopback only: WebUSB needs a secure context.
+server:
+  host: "127.0.0.1"
+  port: 8780
+  proxy:
+    - target: "http://127.0.0.1:8787/"
+      prefix: "/api/"
