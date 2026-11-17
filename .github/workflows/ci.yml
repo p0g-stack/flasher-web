@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Qualified immutable source identities; validation never deploys or publishes.
+env:
+  FLUTTER_P0G_REF: a00aa6af51690ec2353d55621dfd79fd0bccf55c
+  BRICKS_REF: 81f6282597bbc10371e09fb15b9b83450355ccb7
+  PLAYWRIGHT_SKIP_BROWSER_GC: '1'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.9
+          channel: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-expand,wasm-pack
+      - run: dart pub global activate mason_cli 0.1.4
+      - run: dart pub global activate --source git https://github.com/p0g-stack/flutter_p0g --git-ref "$FLUTTER_P0G_REF"
+      - run: flutter_p0g precache --frb --no-webui
+      - run: PLATFORMS=web bash tool/bootstrap.sh
+      - run: bash tool/regen.sh
+      - name: Bootstrap reproducibility
+        run: |
+          git diff --exit-code
+          PLATFORMS=web bash tool/bootstrap.sh
+          git diff --exit-code
+      - run: dart analyze --fatal-infos
+      - run: dart test
+        working-directory: core
+      - run: dart test
+        working-directory: cli
+      - run: flutter test
+        working-directory: app
+      - run: cargo test --workspace
+        working-directory: rust
+      - run: npm ci && npx tsc --noEmit && npx vitest run
+        working-directory: worker
+      - name: Fake fastboot only
+        run: dart run e2e/bin/run.dart
+      - name: Release without fake-device define
+        run: flutter_p0g build web --release
+        working-directory: app
+      - name: Reject fake-device code in release
+        run: |
+          test -s app/build/web/main.dart.js
+          test -s app/build/web/workers/flasher_service.web.g.dart.js
+          if grep -R -F -e 'FAKE-FASTBOOT-E2E-MARKER-8f3a2c' -e 'FAKE-E2E-0001' app/build/web --include='*.js'; then
+            echo 'Fake fastboot code leaked into release' >&2
+            exit 1
+          fi
+      - name: Read-only release page smoke
+        run: dart run e2e/bin/release_smoke.dart
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flasher-web-release
+          path: app/build/web
+          if-no-files-found: error

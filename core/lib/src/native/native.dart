@@ -27,14 +27,12 @@ Future<bool> loadNative() => _loaded ??= _load();
 
 Future<bool>? _loaded;
 
-/// The original failure of the last load attempt, kept so a caller reports
-/// why the library is missing instead of a generic "unavailable".
 NativeLoadFailure? _loadFailure;
 
-/// The preserved library-init failure, when the last load attempt failed.
+/// The original library-init failure, including timeout failures.
 NativeLoadFailure? get nativeLoadFailure => _loadFailure;
 
-/// The library's own error name, message and stack, never re-described.
+/// The library's error name, message and stack.
 final class NativeLoadFailure {
   const NativeLoadFailure(this.name, this.message, this.stack);
   final String name;

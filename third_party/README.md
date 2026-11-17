@@ -24,9 +24,12 @@ third_party/<name>/patches/0001-*.patch    git format-patch series, applied in
 `flutter pub get`) fetches the commit into
 `.dart_tool/third_party/<name>-<commit12>`, applies the series and writes
 `<package name>: path: …` into the gitignored `pubspec_overrides.yaml`. A tree
-whose stamp still matches the PIN and the patch bytes is reused; anything else
-is rebuilt from the commit, so re-running it is safe. A directory without a
-`PIN` is ignored, so the next carried patch is just a directory.
+whose SHA256 identity matches the PIN and ordered patch bytes is reused.
+Changed patches are staged before replacement; an unowned tree or local
+source edits cause a refusal, never a reset. The generated helper delegates
+materialization and YAML override ownership to `patched_source`, pinned in
+the workspace pubspec. No `third_party/` is a normal no-op, but an explicitly
+requested missing series fails before any series is applied.
 
 ## file_picker
 
@@ -43,8 +46,8 @@ The series is byte-identical to branch `web-file-system-access-handles` of
 To refresh it after changing that branch:
 
 ```sh
-git -C ~/Projects/tools/flutter_file_picker format-patch --no-signature \
-  -o ~/Projects/p0g-stack/flasher_web/third_party/file_picker/patches \
+git -C /path/to/flutter_file_picker format-patch --no-signature \
+  -o /path/to/flasher-web/third_party/file_picker/patches \
   bf434d234fc2686843cca7eae74db943a31fa6a2..web-file-system-access-handles
 dart run tool/third_party.dart
 ```

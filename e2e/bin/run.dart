@@ -1,8 +1,8 @@
 /// Runs every flasher_web end-to-end scenario.
 ///
 /// `dart run e2e/bin/run.dart` (from the repository root) builds the app with
-/// `--dart-define=FLASHER_FAKE_USB=true`, compiles its Squadron worker with the
-/// same define, serves the fixture's synthetic Super OTA and bloat store, and
+/// `--dart-define=FLASHER_FAKE_USB=true` for both page and Squadron workers,
+/// serves the fixture's synthetic Super OTA and bloat store, and
 /// drives headless google-chrome-stable over CDP through three browser
 /// scenarios and one CLI scenario:
 ///
@@ -55,7 +55,7 @@ Future<void> main(List<String> args) async {
   Directory? downloads;
   var failed = false;
   try {
-    if (!skipBuild) await buildDefine(webRoot);
+    if (!skipBuild) await buildDefine();
     _check(File('$webRoot/main.dart.js').existsSync(), 'app/build/web exists');
 
     fixture = await E2eFixture.create();
@@ -267,7 +267,7 @@ Future<void> main(List<String> args) async {
 }
 
 /// Builds the app and its worker with the fake-device define.
-Future<void> buildDefine(String webRoot) async {
+Future<void> buildDefine() async {
   stdout.writeln('building app/build/web with --dart-define=$define');
   final app = await Process.run('flutter_p0g', [
     'build',
@@ -280,25 +280,6 @@ Future<void> buildDefine(String webRoot) async {
     stderr.write(app.stderr);
     throw StateError('flutter_p0g build web failed (${app.exitCode})');
   }
-  stdout.writeln('compiling the worker with -D$define');
-  final worker = Directory('$webRoot/workers').absolute;
-  final compile = await Process.run('dart', [
-    'compile',
-    'js',
-    '-D$define',
-    '-O2',
-    '--no-source-maps',
-    'lib/src/service/flasher_service.web.g.dart',
-    '-o',
-    '${worker.path}/flasher_service.web.g.dart.js',
-  ], workingDirectory: 'core');
-  if (compile.exitCode != 0) {
-    stderr.write(compile.stdout);
-    stderr.write(compile.stderr);
-    throw StateError('worker compile failed (${compile.exitCode})');
-  }
-  final deps = File('${worker.path}/flasher_service.web.g.dart.js.deps');
-  if (deps.existsSync()) deps.deleteSync();
 }
 
 /// Reloads [page] into a fresh app instance and re-enables its semantics.

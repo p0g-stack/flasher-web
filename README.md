@@ -77,22 +77,53 @@ misreported as an inconsistent answer.
 
 ## Start
 
-Needs Flutter 3.47.5, flutter_p0g with its patched frb
-(`flutter_p0g precache --frb`), cargo with `wasm32-unknown-unknown`, and Node.
+Needs Flutter 3.47.9 / Dart 3.13.7, Node 24.22.1, Cargo with
+`wasm32-unknown-unknown`, cargo-expand, wasm-pack, Mason 0.1.4 and Chrome.
+The qualified generated baseline is p0g_app 0.9.1 (the 0.9.0 migration plus
+its qualification fixes), with `rust=true`, `sample=false`, org `dev.p0g`.
+`tool/p0g_app.json` is the generator hook's effective configuration.
 
 ```sh
+export BRICKS_REF=81f6282597bbc10371e09fb15b9b83450355ccb7
+export FLUTTER_P0G_REF=a00aa6af51690ec2353d55621dfd79fd0bccf55c
+dart pub global activate mason_cli 0.1.4
+dart pub global activate --source git https://github.com/p0g-stack/flutter_p0g --git-ref "$FLUTTER_P0G_REF"
+flutter_p0g precache --frb --no-webui
 PLATFORMS=web bash tool/bootstrap.sh       # upstream snapshot, codegen, Rust + wasm, workers
+BRICKS_REF="$BRICKS_REF" bash tool/regen.sh
 dart analyze --fatal-infos
 (cd core && dart test) && (cd cli && dart test) && (cd app && flutter test)
-(cd rust && cargo test --workspace) && (cd worker && npm install && npx vitest run)
+(cd rust && cargo test --workspace)
+(cd worker && npm ci && npx tsc --noEmit && npx vitest run)
 dart run e2e/bin/run.dart  # headless Chrome + CLI against a fake fastboot device; rebuilds app/build/web with FLASHER_FAKE_USB
 (cd app && flutter_p0g build web --release)
+dart run e2e/bin/release_smoke.dart # real Rust parsing and picker cancel/reselect; no USB chooser
 (cd worker && npx wrangler dev --port 8787)  # open http://127.0.0.1:8787
 ```
 
 Bootstrap also builds the native library, which the CLI and the Dart tests
 load (`rust/target/release/libflasher_web_native.so` on Linux). The web build
 needs `app/build/web`, which the `build web` step writes; the Worker serves it.
+
+The fake-fastboot e2e bundle is never a release artifact. The subsequent
+release build has no `FLASHER_FAKE_USB` define; release smoke checks both page
+and worker artifacts for the fake markers, then parses the synthetic OTA
+through the real Rust API in a fresh browser profile. It never enters Connect.
+CI validates only: it neither deploys the Worker nor writes to a physical device.
+
+`tool/regen.sh` compares only the brick's generated inventory. Individual
+reasoned omissions/replacements are in `tool/regen.allow`; additive product
+registrations, dependencies and facts are in `tool/regen.add`. The native
+loader and bootstrap tools remain generated, not whole-file exemptions.
+The product replaces the unused digest seed with its real OTA/transport APIs.
+
+Canonical Pub locks use `.dart_tool/p0g/frb/frb_dart`, a locally owned link to
+the verified patched cache; only ignored Cargo configuration is absolute.
+On an existing pre-migration checkout, preserve its `pubspec_overrides.yaml`
+and old `.dart_tool/third_party/file_picker-*` trees outside the checkout
+before bootstrapping. The shared materializer deliberately refuses unowned
+old trees rather than destroying local edits. Preserve unrelated overrides;
+do not replace them to force bootstrap past a conflict.
 
 For UI work, run the page with hot reload against the same Worker:
 

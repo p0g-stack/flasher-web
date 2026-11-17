@@ -39,7 +39,8 @@ export 'src/flash/sparse.dart';
 export 'src/flash/virtual.dart';
 export 'src/flash/virtual_export.dart';
 export 'src/log.dart';
-export 'src/native/native.dart' show loadNative;
+export 'src/native/native.dart'
+    show loadNative, NativeLoadFailure, nativeLoadFailure;
 export 'src/pipeline/assets.dart';
 export 'src/pipeline/errors.dart';
 export 'src/pipeline/local_source.dart';

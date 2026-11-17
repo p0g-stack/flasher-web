@@ -1,0 +1,7 @@
+{
+  "name": "flasher_web",
+  "description": "Build OnePlus flasher packages from full OTAs in the browser.",
+  "org": "dev.p0g",
+  "rust": true,
+  "sample": false
+}
