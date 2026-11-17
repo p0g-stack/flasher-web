@@ -77,7 +77,7 @@ misreported as an inconsistent answer.
 
 ## Start
 
-Needs Flutter 3.47.9 / Dart 3.13.7, Node 24.22.1, Cargo with
+Needs Flutter 3.47.9 / Dart 3.13.7, Node 26.13.1, Cargo with
 `wasm32-unknown-unknown`, cargo-expand, wasm-pack, Mason 0.1.4 and Chrome.
 The qualified generated baseline is p0g_app 0.9.1 (the 0.9.0 migration plus
 its qualification fixes), with `rust=true`, `sample=false`, org `dev.p0g`.
