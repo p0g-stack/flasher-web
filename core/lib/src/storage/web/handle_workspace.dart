@@ -125,13 +125,7 @@ final class HandleWorkspace implements Workspace {
     }
 
     final sourceDirectory = await _directory(source, create: false);
-    if (await _nativeMove(
-      sourceDirectory,
-      parent,
-      name,
-      source,
-      destination,
-    )) {
+    if (await _nativeMove(sourceDirectory, parent, name, source, destination)) {
       return;
     }
     final targetDirectory = await parent

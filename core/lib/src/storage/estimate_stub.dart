@@ -11,7 +11,6 @@ final class PlatformStorageEstimateSource implements StorageEstimateSource {
   final String path;
 
   @override
-  Future<StorageEstimate?> estimate() async => throw UnsupportedError(
-    'storage budget needs dart:io or dart:js_interop',
-  );
+  Future<StorageEstimate?> estimate() async =>
+      throw UnsupportedError('storage budget needs dart:io or dart:js_interop');
 }

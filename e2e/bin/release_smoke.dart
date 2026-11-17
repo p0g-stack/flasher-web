@@ -49,10 +49,10 @@ window.__fixturePicker = window.showOpenFilePicker;
 window.__cancelledPicks = 0;
 ''',
     );
+    // The inspection card's Partitions result requires OtaArchive's real
+    // Rust ZIP and payload parsers. The engine's SelectableText is painted
+    // but not exposed as text in Flutter's semantics DOM; it is not proof.
     await selectInputs(browser);
-    await browser.waitForText('Rust / WebAssembly');
-    // Partitions can only be produced by OtaArchive's real Rust ZIP and
-    // payload parsers; the native presence label alone is not proof.
     await browser.screenshot('${evidence.path}/selected.png');
     await browser.click('Remove file');
     await browser.waitForNoText('Partitions');

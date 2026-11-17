@@ -49,7 +49,8 @@ final class FakeFlasherApi implements FlasherApi {
   bloatStream;
   Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
   flashStream;
-  Stream<Map<String, Object?>> Function(Map<String, Object?> request)? recoveryStream;
+  Stream<Map<String, Object?>> Function(Map<String, Object?> request)?
+  recoveryStream;
   Future<Map<String, Object?>> Function(Map<String, Object?> request)?
   stopResult;
   Map<String, Object?>? lastRecoveryRequest;
@@ -128,27 +129,40 @@ final class FakeFlasherApi implements FlasherApi {
     return flashStream?.call(request) ?? const Stream.empty();
   }
 
-  Stream<Map<String, Object?>> _recover(String action, Map<String, Object?> request) {
+  Stream<Map<String, Object?>> _recover(
+    String action,
+    Map<String, Object?> request,
+  ) {
     lastRecoveryAction = action;
     lastRecoveryRequest = request;
     final handler = recoveryStream;
     if (handler == null) throw StateError('No recovery stream scripted.');
     return handler(request);
   }
+
   @override
-  Stream<Map<String, Object?>> retryRead(Map<String, Object?> request) => _recover('retryRead', request);
+  Stream<Map<String, Object?>> retryRead(Map<String, Object?> request) =>
+      _recover('retryRead', request);
   @override
-  Stream<Map<String, Object?>> reconnectDevice(Map<String, Object?> request) => _recover('reconnectDevice', request);
+  Stream<Map<String, Object?>> reconnectDevice(Map<String, Object?> request) =>
+      _recover('reconnectDevice', request);
   @override
-  Stream<Map<String, Object?>> recoverBootloader(Map<String, Object?> request) => _recover('recoverBootloader', request);
+  Stream<Map<String, Object?>> recoverBootloader(
+    Map<String, Object?> request,
+  ) => _recover('recoverBootloader', request);
   @override
-  Stream<Map<String, Object?>> recoverFastbootd(Map<String, Object?> request) => _recover('recoverFastbootd', request);
+  Stream<Map<String, Object?>> recoverFastbootd(Map<String, Object?> request) =>
+      _recover('recoverFastbootd', request);
   @override
-  Stream<Map<String, Object?>> recoverPowerCycle(Map<String, Object?> request) => _recover('recoverPowerCycle', request);
+  Stream<Map<String, Object?>> recoverPowerCycle(
+    Map<String, Object?> request,
+  ) => _recover('recoverPowerCycle', request);
   @override
-  Stream<Map<String, Object?>> rewriteStep(Map<String, Object?> request) => _recover('rewriteStep', request);
+  Stream<Map<String, Object?>> rewriteStep(Map<String, Object?> request) =>
+      _recover('rewriteStep', request);
   @override
-  Stream<Map<String, Object?>> wipeSuper(Map<String, Object?> request) => _recover('wipeSuper', request);
+  Stream<Map<String, Object?>> wipeSuper(Map<String, Object?> request) =>
+      _recover('wipeSuper', request);
 
   @override
   Future<Map<String, Object?>> stopRun(Map<String, Object?> request) async {
@@ -226,11 +240,7 @@ final class FakePlatformBridge implements PlatformBridge {
 
   void attach({required bool attached, String? serial, String? product}) =>
       _usbEvents.add(
-        UsbAttachEvent(
-          attached: attached,
-          serial: serial,
-          product: product,
-        ),
+        UsbAttachEvent(attached: attached, serial: serial, product: product),
       );
 
   @override

@@ -28,7 +28,9 @@ import 'ota_fixture.dart'
 /// Reads a ZIP's central directory from [source], without extracting entries.
 ///
 /// The source is read, not closed: the caller owns it.
-Future<Map<String, rust_zip.ZipEntry>> parseZipEntries(ByteSource source) async {
+Future<Map<String, rust_zip.ZipEntry>> parseZipEntries(
+  ByteSource source,
+) async {
   final length = source.length;
   final tailLength = math.min(length, 128 * 1024);
   final tail = await source.read(length - tailLength, tailLength);
@@ -62,7 +64,12 @@ const Map<String, String> fixtureDevices = {
 const int fixtureSuperSize = 1 << 34;
 
 /// One workflow row: `["<kind>", "<dev>", "<region>", "<builder>"]`.
-typedef FixtureBuilder = (String kind, String dev, String region, String script);
+typedef FixtureBuilder = (
+  String kind,
+  String dev,
+  String region,
+  String script,
+);
 
 /// The `tables.json` a fixture snapshot serves.
 ///
@@ -164,9 +171,7 @@ Future<void> writeBloatStore(
   Map<String, Uint8List> files,
 ) async {
   for (final entry in files.entries) {
-    final sink = await workspace.create(
-      entry.key.substring('bloat/'.length),
-    );
+    final sink = await workspace.create(entry.key.substring('bloat/'.length));
     try {
       await sink.write(entry.value, 0);
     } finally {
@@ -247,7 +252,8 @@ final class VirtualFixture {
       for (var index = 0; index < names.length; index++) {
         final name = names[index];
         final count = blocks[name] ?? 1;
-        final data = overrides[name] ??
+        final data =
+            overrides[name] ??
             pattern(count * fixtureBlock, seed: seed + index);
         images[name] = data;
         final kind = kinds[name];
@@ -315,7 +321,9 @@ final class VirtualFixture {
       regionSizes: regionSizes,
     );
     final manifest = BloatManifest.decode(
-      utf8.decode(await File('$upstreamPath/bloat-manifest.json').readAsBytes()),
+      utf8.decode(
+        await File('$upstreamPath/bloat-manifest.json').readAsBytes(),
+      ),
     );
     return VirtualFixture._(
       root,
@@ -504,7 +512,15 @@ final class _CountingSource implements ByteSource {
 Map<String, Uint8List> fixturePlatformTools() => {
   'fastboot.txt': Uint8List.fromList(utf8.encode('tools\n')),
   'fastboot': Uint8List.fromList([
-    0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0, ...List<int>.filled(24, 0),
+    0x7f,
+    0x45,
+    0x4c,
+    0x46,
+    2,
+    1,
+    1,
+    0,
+    ...List<int>.filled(24, 0),
   ]),
 };
 
@@ -534,10 +550,17 @@ Map<String, Uint8List> fixtureTemplate13() => {
   'oos/regional/updater-script': Uint8List.fromList(
     utf8.encode('#!/sbin/sh\r\nui_print "hello"\r\n'),
   ),
-  'oos/regional/META-INF/com/google/android/update-binary':
-      Uint8List.fromList([
-        0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0, ...List<int>.filled(24, 0),
-      ]),
+  'oos/regional/META-INF/com/google/android/update-binary': Uint8List.fromList([
+    0x7f,
+    0x45,
+    0x4c,
+    0x46,
+    2,
+    1,
+    1,
+    0,
+    ...List<int>.filled(24, 0),
+  ]),
   'oos/regional/flash.sh': Uint8List.fromList(
     utf8.encode('#!/bin/sh\r\nfastboot flash boot boot.img\r\n'),
   ),
@@ -608,9 +631,15 @@ final class FixtureTransport implements FastbootTransport {
   final opened = <String>[];
 
   @override
-  Future<FastbootDiscovery> devices() async => FastbootDiscovery(devices: [
-    FastbootDevice(serial: device.serial, label: 'phone', transport: 'fixture'),
-  ]);
+  Future<FastbootDiscovery> devices() async => FastbootDiscovery(
+    devices: [
+      FastbootDevice(
+        serial: device.serial,
+        label: 'phone',
+        transport: 'fixture',
+      ),
+    ],
+  );
 
   @override
   Future<FastbootSession> open(String serial) async {
@@ -637,12 +666,18 @@ final class _FixtureSession implements FastbootSession {
   String get serial => device.serial;
 
   @override
-  Future<FastbootCommandResult> commandWithMessages(String command, {bool write = false}) async =>
-      FastbootCommandResult(await this.command(command, write: write),
-        messages: command == 'getvar:all' ? [
-          {'kind': 'INFO', 'text': 'snapshot-update-status:none'},
-          {'kind': 'INFO', 'text': 'partition-size:super:0x400000000'},
-        ] : const []);
+  Future<FastbootCommandResult> commandWithMessages(
+    String command, {
+    bool write = false,
+  }) async => FastbootCommandResult(
+    await this.command(command, write: write),
+    messages: command == 'getvar:all'
+        ? [
+            {'kind': 'INFO', 'text': 'snapshot-update-status:none'},
+            {'kind': 'INFO', 'text': 'partition-size:super:0x400000000'},
+          ]
+        : const [],
+  );
 
   @override
   Future<String> command(String command, {bool write = false}) async {

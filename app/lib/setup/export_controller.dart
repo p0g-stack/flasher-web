@@ -77,9 +77,7 @@ final class ExportController extends ChangeNotifier {
     final Object? destination;
     try {
       // The picker must run inside the click task, before any await.
-      destination = await _pickDestination(
-        'flasher-${_safeName(label)}.zip',
-      );
+      destination = await _pickDestination('flasher-${_safeName(label)}.zip');
     } on Object catch (error) {
       return '$error';
     }

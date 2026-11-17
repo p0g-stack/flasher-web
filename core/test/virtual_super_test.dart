@@ -56,7 +56,15 @@ Map<String, Uint8List> fixtureSuperTemplate(String subtree) => {
   ),
   '$subtree/super/META-INF/com/google/android/update-binary':
       Uint8List.fromList([
-        0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0, ...List<int>.filled(24, 0),
+        0x7f,
+        0x45,
+        0x4c,
+        0x46,
+        2,
+        1,
+        1,
+        0,
+        ...List<int>.filled(24, 0),
       ]),
   '$subtree/super/flash.sh': Uint8List.fromList(
     '#!/bin/sh\r\nfastboot flash super super.img\r\n'.codeUnits,
@@ -288,7 +296,11 @@ Map<int, Uint8List> expectedSuperBlocks(
   }, superSize);
   expect(layout.head.length % sparseBlockBytes, 0);
   final blocks = <int, Uint8List>{};
-  for (var offset = 0; offset < layout.head.length; offset += sparseBlockBytes) {
+  for (
+    var offset = 0;
+    offset < layout.head.length;
+    offset += sparseBlockBytes
+  ) {
     blocks[offset ~/ sparseBlockBytes] = Uint8List.fromList(
       layout.head.sublist(offset, offset + sparseBlockBytes),
     );
@@ -540,9 +552,14 @@ void main() {
       );
       // The tail of the expanded super is the DONT_CARE region after the last
       // LP extent: nothing is sent for it and the last block stays absent.
-      expect(expanded.blocks.containsKey(superSize ~/ sparseBlockBytes - 1), isFalse);
-      expect(expanded.blocks.keys.reduce(math.max),
-          lessThan(superSize ~/ sparseBlockBytes - 1));
+      expect(
+        expanded.blocks.containsKey(superSize ~/ sparseBlockBytes - 1),
+        isFalse,
+      );
+      expect(
+        expanded.blocks.keys.reduce(math.max),
+        lessThan(superSize ~/ sparseBlockBytes - 1),
+      );
     } finally {
       await package.close();
     }
@@ -637,9 +654,7 @@ void main() {
       expect(package.buildJson.containsKey('abl_source'), isFalse);
       final export = await exportEntries(fixture, package, label: '_X9U');
       expect(
-        utf8.decode(
-          export['META-INF/com/google/android/super-size']!.bytes,
-        ),
+        utf8.decode(export['META-INF/com/google/android/super-size']!.bytes),
         '${fixture.superSize('X9U', 'EU')}\n',
       );
     } finally {
@@ -675,201 +690,205 @@ void main() {
     );
   });
 
-  test('Ace 6 IN conversion: BASE and TARGET with regenerated vbmeta', () async {
-    final fixture = await VirtualFixture.create(
-      partitions: [
-        ...bootPartitions,
-        'my_bigball',
-        'my_carrier',
-        'my_engineering',
-        'my_heytap',
-        'my_manifest',
-        'my_product',
-        'my_region',
-        'my_stock',
-        'product',
-        'system',
-        'system_ext',
-        'vendor',
-        'vendor_dlkm',
-        'odm',
-      ],
-      basePartitions: [
-        ...bootPartitions,
-        'odm',
-        'system_dlkm',
-        'vendor',
-        'vendor_dlkm',
-        'my_company',
-        'my_preload',
-      ],
-      baseBytes: {
-        'vbmeta': fixtureVbmeta(),
-        'vbmeta_system': fixtureVbmeta(),
-        'vbmeta_vendor': fixtureVbmeta(),
-      },
-      bloatFiles: {
-        'bloat/Ace6/OOS_BLOAT/my_company.img': pattern(fixtureBlock, seed: 61),
-        'bloat/Ace6/OOS_BLOAT/my_preload.img': pattern(fixtureBlock, seed: 62),
-      },
-      templates: {'Ace6': fixtureSuperTemplate('oos')},
-      builders: const [
-        ('SuperHybrid Flasher', 'Ace6', 'IN', 'BUILD_ACE6_OOS.sh'),
-      ],
-    );
-    addTearDown(fixture.dispose);
-    await verifyParity(
-      fixture,
-      const Selection(
-        dev: 'Ace6',
-        kind: 'SuperHybrid Flasher',
-        region: 'IN',
-        device: 'Oneplus Ace 6',
-        builder: 'BUILD_ACE6_OOS.sh',
-      ),
-      superSize: fixture.superSize('Ace6', 'IN'),
-      withBase: true,
-    );
-  });
-
   test(
-    'Ace 6T Super IN/GLO: the catalog-matched donor ODM',
+    'Ace 6 IN conversion: BASE and TARGET with regenerated vbmeta',
     () async {
       final fixture = await VirtualFixture.create(
-        partitions: [...bootPartitions, ...logicalPartitions],
-        donorPartitions: const ['odm'],
-        otaFields: const {'post-security-patch-level': '2026-02-01'},
-        donorFields: const {
-          'version_name': 'TEST_DONOR_1.0.0',
-          'post-security-patch-level': '2026-02-01',
+        partitions: [
+          ...bootPartitions,
+          'my_bigball',
+          'my_carrier',
+          'my_engineering',
+          'my_heytap',
+          'my_manifest',
+          'my_product',
+          'my_region',
+          'my_stock',
+          'product',
+          'system',
+          'system_ext',
+          'vendor',
+          'vendor_dlkm',
+          'odm',
+        ],
+        basePartitions: [
+          ...bootPartitions,
+          'odm',
+          'system_dlkm',
+          'vendor',
+          'vendor_dlkm',
+          'my_company',
+          'my_preload',
+        ],
+        baseBytes: {
+          'vbmeta': fixtureVbmeta(),
+          'vbmeta_system': fixtureVbmeta(),
+          'vbmeta_vendor': fixtureVbmeta(),
         },
         bloatFiles: {
-          for (final folder in const ['IN_BLOAT', 'GLO_BLOAT'])
-            for (final (name, seed) in const [
-              ('my_company', 41),
-              ('my_preload', 42),
-            ])
-              'bloat/Ace6T/$folder/$name.img': pattern(
-                fixtureBlock,
-                seed: seed,
-              ),
+          'bloat/Ace6/OOS_BLOAT/my_company.img': pattern(
+            fixtureBlock,
+            seed: 61,
+          ),
+          'bloat/Ace6/OOS_BLOAT/my_preload.img': pattern(
+            fixtureBlock,
+            seed: 62,
+          ),
         },
-        templates: {'Ace6T': fixtureSuperTemplate('oos')},
+        templates: {'Ace6': fixtureSuperTemplate('oos')},
         builders: const [
-          ('Super Flasher', 'Ace6T', 'IN', 'BUILD_SUPER.sh'),
-          ('Super Flasher', 'Ace6T', 'GLO', 'BUILD_SUPER.sh'),
+          ('SuperHybrid Flasher', 'Ace6', 'IN', 'BUILD_ACE6_OOS.sh'),
         ],
       );
       addTearDown(fixture.dispose);
-      final server = await FakeCatalogServer.start(
-        catalog: {
-          'api_version': '1',
-          'releases': [
-            for (final region in const ['IN', 'GLO'])
-              {
-                'id': 'target-${region.toLowerCase()}',
-                'device': 'OP 15R',
-                'region': region,
-                'version': 'CPH2745_16.0.1.100(${region}01)',
-                'ota_version': 'TEST_1.2.3.4',
-                'security_patch': '2026-02-01',
-                'model': 'CPH2745',
-                'source_url': 'https://example.invalid/target.zip',
-              },
-            {
-              'id': 'donor-cn',
-              'device': 'OP ACE 6T',
-              'region': 'CN',
-              'version': 'PJE110_16.0.1.200(CN01)',
-              'ota_version': 'TEST_DONOR_1.0.0',
-              'security_patch': '2026-02-01',
-              'model': 'PJE110',
-              'source_url': 'https://example.invalid/donor.zip',
-            },
-          ],
-        },
+      await verifyParity(
+        fixture,
+        const Selection(
+          dev: 'Ace6',
+          kind: 'SuperHybrid Flasher',
+          region: 'IN',
+          device: 'Oneplus Ace 6',
+          builder: 'BUILD_ACE6_OOS.sh',
+        ),
+        superSize: fixture.superSize('Ace6', 'IN'),
+        withBase: true,
       );
-      addTearDown(server.close);
-
-
-      // The catalog decides the donor, exactly as the flash service does.
-      final transport = HttpCatalogTransport();
-      final catalog = await CatalogClient(
-        transport: transport,
-        base: Uri.parse('${server.apiBase}/'),
-      ).loadCatalog();
-      transport.close();
-      final target = await fixture.openOta('ota.zip');
-      final Map<String, dynamic> targetRelease;
-      try {
-        targetRelease = releaseFromMetadata(
-          catalog,
-          'OP 15R',
-          'IN',
-          target.fields,
-        );
-      } finally {
-        await target.close();
-      }
-      expect(targetRelease['id'], 'target-in');
-      final donorEntry = matchingOdm(catalog, targetRelease);
-      expect(donorEntry['id'], 'donor-cn');
-      expect(donorEntry['security_patch'], '2026-02-01');
-      final donorIdentity = <String, Object?>{
-        'kind': 'catalog',
-        'entry': donorEntry,
-      };
-
-      for (final region in const ['IN', 'GLO']) {
-        final donor = await fixture.openOta('donor.zip');
-        await verifyParity(
-          fixture,
-          Selection(
-            dev: 'Ace6T',
-            kind: 'Super Flasher',
-            region: region,
-            device: 'Oneplus Ace 6T',
-            builder: 'BUILD_SUPER.sh',
-          ),
-          superSize: fixture.superSize('Ace6T', region),
-          donor: donor,
-          donorIdentity: donorIdentity,
-        );
-        // The donor replaces the discarded static ODM inside the super.
-        final package = await fixture.open(
-          Selection(
-            dev: 'Ace6T',
-            kind: 'Super Flasher',
-            region: region,
-            device: 'Oneplus Ace 6T',
-            builder: 'BUILD_SUPER.sh',
-          ),
-          superSize: fixture.superSize('Ace6T', region),
-          donor: await fixture.openOta('donor.zip'),
-          donorIdentity: donorIdentity,
-        );
-        try {
-          final blocks = expandSparse(await bytesOf(package, 'super.img')).blocks;
-          expect(
-            blocks.values.any((block) => _same(block, fixture.donorImages['odm']!)),
-            isTrue,
-            reason: 'the donor odm is inside the super',
-          );
-          expect(
-            blocks.values.any((block) => _same(block, fixture.images['odm']!)),
-            isFalse,
-            reason: 'the discarded OTA odm is not inside the super',
-          );
-          expect(
-            package.index.entries.where((path) => path.endsWith('/odm.img')),
-            isEmpty,
-          );
-        } finally {
-          await package.close();
-        }
-      }
     },
   );
+
+  test('Ace 6T Super IN/GLO: the catalog-matched donor ODM', () async {
+    final fixture = await VirtualFixture.create(
+      partitions: [...bootPartitions, ...logicalPartitions],
+      donorPartitions: const ['odm'],
+      otaFields: const {'post-security-patch-level': '2026-02-01'},
+      donorFields: const {
+        'version_name': 'TEST_DONOR_1.0.0',
+        'post-security-patch-level': '2026-02-01',
+      },
+      bloatFiles: {
+        for (final folder in const ['IN_BLOAT', 'GLO_BLOAT'])
+          for (final (name, seed) in const [
+            ('my_company', 41),
+            ('my_preload', 42),
+          ])
+            'bloat/Ace6T/$folder/$name.img': pattern(fixtureBlock, seed: seed),
+      },
+      templates: {'Ace6T': fixtureSuperTemplate('oos')},
+      builders: const [
+        ('Super Flasher', 'Ace6T', 'IN', 'BUILD_SUPER.sh'),
+        ('Super Flasher', 'Ace6T', 'GLO', 'BUILD_SUPER.sh'),
+      ],
+    );
+    addTearDown(fixture.dispose);
+    final server = await FakeCatalogServer.start(
+      catalog: {
+        'api_version': '1',
+        'releases': [
+          for (final region in const ['IN', 'GLO'])
+            {
+              'id': 'target-${region.toLowerCase()}',
+              'device': 'OP 15R',
+              'region': region,
+              'version': 'CPH2745_16.0.1.100(${region}01)',
+              'ota_version': 'TEST_1.2.3.4',
+              'security_patch': '2026-02-01',
+              'model': 'CPH2745',
+              'source_url': 'https://example.invalid/target.zip',
+            },
+          {
+            'id': 'donor-cn',
+            'device': 'OP ACE 6T',
+            'region': 'CN',
+            'version': 'PJE110_16.0.1.200(CN01)',
+            'ota_version': 'TEST_DONOR_1.0.0',
+            'security_patch': '2026-02-01',
+            'model': 'PJE110',
+            'source_url': 'https://example.invalid/donor.zip',
+          },
+        ],
+      },
+    );
+    addTearDown(server.close);
+
+    // The catalog decides the donor, exactly as the flash service does.
+    final transport = HttpCatalogTransport();
+    final catalog = await CatalogClient(
+      transport: transport,
+      base: Uri.parse('${server.apiBase}/'),
+    ).loadCatalog();
+    transport.close();
+    final target = await fixture.openOta('ota.zip');
+    final Map<String, dynamic> targetRelease;
+    try {
+      targetRelease = releaseFromMetadata(
+        catalog,
+        'OP 15R',
+        'IN',
+        target.fields,
+      );
+    } finally {
+      await target.close();
+    }
+    expect(targetRelease['id'], 'target-in');
+    final donorEntry = matchingOdm(catalog, targetRelease);
+    expect(donorEntry['id'], 'donor-cn');
+    expect(donorEntry['security_patch'], '2026-02-01');
+    final donorIdentity = <String, Object?>{
+      'kind': 'catalog',
+      'entry': donorEntry,
+    };
+
+    for (final region in const ['IN', 'GLO']) {
+      final donor = await fixture.openOta('donor.zip');
+      await verifyParity(
+        fixture,
+        Selection(
+          dev: 'Ace6T',
+          kind: 'Super Flasher',
+          region: region,
+          device: 'Oneplus Ace 6T',
+          builder: 'BUILD_SUPER.sh',
+        ),
+        superSize: fixture.superSize('Ace6T', region),
+        donor: donor,
+        donorIdentity: donorIdentity,
+      );
+      // The donor replaces the discarded static ODM inside the super.
+      final package = await fixture.open(
+        Selection(
+          dev: 'Ace6T',
+          kind: 'Super Flasher',
+          region: region,
+          device: 'Oneplus Ace 6T',
+          builder: 'BUILD_SUPER.sh',
+        ),
+        superSize: fixture.superSize('Ace6T', region),
+        donor: await fixture.openOta('donor.zip'),
+        donorIdentity: donorIdentity,
+      );
+      try {
+        final blocks = expandSparse(await bytesOf(package, 'super.img')).blocks;
+        expect(
+          blocks.values.any(
+            (block) => _same(block, fixture.donorImages['odm']!),
+          ),
+          isTrue,
+          reason: 'the donor odm is inside the super',
+        );
+        expect(
+          blocks.values.any((block) => _same(block, fixture.images['odm']!)),
+          isFalse,
+          reason: 'the discarded OTA odm is not inside the super',
+        );
+        expect(
+          package.index.entries.where((path) => path.endsWith('/odm.img')),
+          isEmpty,
+        );
+      } finally {
+        await package.close();
+      }
+    }
+  });
 
   test(
     'an unresolved preparation decodes no super and confirms no token',
@@ -886,7 +905,8 @@ void main() {
         expect(
           package.cache.peakBytes,
           isZero,
-          reason: 'loading 13 SuperHybrid reads only OTA metadata, never '
+          reason:
+              'loading 13 SuperHybrid reads only OTA metadata, never '
               'decoding an operation to probe a super input header',
         );
         expect(package.cache.bytes, isZero);
@@ -908,7 +928,8 @@ void main() {
         expect(
           counting.bytesRead,
           metadataReads,
-          reason: 'an unresolved plan inspects no image, so the super is never '
+          reason:
+              'an unresolved plan inspects no image, so the super is never '
               'decoded',
         );
         expect(package.imageHash('super.img'), isNull);
@@ -1054,7 +1075,10 @@ void main() {
         selection13,
         superSize: fixture.superSize('13', 'GLO'),
       );
-      final device = FixtureDevice(product: 'sun', maxDownloadSize: '0x10000000');
+      final device = FixtureDevice(
+        product: 'sun',
+        maxDownloadSize: '0x10000000',
+      );
       try {
         final prepared = await prepareFlash(
           package: package,
@@ -1096,66 +1120,63 @@ void main() {
     },
   );
 
-  test(
-    'a super input that no longer matches its manifest SHA-256 fails the download',
-    () async {
-      final fixture = await super13Fixture();
-      addTearDown(fixture.dispose);
-      final package = await fixture.open(
-        selection13,
-        superSize: fixture.superSize('13', 'GLO'),
+  test('a super input that no longer matches its manifest SHA-256 fails the download', () async {
+    final fixture = await super13Fixture();
+    addTearDown(fixture.dispose);
+    final package = await fixture.open(
+      selection13,
+      superSize: fixture.superSize('13', 'GLO'),
+    );
+    final device = FixtureDevice(product: 'sun', maxDownloadSize: '0x10000000');
+    try {
+      final prepared = await prepareFlash(
+        package: package,
+        selection: selection13,
+        answers: const {'root': 'flash-signal', 'wipe': 'reboot'},
+        serial: 'SERIAL-A',
+        transport: FixtureTransport(device),
+        job: package.job,
       );
-      final device = FixtureDevice(product: 'sun', maxDownloadSize: '0x10000000');
-      try {
-        final prepared = await prepareFlash(
-          package: package,
-          selection: selection13,
-          answers: const {'root': 'flash-signal', 'wipe': 'reboot'},
-          serial: 'SERIAL-A',
-          transport: FixtureTransport(device),
-          job: package.job,
-        );
-        expect(prepared.resolved, isTrue);
-        expect(
-          prepared.images['super.img']!.digest,
-          isEmpty,
-          reason: 'the super digest only exists after a complete stream',
-        );
+      expect(prepared.resolved, isTrue);
+      expect(
+        prepared.images['super.img']!.digest,
+        isEmpty,
+        reason: 'the super digest only exists after a complete stream',
+      );
 
-        // Same length, different content: the manifest digest must catch it
-        // while the super streams, before the super write is acknowledged.
-        final sink = await fixture.bloatWorkspace.create(
-          '13/GLO_BLOAT/my_company.img',
-        );
-        await sink.write(pattern(fixtureBlock, seed: 555), 0);
-        await sink.close();
-        device.commands.clear();
+      // Same length, different content: the manifest digest must catch it
+      // while the super streams, before the super write is acknowledged.
+      final sink = await fixture.bloatWorkspace.create(
+        '13/GLO_BLOAT/my_company.img',
+      );
+      await sink.write(pattern(fixtureBlock, seed: 555), 0);
+      await sink.close();
+      device.commands.clear();
 
-        final receipt = await executePreparedFlash(
-          prepared,
-          FixtureTransport(device),
-          emit: (_) {},
-        );
-        expect(receipt['status'], 'failed', reason: '${receipt['failure']}');
-        expect(receipt['uncertain'], isFalse);
-        expect(
-          (receipt['failure'] as Map)['message'],
-          contains('my_company.img does not match its manifest SHA-256'),
-        );
-        expect(device.flashCommands, isNot(contains('super')));
-        final writes = (receipt['writes'] as List).cast<Map>();
-        expect(writes.last['partition'], 'super');
-        expect(writes.last['status'], 'failed');
-        expect(
-          (receipt['image_sha256'] as Map).containsKey('super.img'),
-          isFalse,
-          reason: 'a stream that failed has no completed digest',
-        );
-      } finally {
-        await package.close();
-      }
-    },
-  );
+      final receipt = await executePreparedFlash(
+        prepared,
+        FixtureTransport(device),
+        emit: (_) {},
+      );
+      expect(receipt['status'], 'failed', reason: '${receipt['failure']}');
+      expect(receipt['uncertain'], isFalse);
+      expect(
+        (receipt['failure'] as Map)['message'],
+        contains('my_company.img does not match its manifest SHA-256'),
+      );
+      expect(device.flashCommands, isNot(contains('super')));
+      final writes = (receipt['writes'] as List).cast<Map>();
+      expect(writes.last['partition'], 'super');
+      expect(writes.last['status'], 'failed');
+      expect(
+        (receipt['image_sha256'] as Map).containsKey('super.img'),
+        isFalse,
+        reason: 'a stream that failed has no completed digest',
+      );
+    } finally {
+      await package.close();
+    }
+  });
 
   test(
     'changed target, base, donor or bloat identity refuses a confirmed super',
@@ -1225,10 +1246,7 @@ void main() {
             superSize: fixture.superSize('Ace6', 'IN'),
             base: await fixture.openOta('base.zip'),
             baseIdentity: fixture.identityOf('base.zip'),
-            sourceIdentity: {
-              ...fixture.identity,
-              'lastModified': 1,
-            },
+            sourceIdentity: {...fixture.identity, 'lastModified': 1},
           ),
         );
 
@@ -1515,10 +1533,7 @@ void main() {
       'answers': {'root': 'flash-signal', 'wipe': 'reboot'},
       'upstreamBase': fixture.upstreamPath,
       'virtual': {
-        'ota': {
-          'kind': 'file',
-          'file': '${fixture.root.path}/ota/ota.zip',
-        },
+        'ota': {'kind': 'file', 'file': '${fixture.root.path}/ota/ota.zip'},
         'bloat': {'kind': 'path', 'path': bloat},
       },
     };
@@ -1585,9 +1600,7 @@ void main() {
       }
       expect(events.first['type'], 'run');
       final runId = events.first['runId'] as String;
-      final failure = events.singleWhere(
-        (event) => event['type'] == 'failure',
-      );
+      final failure = events.singleWhere((event) => event['type'] == 'failure');
       expect(failure['status'], 'failed');
       final result = events.last;
       expect(result['type'], 'result');
@@ -1605,15 +1618,23 @@ void main() {
       );
       final firstAttempt = [...device.flashCommands];
       expect(firstAttempt, contains('super'));
-      expect(() => service.retryRead({'runId': runId}), throwsA(isA<FlashException>()));
-      expect(() => service.rewriteStep({'runId': runId, 'confirmedSerial': 'other'}),
-        throwsA(isA<FlashException>()));
+      expect(
+        () => service.retryRead({'runId': runId}),
+        throwsA(isA<FlashException>()),
+      );
+      expect(
+        () => service.rewriteStep({'runId': runId, 'confirmedSerial': 'other'}),
+        throwsA(isA<FlashException>()),
+      );
 
       // Nothing is resent until the user asks; the retry starts at the
       // failed step and keeps the earlier steps.
       device.failFlash = null;
       final retried = <Map<String, Object?>>[];
-      await for (final event in service.rewriteStep({'runId': runId, 'confirmedSerial': device.serial})) {
+      await for (final event in service.rewriteStep({
+        'runId': runId,
+        'confirmedSerial': device.serial,
+      })) {
         retried.add(event);
       }
       expect(retried.first['type'], 'run');
@@ -1681,11 +1702,7 @@ void main() {
           'job': prepared['job'],
           'confirmationToken': prepared['token'],
         })
-        .listen(
-          events.add,
-          onError: done.completeError,
-          onDone: done.complete,
-        );
+        .listen(events.add, onError: done.completeError, onDone: done.complete);
     final runId = prepared['token'] as String;
     final stopped = await service.stopRun({'runId': runId});
     await done.future;
@@ -1714,7 +1731,6 @@ void main() {
   });
 }
 
-
 bool _same(Uint8List left, Uint8List right) {
   if (left.length != right.length) return false;
   for (var i = 0; i < left.length; i++) {
@@ -1722,7 +1738,6 @@ bool _same(Uint8List left, Uint8List right) {
   }
   return true;
 }
-
 
 const Selection selection13 = Selection(
   dev: '13',
@@ -1836,9 +1851,7 @@ Future<VirtualFixture> ace6Fixture({bool donor = false}) =>
               ('SuperHybrid Flasher', 'Ace6', 'IN', 'BUILD_ACE6_OOS.sh'),
               ('Super Flasher', 'Ace6T', 'IN', 'BUILD_SUPER.sh'),
             ]
-          : const [
-              ('SuperHybrid Flasher', 'Ace6', 'IN', 'BUILD_ACE6_OOS.sh'),
-            ],
+          : const [('SuperHybrid Flasher', 'Ace6', 'IN', 'BUILD_ACE6_OOS.sh')],
     );
 
 /// Per-chunk accounting for one sparse image.
@@ -1882,14 +1895,13 @@ Map<int, Uint8List> expandParts(List<Uint8List> parts) {
   return blocks;
 }
 
-void expectSameBlocks(Map<int, Uint8List> actual, Map<int, Uint8List> expected) {
+void expectSameBlocks(
+  Map<int, Uint8List> actual,
+  Map<int, Uint8List> expected,
+) {
   expect(actual.keys.toSet(), expected.keys.toSet());
   for (final entry in expected.entries) {
-    expect(
-      actual[entry.key],
-      entry.value,
-      reason: 'super block ${entry.key}',
-    );
+    expect(actual[entry.key], entry.value, reason: 'super block ${entry.key}');
   }
 }
 
@@ -1941,8 +1953,8 @@ Future<void> expectSuperFlash(
       job: package.job,
     );
     expect(prepared.resolved, isTrue);
-    final manifest =
-        (package.buildJson['image_sha256']! as Map).cast<String, String>();
+    final manifest = (package.buildJson['image_sha256']! as Map)
+        .cast<String, String>();
     final superDigests = {
       for (final entry in manifest.entries)
         if (entry.key.startsWith('Super/')) entry.value,
@@ -1959,11 +1971,7 @@ Future<void> expectSuperFlash(
       isEmpty,
       reason: 'preparation decodes no super input',
     );
-    expect(
-      ota.opened,
-      isEmpty,
-      reason: 'preparation opens no OTA byte source',
-    );
+    expect(ota.opened, isEmpty, reason: 'preparation opens no OTA byte source');
     expect(package.imageHash('super.img'), isNull);
     final superInfo = prepared.images['super.img']!;
     expect(superInfo.sparse, isTrue);

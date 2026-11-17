@@ -313,10 +313,7 @@ class _AppShellState extends State<AppShell> {
 
   Widget _pageView() {
     return switch (_page) {
-      AppPage.setup => SetupPage(
-        setup: _setup,
-        onFlashDirect: _flashDirect,
-      ),
+      AppPage.setup => SetupPage(setup: _setup, onFlashDirect: _flashDirect),
       AppPage.flash => FlashPage(
         controller: _flash!,
         onBack: () => _navigate(AppPage.setup),

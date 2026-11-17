@@ -44,14 +44,8 @@ void main() {
     await sink.write(bytesOf([1, 2, 3]), 0);
 
     channel.grant(1024);
-    await expectLater(
-      sink.write(bytesOf([4]), 4),
-      throwsA(isA<StateError>()),
-    );
-    await expectLater(
-      sink.write(bytesOf([4]), 0),
-      throwsA(isA<StateError>()),
-    );
+    await expectLater(sink.write(bytesOf([4]), 4), throwsA(isA<StateError>()));
+    await expectLater(sink.write(bytesOf([4]), 0), throwsA(isA<StateError>()));
     expect(sink.written, 3);
   });
 
@@ -105,7 +99,10 @@ void main() {
     );
     await sink.close();
     expect(channel.chunkLengths, isEmpty);
-    expect(channel.sent.where((message) => message['type'] == 'error'), isEmpty);
+    expect(
+      channel.sent.where((message) => message['type'] == 'error'),
+      isEmpty,
+    );
     expect(channel.closed, isTrue);
   });
 

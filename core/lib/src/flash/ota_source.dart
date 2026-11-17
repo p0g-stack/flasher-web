@@ -18,7 +18,10 @@ import 'package.dart';
 /// being decoded ahead of the reader, so the decoded bytes in memory never
 /// pass it however many workers decode.
 final class OtaOperationCache {
-  OtaOperationCache({this.limit = 64 << 20, this.decoder = const InlineOpDecoder()}) {
+  OtaOperationCache({
+    this.limit = 64 << 20,
+    this.decoder = const InlineOpDecoder(),
+  }) {
     if (limit <= 0 || limit > 64 << 20) {
       throw ArgumentError.value(limit, 'limit');
     }
@@ -49,7 +52,9 @@ final class OtaOperationCache {
   /// decoded hold the rest of the limit.
   bool _reserve(int count) {
     if (count > limit) {
-      throw FlashException('OTA operation needs $count decoded bytes; virtual limit is $limit.');
+      throw FlashException(
+        'OTA operation needs $count decoded bytes; virtual limit is $limit.',
+      );
     }
     while (_bytes + _pending + count > limit && _entries.isNotEmpty) {
       _bytes -= _entries.remove(_entries.keys.first)!.length;
@@ -94,7 +99,11 @@ final class _Span {
 /// several adjacent operations, and the cache's decoder works on as many of
 /// them at once as it can. A read elsewhere restarts the window there.
 final class OtaPartitionSource implements FlashSource {
-  OtaPartitionSource({required this.ota, required this.partition, required this.cache}) {
+  OtaPartitionSource({
+    required this.ota,
+    required this.partition,
+    required this.cache,
+  }) {
     ota.verifyVirtualReads(maxOperationBytes: cache.limit);
     final ops = ota.manifest.operations(name: partition.name);
     for (final op in ops) {
@@ -105,19 +114,27 @@ final class OtaPartitionSource implements FlashSource {
         decodedOffset += count;
       }
       _totals[op.index] = decodedOffset;
-      if (op.dataOffset.toInt() < 0 || op.dataLength.toInt() < 0 ||
-          op.dataOffset.toInt() + op.dataLength.toInt() > ota.payloadSize - ota.dataStart) {
-        throw FlashException('${partition.name}.img operation ${op.index} has an invalid payload range.');
+      if (op.dataOffset.toInt() < 0 ||
+          op.dataLength.toInt() < 0 ||
+          op.dataOffset.toInt() + op.dataLength.toInt() >
+              ota.payloadSize - ota.dataStart) {
+        throw FlashException(
+          '${partition.name}.img operation ${op.index} has an invalid payload range.',
+        );
       }
       if (op.kind != 6 && op.kind != 7 && decodedOffset > cache.limit) {
-        throw FlashException('${partition.name}.img operation ${op.index} exceeds the decoded cache limit.');
+        throw FlashException(
+          '${partition.name}.img operation ${op.index} exceeds the decoded cache limit.',
+        );
       }
     }
     _spans.sort((a, b) => a.offset.compareTo(b.offset));
     var end = 0;
     for (final span in _spans) {
       if (span.length <= 0 || span.offset != end) {
-        throw FlashException('${partition.name}.img has overlapping or incomplete destination extents.');
+        throw FlashException(
+          '${partition.name}.img has overlapping or incomplete destination extents.',
+        );
       }
       end += span.length;
       if (!_position.containsKey(span.op.index)) {
@@ -126,7 +143,9 @@ final class OtaPartitionSource implements FlashSource {
       }
     }
     if (end != length) {
-      throw FlashException('${partition.name}.img is incomplete ($end != $length).');
+      throw FlashException(
+        '${partition.name}.img is incomplete ($end != $length).',
+      );
     }
   }
 
@@ -159,7 +178,8 @@ final class OtaPartitionSource implements FlashSource {
   /// while the next fetch is in flight.
   int get _window => math.max(2, cache.decoder.parallelism * 2);
 
-  String _key(OpInfo op) => '${ota.manifestSha256}/${partition.name}/${op.index}';
+  String _key(OpInfo op) =>
+      '${ota.manifestSha256}/${partition.name}/${op.index}';
 
   bool _decodes(OpInfo op) => op.kind != 6 && op.kind != 7;
 
@@ -204,7 +224,9 @@ final class OtaPartitionSource implements FlashSource {
         }
         final offset = op.dataOffset.toInt();
         final size = op.dataLength.toInt();
-        if (group.isNotEmpty && (offset != end || offset + size - group.first.dataOffset.toInt() > fetchBytes)) {
+        if (group.isNotEmpty &&
+            (offset != end ||
+                offset + size - group.first.dataOffset.toInt() > fetchBytes)) {
           break;
         }
         final need = _decodes(op) ? _totals[op.index]! : 0;
@@ -220,22 +242,31 @@ final class OtaPartitionSource implements FlashSource {
 
   void _schedule(List<OpInfo> group, {bool reserved = true}) {
     final start = group.first.dataOffset.toInt();
-    final count = group.last.dataOffset.toInt() + group.last.dataLength.toInt() - start;
+    final count =
+        group.last.dataOffset.toInt() + group.last.dataLength.toInt() - start;
     final Future<Uint8List> fetched = count == 0
         ? Future.value(Uint8List(0))
         : ota.readPayloadData(start, count);
     for (final op in group) {
       final need = reserved && _decodes(op) ? _totals[op.index]! : 0;
-      final result = fetched.then((data) {
-        if (_closed) throw StateError('OTA image source is closed.');
-        final from = op.dataOffset.toInt() - start;
-        return _decodeOne(op, Uint8List.sublistView(data, from, from + op.dataLength.toInt()));
-      }).whenComplete(() {
-        if (need > 0) cache._release(need);
-      });
+      final result = fetched
+          .then((data) {
+            if (_closed) throw StateError('OTA image source is closed.');
+            final from = op.dataOffset.toInt() - start;
+            return _decodeOne(
+              op,
+              Uint8List.sublistView(data, from, from + op.dataLength.toInt()),
+            );
+          })
+          .whenComplete(() {
+            if (need > 0) cache._release(need);
+          });
       // A decode nobody reads (the window restarted) must not surface as an
       // unhandled error; a reader still sees the failure.
-      final settled = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+      final settled = result.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {},
+      );
       _running.add(settled);
       unawaited(settled.whenComplete(() => _running.remove(settled)));
       _ahead[op.index] = result;
@@ -247,7 +278,13 @@ final class OtaPartitionSource implements FlashSource {
     final what = '${partition.name}.img operation ${op.index}';
     final Uint8List decoded;
     try {
-      decoded = await cache.decoder.decode(op, encoded, total: expected, blockSize: _blockSize, what: what);
+      decoded = await cache.decoder.decode(
+        op,
+        encoded,
+        total: expected,
+        blockSize: _blockSize,
+        what: what,
+      );
     } on Object catch (error) {
       throw FlashException('$what: $error');
     }
@@ -278,10 +315,14 @@ final class OtaPartitionSource implements FlashSource {
   Future<Uint8List> read(int offset, int length) async {
     if (_closed) throw StateError('OTA image source is closed.');
     if (offset < 0 || length < 0 || offset + length > this.length) {
-      throw RangeError('Invalid OTA image range: $offset + $length / ${this.length}');
+      throw RangeError(
+        'Invalid OTA image range: $offset + $length / ${this.length}',
+      );
     }
     // Callers cannot accidentally materialize a complete multi-GiB image.
-    if (length > 8 << 20) throw RangeError('OTA image reads are limited to 8 MiB.');
+    if (length > 8 << 20) {
+      throw RangeError('OTA image reads are limited to 8 MiB.');
+    }
     final result = Uint8List(length);
     var written = 0;
     var index = _find(offset);
@@ -302,7 +343,9 @@ final class OtaPartitionSource implements FlashSource {
 
   @override
   Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
-    if (chunkSize <= 0 || chunkSize > 8 << 20) throw ArgumentError.value(chunkSize, 'chunkSize');
+    if (chunkSize <= 0 || chunkSize > 8 << 20) {
+      throw ArgumentError.value(chunkSize, 'chunkSize');
+    }
     for (var offset = 0; offset < length; offset += chunkSize) {
       yield await read(offset, math.min(chunkSize, length - offset));
     }
@@ -331,11 +374,15 @@ final class RandomFlashCursor implements FlashCursor {
     _position += length;
     return bytes;
   }
+
   @override
   Future<void> skipTo(int offset) async {
-    if (offset < _position || offset > source.length) throw RangeError('Invalid forward cursor offset.');
+    if (offset < _position || offset > source.length) {
+      throw RangeError('Invalid forward cursor offset.');
+    }
     _position = offset;
   }
+
   @override
   Future<void> close() async {}
 }

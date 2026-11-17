@@ -700,8 +700,7 @@ final class WebPlatformBridge implements PlatformBridge, StreamExportBridge {
       final device = event.isA<JSObject>()
           ? (event as JSObject).getProperty<JSAny?>('device'.toJS)
           : null;
-      JSAny? field(String key) =>
-          device != null && device.isA<JSObject>()
+      JSAny? field(String key) => device != null && device.isA<JSObject>()
           ? (device as JSObject).getProperty<JSAny?>(key.toJS)
           : null;
       String? text(String key) {

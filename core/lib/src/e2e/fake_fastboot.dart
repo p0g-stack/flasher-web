@@ -138,13 +138,15 @@ final class _FakeTransport implements FastbootTransport {
   final _FakeDevice device;
 
   @override
-  Future<FastbootDiscovery> devices() async => FastbootDiscovery(devices: [
-    FastbootDevice(
-      serial: device.serial,
-      label: 'Fake fastboot phone',
-      transport: 'fake',
-    ),
-  ]);
+  Future<FastbootDiscovery> devices() async => FastbootDiscovery(
+    devices: [
+      FastbootDevice(
+        serial: device.serial,
+        label: 'Fake fastboot phone',
+        transport: 'fake',
+      ),
+    ],
+  );
 
   @override
   Future<FastbootSession> open(String serial) async {
@@ -170,12 +172,18 @@ final class _FakeSession implements FastbootSession {
   String get serial => device.serial;
 
   @override
-  Future<FastbootCommandResult> commandWithMessages(String command, {bool write = false}) async =>
-      FastbootCommandResult(await this.command(command, write: write),
-        messages: command == 'getvar:all' ? [
-          {'kind': 'INFO', 'text': 'snapshot-update-status:none'},
-          {'kind': 'INFO', 'text': 'partition-size:super:0x400000000'},
-        ] : const []);
+  Future<FastbootCommandResult> commandWithMessages(
+    String command, {
+    bool write = false,
+  }) async => FastbootCommandResult(
+    await this.command(command, write: write),
+    messages: command == 'getvar:all'
+        ? [
+            {'kind': 'INFO', 'text': 'snapshot-update-status:none'},
+            {'kind': 'INFO', 'text': 'partition-size:super:0x400000000'},
+          ]
+        : const [],
+  );
 
   @override
   Future<String> command(String command, {bool write = false}) async {
@@ -222,10 +230,7 @@ final class _FakeSession implements FastbootSession {
           'partition': partition,
           'message': 'Injected e2e failure on $partition.',
         });
-        fakeFastbootBroadcast({
-          'type': 'failure',
-          'partition': partition,
-        });
+        fakeFastbootBroadcast({'type': 'failure', 'partition': partition});
         throw LinkFailure(
           blame: LinkBlame.device,
           name: 'FastbootFail',

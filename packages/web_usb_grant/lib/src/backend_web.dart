@@ -11,9 +11,7 @@ UsbBackend createBackend() => BrowserUsbBackend.currentContext();
 /// The browser implementation, also injectable with a synthetic WebUSB object.
 /// It only reads device metadata; it never opens, claims, or transfers data.
 final class BrowserUsbBackend implements UsbBackend {
-  const BrowserUsbBackend({required USB? usb, required bool secureContext})
-    : _usb = usb,
-      _secureContext = secureContext;
+  const BrowserUsbBackend({required this._usb, required this._secureContext});
 
   factory BrowserUsbBackend.currentContext() {
     final navigator = globalContext['navigator'];

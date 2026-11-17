@@ -64,9 +64,9 @@ PackageIndex flashPackage({
 }
 
 /// Prompt answers for a plan; an empty map leaves every default in place.
-Map<String, String> answersFor([
-  Map<String, String> answers = const {},
-]) => {...answers};
+Map<String, String> answersFor([Map<String, String> answers = const {}]) => {
+  ...answers,
+};
 
 List<Flash> flashes(FlashPlan plan) => [
   for (final step in plan.executionSteps)

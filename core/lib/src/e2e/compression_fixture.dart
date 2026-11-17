@@ -51,9 +51,7 @@ void _lzma2Store(BytesBuilder out, Uint8List data) {
   var first = true;
   var offset = 0;
   while (offset < data.length) {
-    final count = data.length - offset < 65536
-        ? data.length - offset
-        : 65536;
+    final count = data.length - offset < 65536 ? data.length - offset : 65536;
     out
       ..addByte(first ? 0x01 : 0x02)
       ..addByte((count - 1) >> 8)
@@ -103,8 +101,7 @@ Uint8List xzStore(Uint8List data) {
   _varint(index, headerBytes.length + bodyBytes.length + 4);
   _varint(index, data.length);
   final indexBytes = index.takeBytes();
-  final indexPadded = indexBytes.length +
-      (4 - (indexBytes.length + 4) % 4) % 4;
+  final indexPadded = indexBytes.length + (4 - (indexBytes.length + 4) % 4) % 4;
   final fullIndex = BytesBuilder(copy: false)
     ..add(indexBytes)
     ..add(Uint8List(indexPadded - indexBytes.length));
@@ -113,14 +110,7 @@ Uint8List xzStore(Uint8List data) {
   out
     ..add(fullIndexBytes)
     ..add(_le32(crc32(fullIndexBytes)))
-    ..add(
-      _le32(
-        crc32([
-          ..._le32(backwardSize),
-          ...flags,
-        ]),
-      ),
-    )
+    ..add(_le32(crc32([..._le32(backwardSize), ...flags])))
     ..add(_le32(backwardSize))
     ..add(flags)
     ..add(const [0x59, 0x5a]);
@@ -133,7 +123,8 @@ Uint8List zstdStore(Uint8List data) {
     ..add(const [0x28, 0xb5, 0x2f, 0xfd])
     // Single segment, frame content size present as eight bytes, no checksum.
     ..addByte(0xe0);
-  final size = Uint8List(8)..buffer.asByteData().setUint64(0, data.length, Endian.little);
+  final size = Uint8List(8)
+    ..buffer.asByteData().setUint64(0, data.length, Endian.little);
   out.add(size);
   if (data.isEmpty) {
     out.add(const [0x01, 0x00, 0x00]);

@@ -23,8 +23,22 @@ Future<Map<String, Object?>> applyConfirmedFlash(
   WipeSuperSpec? wipeSuperSpec,
 }) async {
   final objective = Objective<PreparedFlash, Map<String, Object?>>('flash', [
-    _NativeFastboot(transport, emit, cancellation, previousReceipt, recovery, wipeSuperSpec),
-    _WebUsbFastboot(transport, emit, cancellation, previousReceipt, recovery, wipeSuperSpec),
+    _NativeFastboot(
+      transport,
+      emit,
+      cancellation,
+      previousReceipt,
+      recovery,
+      wipeSuperSpec,
+    ),
+    _WebUsbFastboot(
+      transport,
+      emit,
+      cancellation,
+      previousReceipt,
+      recovery,
+      wipeSuperSpec,
+    ),
   ]);
   final plan = await objective.plan(input, place);
   final receipt = await objective.apply(plan, Confirmation.of(plan));
@@ -38,7 +52,14 @@ Future<Map<String, Object?>> applyConfirmedFlash(
 
 abstract base class _FastbootWrite
     extends WriteStrategy<PreparedFlash, Map<String, Object?>> {
-  const _FastbootWrite(this.transport, this.emit, this.cancellation, this.previousReceipt, this.recovery, this.wipeSuperSpec);
+  const _FastbootWrite(
+    this.transport,
+    this.emit,
+    this.cancellation,
+    this.previousReceipt,
+    this.recovery,
+    this.wipeSuperSpec,
+  );
   final FastbootTransport transport;
   final FlashEventSink emit;
   final FlashCancellation cancellation;
@@ -68,7 +89,14 @@ abstract base class _FastbootWrite
 }
 
 final class _NativeFastboot extends _FastbootWrite {
-  const _NativeFastboot(super.transport, super.emit, super.cancellation, super.previousReceipt, super.recovery, super.wipeSuperSpec);
+  const _NativeFastboot(
+    super.transport,
+    super.emit,
+    super.cancellation,
+    super.previousReceipt,
+    super.recovery,
+    super.wipeSuperSpec,
+  );
   @override
   String get name => 'native_fastboot';
   @override
@@ -76,7 +104,14 @@ final class _NativeFastboot extends _FastbootWrite {
 }
 
 final class _WebUsbFastboot extends _FastbootWrite {
-  const _WebUsbFastboot(super.transport, super.emit, super.cancellation, super.previousReceipt, super.recovery, super.wipeSuperSpec);
+  const _WebUsbFastboot(
+    super.transport,
+    super.emit,
+    super.cancellation,
+    super.previousReceipt,
+    super.recovery,
+    super.wipeSuperSpec,
+  );
   @override
   String get name => 'webusb_fastboot';
   @override

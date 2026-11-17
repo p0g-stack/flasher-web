@@ -61,7 +61,6 @@ final class SparseScan {
   int get expandedBytes => blockSize * totalBlocks;
 }
 
-
 /// Completes the generator's hash checks before returning the final bytes.
 final class StreamingFlashCursor implements FlashCursor {
   StreamingFlashCursor(Stream<Uint8List> stream, this.length)
@@ -72,11 +71,15 @@ final class StreamingFlashCursor implements FlashCursor {
   int _within = 0;
   int _position = 0;
   Future<void> _consume(int count, Uint8List? output) async {
-    if (count < 0 || count > length - _position) throw RangeError('Invalid streaming cursor range.');
+    if (count < 0 || count > length - _position) {
+      throw RangeError('Invalid streaming cursor range.');
+    }
     var done = 0;
     while (done < count) {
       if (_within == _chunk.length) {
-        if (!await _iterator.moveNext()) throw const FlashException('Image stream ended early.');
+        if (!await _iterator.moveNext()) {
+          throw const FlashException('Image stream ended early.');
+        }
         _chunk = _iterator.current;
         _within = 0;
       }
@@ -86,18 +89,26 @@ final class StreamingFlashCursor implements FlashCursor {
       _within += n;
     }
     _position += count;
-    if (_position == length && (_within != _chunk.length || await _iterator.moveNext())) {
+    if (_position == length &&
+        (_within != _chunk.length || await _iterator.moveNext())) {
       throw const FlashException('Image stream has trailing bytes.');
     }
   }
-  @override Future<Uint8List> readExact(int length) async {
-    if (length < 0 || length > 8 << 20) throw RangeError('Cursor read exceeds 8 MiB.');
+
+  @override
+  Future<Uint8List> readExact(int length) async {
+    if (length < 0 || length > 8 << 20) {
+      throw RangeError('Cursor read exceeds 8 MiB.');
+    }
     final bytes = Uint8List(length);
     await _consume(length, bytes);
     return bytes;
   }
-  @override Future<void> skipTo(int offset) => _consume(offset - _position, null);
-  @override Future<void> close() => _iterator.cancel();
+
+  @override
+  Future<void> skipTo(int offset) => _consume(offset - _position, null);
+  @override
+  Future<void> close() => _iterator.cancel();
 }
 
 /// Whether [source] starts with the sparse magic.

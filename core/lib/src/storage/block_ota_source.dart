@@ -13,8 +13,15 @@ import 'contracts.dart';
 /// A pinned catalog release, read directly from Garage in aligned 8 MiB blocks.
 /// Both the VM and browser use this implementation; only misses use the Worker.
 final class BlockOtaSource implements StreamingByteSource {
-  BlockOtaSource._(this._client, this._apiBase, this._bucketBase, this.id,
-      this.identity, this.etag, this.length);
+  BlockOtaSource._(
+    this._client,
+    this._apiBase,
+    this._bucketBase,
+    this.id,
+    this.identity,
+    this.etag,
+    this.length,
+  );
 
   static const blockSize = 8 << 20;
   static const _window = 8;
@@ -49,39 +56,83 @@ final class BlockOtaSource implements StreamingByteSource {
     final api = _base(apiBase);
     try {
       if (bucketBase == null) {
-        final config = await _get(transport, api.resolve('api/block-config'), 4096);
-        if (config.statusCode != 200) throw _failure(config, 'The OTA block cache is unavailable.');
-        final value = jsonDecode(utf8.decode(config.bodyBytes)) as Map<String, dynamic>;
+        final config = await _get(
+          transport,
+          api.resolve('api/block-config'),
+          4096,
+        );
+        if (config.statusCode != 200) {
+          throw _failure(config, 'The OTA block cache is unavailable.');
+        }
+        final value =
+            jsonDecode(utf8.decode(config.bodyBytes)) as Map<String, dynamic>;
         final publicBase = value['publicBase'];
-        if (publicBase != null && publicBase is! String) throw const FormatException('Invalid OTA cache configuration.');
+        if (publicBase != null && publicBase is! String) {
+          throw const FormatException('Invalid OTA cache configuration.');
+        }
         bucketBase = publicBase as String?;
       }
-      final bucket = bucketBase == null || bucketBase.isEmpty ? null : _base(bucketBase);
+      final bucket = bucketBase == null || bucketBase.isEmpty
+          ? null
+          : _base(bucketBase);
       http.Response? manifest;
       if (bucket != null) {
         try {
-          manifest = await _get(transport, bucket.resolve('ota/v1/releases/$id/manifest.json'), 4096);
+          manifest = await _get(
+            transport,
+            bucket.resolve('ota/v1/releases/$id/manifest.json'),
+            4096,
+          );
         } on Exception {
           // A public-endpoint network/CORS outage may leave the S3 API healthy.
         }
       }
       if (manifest == null || manifest.statusCode == 404) {
-        manifest = await _get(transport, api.resolve('api/manifest').replace(queryParameters: {'id': id}), 4096);
+        manifest = await _get(
+          transport,
+          api.resolve('api/manifest').replace(queryParameters: {'id': id}),
+          4096,
+        );
       }
-      if (manifest.statusCode != 200) throw _failure(manifest, 'Could not open the OTA block manifest.');
-      final data = jsonDecode(utf8.decode(manifest.bodyBytes)) as Map<String, dynamic>;
+      if (manifest.statusCode != 200) {
+        throw _failure(manifest, 'Could not open the OTA block manifest.');
+      }
+      final data =
+          jsonDecode(utf8.decode(manifest.bodyBytes)) as Map<String, dynamic>;
       final etag = data['etag'];
       final length = data['length'];
       final identity = data['identity'];
-      if (data['id'] != id || etag is! String || !RegExp(r'^"[^"\x00-\x20\x7f]+"$').hasMatch(etag) ||
-          length is! int || length <= 0 || length > 9007199254740991 || data['blockSize'] != blockSize ||
-          identity is! String || !RegExp(r'^[a-f0-9]{64}$').hasMatch(identity) ||
-          data['created'] is! String || DateTime.tryParse(data['created'] as String) == null ||
-          sha256.convert(utf8.encode(jsonEncode([id, etag, length]))).toString() != identity) {
-        throw const FormatException('The OTA block manifest identity is invalid.');
+      if (data['id'] != id ||
+          etag is! String ||
+          !RegExp(r'^"[^"\x00-\x20\x7f]+"$').hasMatch(etag) ||
+          length is! int ||
+          length <= 0 ||
+          length > 9007199254740991 ||
+          data['blockSize'] != blockSize ||
+          identity is! String ||
+          !RegExp(r'^[a-f0-9]{64}$').hasMatch(identity) ||
+          data['created'] is! String ||
+          DateTime.tryParse(data['created'] as String) == null ||
+          sha256
+                  .convert(utf8.encode(jsonEncode([id, etag, length])))
+                  .toString() !=
+              identity) {
+        throw const FormatException(
+          'The OTA block manifest identity is invalid.',
+        );
       }
-      if (expectedLength != null && expectedLength != length) throw StateError('The OTA length differs from the catalog.');
-      return BlockOtaSource._(transport, api, bucket, id, identity, etag, length);
+      if (expectedLength != null && expectedLength != length) {
+        throw StateError('The OTA length differs from the catalog.');
+      }
+      return BlockOtaSource._(
+        transport,
+        api,
+        bucket,
+        id,
+        identity,
+        etag,
+        length,
+      );
     } on Object {
       transport.close();
       rethrow;
@@ -112,25 +163,47 @@ final class BlockOtaSource implements StreamingByteSource {
 
   /// An empty base is the origin root, never the caller's directory: a Web
   /// Worker resolves relative URLs against its own script (`/workers/…`).
-  static Uri _base(String value) => Uri.parse(value.isEmpty ? '/' : value.endsWith('/') ? value : '$value/');
+  static Uri _base(String value) => Uri.parse(
+    value.isEmpty
+        ? '/'
+        : value.endsWith('/')
+        ? value
+        : '$value/',
+  );
 
   /// Bound the response before buffering it, including error responses. Never
   /// accidentally turn an ignored Range / wrong endpoint into a whole OTA GET.
-  static Future<http.Response> _get(http.Client client, Uri uri, int limit, {Future<void>? abort}) async {
+  static Future<http.Response> _get(
+    http.Client client,
+    Uri uri,
+    int limit, {
+    Future<void>? abort,
+  }) async {
     final finished = Completer<void>();
     final request = http.AbortableRequest(
-      'GET', uri,
-      abortTrigger: abort == null ? finished.future : Future.any([abort, finished.future]),
+      'GET',
+      uri,
+      abortTrigger: abort == null
+          ? finished.future
+          : Future.any([abort, finished.future]),
     );
     try {
       // Bound headers AND the response body, and abort transport on timeout.
-      return await _receive(client, request, limit).timeout(const Duration(seconds: 10));
+      return await _receive(
+        client,
+        request,
+        limit,
+      ).timeout(const Duration(seconds: 10));
     } finally {
       finished.complete();
     }
   }
 
-  static Future<http.Response> _receive(http.Client client, http.BaseRequest request, int limit) async {
+  static Future<http.Response> _receive(
+    http.Client client,
+    http.BaseRequest request,
+    int limit,
+  ) async {
     final response = await client.send(request);
     final expected = response.contentLength;
     final reader = StreamIterator(response.stream);
@@ -139,22 +212,32 @@ final class BlockOtaSource implements StreamingByteSource {
     var size = 0;
     try {
       if (expected != null && expected > limit) {
-        if (response.statusCode != 200) return http.Response.bytes(const [], response.statusCode);
+        if (response.statusCode != 200) {
+          return http.Response.bytes(const [], response.statusCode);
+        }
         throw StateError('The OTA cache response exceeds its size limit.');
       }
       while (await reader.moveNext()) {
         size += reader.current.length;
         if (size > limit) {
-          if (response.statusCode != 200) return http.Response.bytes(const [], response.statusCode);
+          if (response.statusCode != 200) {
+            return http.Response.bytes(const [], response.statusCode);
+          }
           throw StateError('The OTA cache response exceeds its size limit.');
         }
         builder.add(reader.current);
       }
-      if (response.statusCode == 200 && expected != null && expected != size) throw StateError('The OTA cache response is truncated.');
+      if (response.statusCode == 200 && expected != null && expected != size) {
+        throw StateError('The OTA cache response is truncated.');
+      }
     } finally {
       await reader.cancel();
     }
-    return http.Response.bytes(builder.takeBytes(), response.statusCode, headers: response.headers);
+    return http.Response.bytes(
+      builder.takeBytes(),
+      response.statusCode,
+      headers: response.headers,
+    );
   }
 
   static StateError _failure(http.Response response, String fallback) {
@@ -170,15 +253,22 @@ final class BlockOtaSource implements StreamingByteSource {
   }
 
   Future<http.Response> _workerBlock(int n, int expected) async {
-    final uri = _apiBase.resolve('api/block').replace(
-      queryParameters: {'id': id, 'v': identity, 'n': '$n'},
-    );
+    final uri = _apiBase
+        .resolve('api/block')
+        .replace(queryParameters: {'id': id, 'v': identity, 'n': '$n'});
     for (var attempt = 0; ; attempt++) {
       _checkOpen();
       try {
-        final response = await _get(_client, uri, expected, abort: _closed.future);
-        final transient = response.statusCode == 408 ||
-            response.statusCode == 429 || response.statusCode >= 500;
+        final response = await _get(
+          _client,
+          uri,
+          expected,
+          abort: _closed.future,
+        );
+        final transient =
+            response.statusCode == 408 ||
+            response.statusCode == 429 ||
+            response.statusCode >= 500;
         if (!transient || attempt == 2) return response;
       } on http.ClientException {
         if (attempt == 2) rethrow;
@@ -191,7 +281,9 @@ final class BlockOtaSource implements StreamingByteSource {
   }
 
   void _checkOpen() {
-    if (_closed.isCompleted) throw StateError('The OTA block source is closed.');
+    if (_closed.isCompleted) {
+      throw StateError('The OTA block source is closed.');
+    }
   }
 
   Future<Uint8List> _block(int n) {
@@ -205,7 +297,14 @@ final class BlockOtaSource implements StreamingByteSource {
       final future = _loadBlock(n);
       // Observe failures immediately, including prefetched requests whose turn
       // has not arrived, without hiding them from the actual reader.
-      unawaited(future.then<void>((_) => _pending.remove(n), onError: (Object _, StackTrace _) { _pending.remove(n); }));
+      unawaited(
+        future.then<void>(
+          (_) => _pending.remove(n),
+          onError: (Object _, StackTrace _) {
+            _pending.remove(n);
+          },
+        ),
+      );
       return future;
     });
   }
@@ -236,7 +335,12 @@ final class BlockOtaSource implements StreamingByteSource {
       http.Response? response;
       if (_bucketBase != null) {
         try {
-          response = await _get(_client, _bucketBase.resolve('ota/v1/releases/$id/$identity/$n'), expected, abort: _closed.future);
+          response = await _get(
+            _client,
+            _bucketBase.resolve('ota/v1/releases/$id/$identity/$n'),
+            expected,
+            abort: _closed.future,
+          );
         } on Exception {
           _checkOpen();
         }
@@ -244,9 +348,15 @@ final class BlockOtaSource implements StreamingByteSource {
       if (response == null || response.statusCode == 404) {
         response = await _workerBlock(n, expected);
       }
-      if (response.statusCode != 200) throw _failure(response, 'Could not read OTA block $n.');
-      if (response.headers['x-amz-meta-ota-etag'] != etag) throw StateError('The OTA block ETag differs from its manifest.');
-      if (response.bodyBytes.length != expected) throw StateError('OTA block $n has the wrong length.');
+      if (response.statusCode != 200) {
+        throw _failure(response, 'Could not read OTA block $n.');
+      }
+      if (response.headers['x-amz-meta-ota-etag'] != etag) {
+        throw StateError('The OTA block ETag differs from its manifest.');
+      }
+      if (response.bodyBytes.length != expected) {
+        throw StateError('OTA block $n has the wrong length.');
+      }
       _checkOpen();
       final bytes = response.bodyBytes;
       _cache[n] = bytes;
@@ -268,14 +378,23 @@ final class BlockOtaSource implements StreamingByteSource {
   }
 
   @override
-  Future<Uint8List> read(int offset, int length) => readCancellable(offset, length, null);
+  Future<Uint8List> read(int offset, int length) =>
+      readCancellable(offset, length, null);
 
   @override
-  Future<Uint8List> readCancellable(int offset, int length, Future<void>? cancelled) async {
+  Future<Uint8List> readCancellable(
+    int offset,
+    int length,
+    Future<void>? cancelled,
+  ) async {
     checkReadRange(offset, length, this.length);
     final result = Uint8List(length);
     var written = 0;
-    await for (final bytes in streamRange(offset, length, cancelled: cancelled)) {
+    await for (final bytes in streamRange(
+      offset,
+      length,
+      cancelled: cancelled,
+    )) {
       result.setRange(written, written + bytes.length, bytes);
       written += bytes.length;
     }
@@ -283,12 +402,20 @@ final class BlockOtaSource implements StreamingByteSource {
   }
 
   @override
-  Stream<Uint8List> streamRange(int offset, int length, {Future<void>? cancelled}) async* {
+  Stream<Uint8List> streamRange(
+    int offset,
+    int length, {
+    Future<void>? cancelled,
+  }) async* {
     checkReadRange(offset, length, this.length);
     _checkOpen();
     if (length == 0) return;
     var aborted = false;
-    unawaited(cancelled?.then((_) { aborted = true; }));
+    unawaited(
+      cancelled?.then((_) {
+        aborted = true;
+      }),
+    );
     final end = offset + length;
     var next = offset ~/ blockSize;
     final last = (end - 1) ~/ blockSize;
@@ -300,15 +427,20 @@ final class BlockOtaSource implements StreamingByteSource {
         window.add((n: n, bytes: _block(n)));
       }
     }
+
     try {
       refill();
       for (var n = offset ~/ blockSize; n <= last; n++) {
-        if (aborted) throw const CancelledException('The OTA read was cancelled.');
+        if (aborted) {
+          throw const CancelledException('The OTA read was cancelled.');
+        }
         final request = window.removeFirst();
         try {
           final bytes = await request.bytes;
           _checkOpen();
-          if (aborted) throw const CancelledException('The OTA read was cancelled.');
+          if (aborted) {
+            throw const CancelledException('The OTA read was cancelled.');
+          }
           final start = math.max(offset - n * blockSize, 0);
           final stop = math.min(end - n * blockSize, bytes.length);
           yield Uint8List.sublistView(bytes, start, stop);
@@ -370,13 +502,13 @@ Stream<Uint8List> orderedReads(
       // A later range can fail before the ordered consumer reaches it, so the
       // error is captured here rather than left unobserved.
       pending.add(
-        source.read(offset, length).then<
-          ({Uint8List? bytes, Object? error, StackTrace? stack})
-        >(
-          (bytes) => (bytes: bytes, error: null, stack: null),
-          onError: (Object error, StackTrace stack) =>
-              (bytes: null, error: error, stack: stack),
-        ),
+        source
+            .read(offset, length)
+            .then<({Uint8List? bytes, Object? error, StackTrace? stack})>(
+              (bytes) => (bytes: bytes, error: null, stack: null),
+              onError: (Object error, StackTrace stack) =>
+                  (bytes: null, error: error, stack: stack),
+            ),
       );
       offset += length;
     }

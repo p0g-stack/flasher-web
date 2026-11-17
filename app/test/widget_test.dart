@@ -84,10 +84,7 @@ void main() {
   ) async {
     await pumpApp(tester);
 
-    expect(
-      gating(tester),
-      'Select a full TARGET OTA ZIP before continuing.',
-    );
+    expect(gating(tester), 'Select a full TARGET OTA ZIP before continuing.');
     expect(tooltip(tester), gating(tester));
   });
 
@@ -104,10 +101,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('ablYes')));
     await tester.pumpAndSettle();
     expect(find.text('ABL 16.0.6 will be packed.'), findsOneWidget);
-    expect(
-      gating(tester),
-      'Select a full TARGET OTA ZIP before continuing.',
-    );
+    expect(gating(tester), 'Select a full TARGET OTA ZIP before continuing.');
 
     await tester.tap(find.byKey(const ValueKey('ablNo')));
     await tester.pumpAndSettle();

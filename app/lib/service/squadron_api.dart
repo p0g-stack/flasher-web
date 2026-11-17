@@ -35,21 +35,31 @@ final class SquadronFlasherApi implements FlasherApi {
       _worker.flash(request);
 
   @override
-  Stream<Map<String, Object?>> retryRead(Map<String, Object?> request) => _worker.retryRead(request);
+  Stream<Map<String, Object?>> retryRead(Map<String, Object?> request) =>
+      _worker.retryRead(request);
   @override
-  Stream<Map<String, Object?>> reconnectDevice(Map<String, Object?> request) => _worker.reconnectDevice(request);
+  Stream<Map<String, Object?>> reconnectDevice(Map<String, Object?> request) =>
+      _worker.reconnectDevice(request);
   @override
-  Stream<Map<String, Object?>> recoverBootloader(Map<String, Object?> request) => _worker.recoverBootloader(request);
+  Stream<Map<String, Object?>> recoverBootloader(
+    Map<String, Object?> request,
+  ) => _worker.recoverBootloader(request);
   @override
-  Stream<Map<String, Object?>> recoverFastbootd(Map<String, Object?> request) => _worker.recoverFastbootd(request);
+  Stream<Map<String, Object?>> recoverFastbootd(Map<String, Object?> request) =>
+      _worker.recoverFastbootd(request);
   @override
-  Stream<Map<String, Object?>> recoverPowerCycle(Map<String, Object?> request) => _worker.recoverPowerCycle(request);
+  Stream<Map<String, Object?>> recoverPowerCycle(
+    Map<String, Object?> request,
+  ) => _worker.recoverPowerCycle(request);
   @override
-  Stream<Map<String, Object?>> rewriteStep(Map<String, Object?> request) => _worker.rewriteStep(request);
+  Stream<Map<String, Object?>> rewriteStep(Map<String, Object?> request) =>
+      _worker.rewriteStep(request);
   @override
-  Stream<Map<String, Object?>> wipeSuper(Map<String, Object?> request) => _worker.wipeSuper(request);
+  Stream<Map<String, Object?>> wipeSuper(Map<String, Object?> request) =>
+      _worker.wipeSuper(request);
   @override
-  Future<Map<String, Object?>> stopRun(Map<String, Object?> request) => _worker.stopRun(request);
+  Future<Map<String, Object?>> stopRun(Map<String, Object?> request) =>
+      _worker.stopRun(request);
 
   @override
   Future<Map<String, Object?>> storageBudget(Map<String, Object?> request) =>

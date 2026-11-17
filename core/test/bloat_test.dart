@@ -152,11 +152,11 @@ void main() {
       hasLength(2),
       reason: 'a gzip asset keeps its transport file while the image decodes',
     );
-    expect(gzipCreates.where((call) => call.contains('.transport-')), hasLength(1));
     expect(
-      moves.where((call) => call.contains('gzip.img')),
+      gzipCreates.where((call) => call.contains('.transport-')),
       hasLength(1),
     );
+    expect(moves.where((call) => call.contains('gzip.img')), hasLength(1));
   });
 
   test('a budget refusal happens before any asset is fetched', () async {

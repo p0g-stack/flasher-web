@@ -29,10 +29,7 @@ class FlashCommand extends Command<int> {
         'ota',
         help: 'Full OTA ZIP path or HTTP(S) URL to read in place.',
       )
-      ..addOption(
-        'catalog',
-        help: 'Catalog release id to read through ranges.',
-      )
+      ..addOption('catalog', help: 'Catalog release id to read through ranges.')
       ..addOption(
         'base',
         help: 'Ace 6 conversion BASE full OTA ZIP path or HTTP(S) URL.',
@@ -59,10 +56,7 @@ class FlashCommand extends Command<int> {
         mandatory: true,
         help: 'The connected fastboot serial to prepare and flash.',
       )
-      ..addMultiOption(
-        'answer',
-        help: 'Prompt answer as id=value, repeatable.',
-      )
+      ..addMultiOption('answer', help: 'Prompt answer as id=value, repeatable.')
       ..addOption(
         'confirm-serial',
         help:
@@ -248,8 +242,10 @@ class FlashCommand extends Command<int> {
       if (status != 'failed' && status != 'uncertain') break;
       if (result['canRetry'] != true || runId == null) break;
       final receiptValue = result['receipt'];
-      final options = receiptValue is Map && receiptValue['recoveryActions'] is List
-          ? (receiptValue['recoveryActions']! as List).cast<Map>() : <Map>[];
+      final options =
+          receiptValue is Map && receiptValue['recoveryActions'] is List
+          ? (receiptValue['recoveryActions']! as List).cast<Map>()
+          : <Map>[];
       final choice = _askRecovery(options, '${request['serial']}');
       if (choice == FlashRecovery.stopRun) {
         final stopped = await service.stopRun({'runId': runId});
@@ -258,17 +254,32 @@ class FlashCommand extends Command<int> {
             ? Map<String, Object?>.from(stoppedReceipt)
             : <String, Object?>{};
         printFlashResult({'status': 'stopped', 'receipt': receipt});
-        await _writeReceipt(receipt, receiptOption: receiptOption, runId: runId);
+        await _writeReceipt(
+          receipt,
+          receiptOption: receiptOption,
+          runId: runId,
+        );
         return 2;
       }
-      final recoveryRequest = <String, Object?>{'runId': runId,
-        'confirmedSerial': request['serial'], 'powerCycled': choice == FlashRecovery.recoverPowerCycle};
+      final recoveryRequest = <String, Object?>{
+        'runId': runId,
+        'confirmedSerial': request['serial'],
+        'powerCycled': choice == FlashRecovery.recoverPowerCycle,
+      };
       stream = switch (choice) {
         FlashRecovery.retryRead => service.retryRead(recoveryRequest),
-        FlashRecovery.reconnectDevice => service.reconnectDevice(recoveryRequest),
-        FlashRecovery.recoverBootloader => service.recoverBootloader(recoveryRequest),
-        FlashRecovery.recoverFastbootd => service.recoverFastbootd(recoveryRequest),
-        FlashRecovery.recoverPowerCycle => service.recoverPowerCycle(recoveryRequest),
+        FlashRecovery.reconnectDevice => service.reconnectDevice(
+          recoveryRequest,
+        ),
+        FlashRecovery.recoverBootloader => service.recoverBootloader(
+          recoveryRequest,
+        ),
+        FlashRecovery.recoverFastbootd => service.recoverFastbootd(
+          recoveryRequest,
+        ),
+        FlashRecovery.recoverPowerCycle => service.recoverPowerCycle(
+          recoveryRequest,
+        ),
         FlashRecovery.rewriteStep => service.rewriteStep(recoveryRequest),
         FlashRecovery.wipeSuper => service.wipeSuper(recoveryRequest),
         FlashRecovery.stopRun => throw StateError('Stop was handled above.'),
@@ -298,22 +309,28 @@ class FlashCommand extends Command<int> {
     if (!stdin.hasTerminal) return FlashRecovery.stopRun;
     final actions = [
       for (final option in options)
-        if (option['action'] != 'stopRun') FlashRecovery.values.byName(option['action']! as String),
+        if (option['action'] != 'stopRun')
+          FlashRecovery.values.byName(option['action']! as String),
     ];
     for (var index = 0; index < actions.length; index++) {
       stdout.writeln('${index + 1}. ${recoveryLabel(actions[index])}');
     }
     stdout.write('Recovery number, or Enter to stop: ');
     final action = recoveryChoice(stdin.readLineSync() ?? '', actions);
-    if (action == FlashRecovery.wipeSuper || action == FlashRecovery.rewriteStep) {
-      stdout.writeln(action == FlashRecovery.wipeSuper
-          ? 'Clear all logical system partitions on $serial. The phone cannot boot until this run completes.'
-          : 'Rewrite the failed step on $serial from byte zero. Earlier writes stay applied.');
+    if (action == FlashRecovery.wipeSuper ||
+        action == FlashRecovery.rewriteStep) {
+      stdout.writeln(
+        action == FlashRecovery.wipeSuper
+            ? 'Clear all logical system partitions on $serial. The phone cannot boot until this run completes.'
+            : 'Rewrite the failed step on $serial from byte zero. Earlier writes stay applied.',
+      );
       stdout.write('Type $serial to confirm: ');
       if (stdin.readLineSync() != serial) return FlashRecovery.stopRun;
     }
     if (action == FlashRecovery.recoverPowerCycle) {
-      stdout.writeln('For $serial: unplug, hold Power for 15 seconds, enter bootloader with Volume-Down + Power, reconnect.');
+      stdout.writeln(
+        'For $serial: unplug, hold Power for 15 seconds, enter bootloader with Volume-Down + Power, reconnect.',
+      );
       stdout.write('Type power-cycled when done (otherwise stop): ');
       if (stdin.readLineSync() != 'power-cycled') return FlashRecovery.stopRun;
     }
@@ -341,5 +358,6 @@ class FlashCommand extends Command<int> {
 FlashRecovery recoveryChoice(String input, List<FlashRecovery> actions) {
   final number = int.tryParse(input.trim());
   return number != null && number > 0 && number <= actions.length
-      ? actions[number - 1] : FlashRecovery.stopRun;
+      ? actions[number - 1]
+      : FlashRecovery.stopRun;
 }

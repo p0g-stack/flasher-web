@@ -5,7 +5,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flasher_web_core/flasher_web_core.dart';
-import 'package:flasher_web_core/src/rust/api/zip.dart' show inflateRaw, zipDataOffset;
+import 'package:flasher_web_core/src/rust/api/zip.dart'
+    show inflateRaw, zipDataOffset;
 import 'package:test/test.dart';
 
 import 'ota_fixture.dart' show fixtureBlock, pattern;
@@ -59,10 +60,7 @@ Future<Map<String, ({Uint8List bytes, int mode})>> zipEntriesOf(
     final entries = await parseZipEntries(source);
     final result = <String, ({Uint8List bytes, int mode})>{};
     for (final entry in entries.values) {
-      final header = await source.read(
-        entry.localHeaderOffset.toInt(),
-        30,
-      );
+      final header = await source.read(entry.localHeaderOffset.toInt(), 30);
       final dataOffset = zipDataOffset(
         localHeader30Bytes: header,
         localHeaderOffset: entry.localHeaderOffset,

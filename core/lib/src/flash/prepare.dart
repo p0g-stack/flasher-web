@@ -271,9 +271,9 @@ Future<PreparedFlash> prepareFlash({
     warnings.add(
       package is VirtualFlashPackage
           ? 'Some OTA images have no whole-image SHA-256. Every operation is '
-              'hash-verified and the fully decoded images are bound to this confirmation.'
+                'hash-verified and the fully decoded images are bound to this confirmation.'
           : 'This older build has no final-image SHA-256 manifest. Current bytes '
-              'are validated and bound to this confirmation, but not to build-time digests.',
+                'are validated and bound to this confirmation, but not to build-time digests.',
     );
   }
   if (buildJson['test_fixture'] == true) {
@@ -421,7 +421,9 @@ Future<void> verifyPreparedImages(
   final current = package ?? prepared.package;
   if (current is VirtualFlashPackage &&
       await packageDigest(current) != prepared.binding.packageDigest) {
-    throw const FlashException('The virtual OTA or bloat identity changed. Prepare again.');
+    throw const FlashException(
+      'The virtual OTA or bloat identity changed. Prepare again.',
+    );
   }
   for (final info in prepared.images.values) {
     // A virtual package is re-opened for the attempt: the manifest is
@@ -469,7 +471,9 @@ final class FastbootReadiness {
 /// payloads, not normalized values: an OKAY/FAIL disagreement is evidence too.
 /// Transport failures keep their original classification (silence is not an
 /// inconsistent answer). Only complete FAIL replies allow a second query.
-Future<FastbootReadiness> probeFastbootConsistency(FastbootSession session) async {
+Future<FastbootReadiness> probeFastbootConsistency(
+  FastbootSession session,
+) async {
   final values = <String, String>{};
   final evidence = <String>[];
   final messages = <Map<String, String>>[];
@@ -481,8 +485,10 @@ Future<FastbootReadiness> probeFastbootConsistency(FastbootSession session) asyn
         answers.add(value);
         evidence.add('getvar:$name #$attempt OKAY ${jsonEncode(value)}');
       } on LinkFailure catch (failure) {
-        if (failure.name != 'FastbootFail' || failure.blame != LinkBlame.device ||
-            failure.uncertain || failure.sessionRetired) {
+        if (failure.name != 'FastbootFail' ||
+            failure.blame != LinkBlame.device ||
+            failure.uncertain ||
+            failure.sessionRetired) {
           rethrow;
         }
         answers.add(null);
@@ -501,7 +507,8 @@ Future<FastbootReadiness> probeFastbootConsistency(FastbootSession session) asyn
         blame: LinkBlame.unknown,
         source: 'protocol',
         name: 'InconsistentDeviceAnswers',
-        message: 'The device answers inconsistently; identical getvar:$name '
+        message:
+            'The device answers inconsistently; identical getvar:$name '
             'queries did not return identical complete OKAY replies.',
         stage: 'consistencyProbe',
         sessionRetired: true,
@@ -514,7 +521,8 @@ Future<FastbootReadiness> probeFastbootConsistency(FastbootSession session) asyn
   }
   return FastbootReadiness(
     mode: _truthy(cleanGetvar(values['is-userspace']!, 'is-userspace'))
-        ? FlashMode.fastbootd : FlashMode.bootloader,
+        ? FlashMode.fastbootd
+        : FlashMode.bootloader,
     maxDownloadSize: parseDownloadSize(values['max-download-size']!),
   );
 }
@@ -605,15 +613,25 @@ Future<FlashImageInfo> _inspectImage(
   int maxDownloadSize,
   Map<String, Object?> buildJson,
 ) async {
-  if (package is VirtualFlashPackage && (path == 'super.img' || package.isOtaImage(path))) {
+  if (package is VirtualFlashPackage &&
+      (path == 'super.img' || package.isOtaImage(path))) {
     final bytes = await package.size(path);
     final scan = path == 'super.img' ? package.superScan : null;
     final parts = bytes > maxDownloadSize
-      ? (scan == null ? splitRawImage(bytes, maxDownloadSize) : splitSparseScan(scan, maxDownloadSize)).length
-      : 1;
-    return FlashImageInfo(path: path, bytes: bytes, sparse: scan != null,
-      digest: package.imageHash(path) ?? '', manifestSha256: package.imageHash(path),
-      scan: scan, parts: parts);
+        ? (scan == null
+                  ? splitRawImage(bytes, maxDownloadSize)
+                  : splitSparseScan(scan, maxDownloadSize))
+              .length
+        : 1;
+    return FlashImageInfo(
+      path: path,
+      bytes: bytes,
+      sparse: scan != null,
+      digest: package.imageHash(path) ?? '',
+      manifestSha256: package.imageHash(path),
+      scan: scan,
+      parts: parts,
+    );
   }
   final source = await package.open(path);
   try {

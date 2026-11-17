@@ -58,9 +58,7 @@ final class _TreeFile {
   const _TreeFile.bytes(this.name, Uint8List content)
     : bytes = content,
       image = null;
-  const _TreeFile.image(this.name)
-    : bytes = null,
-      image = name;
+  const _TreeFile.image(this.name) : bytes = null, image = name;
 
   final String name;
 
@@ -72,7 +70,13 @@ final class _TreeFile {
 }
 
 final class _ExportRun {
-  _ExportRun(this._package, this._upstream, this._sink, this._check, this._controller);
+  _ExportRun(
+    this._package,
+    this._upstream,
+    this._sink,
+    this._check,
+    this._controller,
+  );
 
   final VirtualFlashPackage _package;
   final UpstreamAssets _upstream;
@@ -140,8 +144,10 @@ final class _ExportRun {
     final digest = hasher.finishHex();
     final receipt = _package.receipt();
     receipt['output_format'] = 'zip';
-    receipt['image_sha256'] = {..._templateImageHashes,
-      ...Map<String, String>.from(receipt['image_sha256']! as Map)};
+    receipt['image_sha256'] = {
+      ..._templateImageHashes,
+      ...Map<String, String>.from(receipt['image_sha256']! as Map),
+    };
     _emit({
       'type': 'result',
       'job': _package.job,
@@ -149,8 +155,11 @@ final class _ExportRun {
       'sha256': digest,
       'bytes': output.length,
       'entries': names.length,
-      'receipt': {...receipt, 'job': _package.job,
-        'zip': {'sha256': digest, 'bytes': output.length}},
+      'receipt': {
+        ...receipt,
+        'job': _package.job,
+        'zip': {'sha256': digest, 'bytes': output.length},
+      },
     });
   }
 
@@ -203,7 +212,10 @@ final class _ExportRun {
       files[path] = _TreeFile.image(path);
     }
     if (selection.kind.contains('Super')) {
-      files.removeWhere((path, _) => superScrapFiles.contains(path) || path.startsWith('Super/'));
+      files.removeWhere(
+        (path, _) =>
+            superScrapFiles.contains(path) || path.startsWith('Super/'),
+      );
     }
     return files;
   }
@@ -217,7 +229,8 @@ final class _ExportRun {
     final bytes = file.bytes;
     if (bytes != null) {
       if (name.endsWith('.img')) {
-        _templateImageHashes[name] = (Sha256Hasher()..update(bytes: bytes)).finishHex();
+        _templateImageHashes[name] = (Sha256Hasher()..update(bytes: bytes))
+            .finishHex();
       }
       await output.add(
         zip.startFile(
@@ -265,12 +278,7 @@ final class _ExportRun {
   }
 
   void _progress(String label, int done, int total) {
-    _emit({
-      'type': 'progress',
-      'label': label,
-      'done': done,
-      'total': total,
-    });
+    _emit({'type': 'progress', 'label': label, 'done': done, 'total': total});
   }
 }
 
@@ -350,7 +358,9 @@ Future<List<_ArchiveFile>> _archiveFiles(
         localOffset + 30 > archive.length ||
         compressedSize < 0 ||
         size < 0) {
-      throw BuildException('The upstream asset ZIP entry is out of range: $name');
+      throw BuildException(
+        'The upstream asset ZIP entry is out of range: $name',
+      );
     }
     final int dataOffset;
     try {
@@ -368,7 +378,9 @@ Future<List<_ArchiveFile>> _archiveFiles(
       throw BuildException('The upstream asset ZIP entry is invalid: $error');
     }
     if (dataOffset < 0 || dataOffset + compressedSize > archive.length) {
-      throw BuildException('The upstream asset ZIP entry is out of range: $name');
+      throw BuildException(
+        'The upstream asset ZIP entry is out of range: $name',
+      );
     }
     final compressed = Uint8List.sublistView(
       archive,
@@ -418,9 +430,7 @@ Uint8List _normalize(String path, Uint8List bytes) {
   final normalized = BytesBuilder(copy: false);
   for (var index = 0; index < bytes.length; index++) {
     final byte = bytes[index];
-    if (byte == 0x0d &&
-        index + 1 < bytes.length &&
-        bytes[index + 1] == 0x0a) {
+    if (byte == 0x0d && index + 1 < bytes.length && bytes[index + 1] == 0x0a) {
       continue;
     }
     normalized.addByte(byte);

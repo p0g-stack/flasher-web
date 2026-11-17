@@ -214,9 +214,13 @@ final class UpstreamTables {
       devices: devices,
       regionSizes: regionSizes,
       builders: builders,
-      superParts: root['super_parts'] == null ? const [] :
-        List<String>.unmodifiable((root['super_parts']! as List).map((value) =>
-          _string(value, 'super_parts'))),
+      superParts: root['super_parts'] == null
+          ? const []
+          : List<String>.unmodifiable(
+              (root['super_parts']! as List).map(
+                (value) => _string(value, 'super_parts'),
+              ),
+            ),
     );
     return tables;
   }

@@ -80,8 +80,7 @@ final class ContentRange {
 String? strongEtag(String? header) {
   final value = header?.trim();
   if (value == null || value.isEmpty) return null;
-  if (value.length >= 2 &&
-      (value.startsWith('W/') || value.startsWith('w/'))) {
+  if (value.length >= 2 && (value.startsWith('W/') || value.startsWith('w/'))) {
     return null;
   }
   return value;

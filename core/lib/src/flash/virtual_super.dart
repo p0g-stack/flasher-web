@@ -48,7 +48,11 @@ final List<String> extractToSuper = [
 
 /// Root template files removed after every Super build.
 const Set<String> superScrapFiles = {
-  'dtbo.img', 'dtbo_patched.img', 'dtbo_patcher.sh', 'dtbo_patcher.py', 'dtbo_patcher',
+  'dtbo.img',
+  'dtbo_patched.img',
+  'dtbo_patcher.sh',
+  'dtbo_patcher.py',
+  'dtbo_patcher',
 };
 
 /// The LP producer contract the normal and virtual packers share.
@@ -108,26 +112,44 @@ SuperLayout flasherSuperLayout(Map<String, int> images, int size) {
 }
 
 const _maxRawChunk = 0xfffff000; // total_sz is a sparse v1 uint32.
+
 /// Sparse geometry derives solely from LP extents; opening reads no OTA data.
 final class VirtualSuperImage {
   VirtualSuperImage._(this._regions, this.expandedLength, this._inputs) {
-    if (expandedLength ~/ 4096 > 0xffffffff) throw const FlashException('Super exceeds sparse v1 geometry.');
+    if (expandedLength ~/ 4096 > 0xffffffff) {
+      throw const FlashException('Super exceeds sparse v1 geometry.');
+    }
     var encoded = 28;
     final chunks = <SparseChunk>[];
     for (final region in _regions) {
-      if (region.length % 4096 != 0) throw const FlashException('Unaligned virtual super region.');
+      if (region.length % 4096 != 0) {
+        throw const FlashException('Unaligned virtual super region.');
+      }
       region.encodedOffset = encoded;
-      for (var offset = 0; offset < region.length; offset += region.source == null ? region.length : _maxRawChunk) {
+      for (
+        var offset = 0;
+        offset < region.length;
+        offset += region.source == null ? region.length : _maxRawChunk
+      ) {
         final count = math.min(_maxRawChunk, region.length - offset);
-        chunks.add(SparseChunk(type: region.source == null ? sparseDontCare : sparseRaw,
-          blocks: (region.source == null ? region.length : count) ~/ 4096, dataOffset: encoded + 12,
-          dataSize: region.source == null ? 0 : count));
+        chunks.add(
+          SparseChunk(
+            type: region.source == null ? sparseDontCare : sparseRaw,
+            blocks: (region.source == null ? region.length : count) ~/ 4096,
+            dataOffset: encoded + 12,
+            dataSize: region.source == null ? 0 : count,
+          ),
+        );
         encoded += 12 + (region.source == null ? 0 : count);
       }
     }
     length = encoded;
-    scan = SparseScan(blockSize: 4096, totalBlocks: expandedLength ~/ 4096,
-      chunks: List.unmodifiable(chunks), digest: '');
+    scan = SparseScan(
+      blockSize: 4096,
+      totalBlocks: expandedLength ~/ 4096,
+      chunks: List.unmodifiable(chunks),
+      digest: '',
+    );
     _header = _sparseHeader(scan.totalBlocks, chunks.length);
   }
   final List<_Region> _regions;
@@ -138,52 +160,96 @@ final class VirtualSuperImage {
   late final Uint8List _header;
   String? streamSha256;
   late final String layoutHeadSha256 =
-      (Sha256Hasher()..update(bytes: (_regions.first.source! as _MemorySource).bytes)).finishHex();
+      (Sha256Hasher()
+            ..update(bytes: (_regions.first.source! as _MemorySource).bytes))
+          .finishHex();
 
-  static Future<VirtualSuperImage> create(Map<String, FlashSource> sources, int size,
-      {Map<String, String> expectedHashes = const {}}) async {
+  static Future<VirtualSuperImage> create(
+    Map<String, FlashSource> sources,
+    int size, {
+    Map<String, String> expectedHashes = const {},
+  }) async {
     final inputs = <String, FlashSource>{};
     try {
       for (final entry in sources.entries) {
         inputs[entry.key] = await _ExpandedImage.open(entry.value);
         final expanded = inputs[entry.key];
-        if (expanded is _ExpandedImage && expectedHashes[entry.key] != null &&
+        if (expanded is _ExpandedImage &&
+            expectedHashes[entry.key] != null &&
             expanded.scan.digest != expectedHashes[entry.key]) {
-          throw FlashException('${entry.key}.img does not match its manifest SHA-256.');
+          throw FlashException(
+            '${entry.key}.img does not match its manifest SHA-256.',
+          );
         }
       }
-      final layout = flasherSuperLayout({for (final e in inputs.entries) e.key: e.value.length}, size);
-      final regions = <_Region>[_Region(0, layout.head.length, _MemorySource(layout.head))];
+      final layout = flasherSuperLayout({
+        for (final e in inputs.entries) e.key: e.value.length,
+      }, size);
+      final regions = <_Region>[
+        _Region(0, layout.head.length, _MemorySource(layout.head)),
+      ];
       var position = layout.head.length;
-      final extents = [...layout.extents]..sort((a, b) => a.offset.compareTo(b.offset));
+      final extents = [...layout.extents]
+        ..sort((a, b) => a.offset.compareTo(b.offset));
       for (final extent in extents) {
         final offset = extent.offset.toInt();
         final extentLength = extent.size.toInt();
-        final name = extent.name.endsWith('_a') ? extent.name.substring(0, extent.name.length - 2) : extent.name;
+        final name = extent.name.endsWith('_a')
+            ? extent.name.substring(0, extent.name.length - 2)
+            : extent.name;
         final image = inputs[name];
-        if (offset < position || image == null || image.length <= 0) throw const FlashException('Invalid virtual super layout.');
-        if (offset > position) regions.add(_Region(position, offset - position, null));
+        if (offset < position || image == null || image.length <= 0) {
+          throw const FlashException('Invalid virtual super layout.');
+        }
+        if (offset > position) {
+          regions.add(_Region(position, offset - position, null));
+        }
         final padded = (image.length + 4095) ~/ 4096 * 4096;
-        if (padded > extentLength) throw const FlashException('Invalid virtual super extent.');
-        regions.add(_Region(offset, padded, image,
-          expectedHash: image is _ExpandedImage ? null : expectedHashes[name], name: name));
-        if (extentLength > padded) regions.add(_Region(offset + padded, extentLength - padded, null));
+        if (padded > extentLength) {
+          throw const FlashException('Invalid virtual super extent.');
+        }
+        regions.add(
+          _Region(
+            offset,
+            padded,
+            image,
+            expectedHash: image is _ExpandedImage ? null : expectedHashes[name],
+            name: name,
+          ),
+        );
+        if (extentLength > padded) {
+          regions.add(_Region(offset + padded, extentLength - padded, null));
+        }
         position = offset + extentLength;
       }
-      if (position > size) throw const FlashException('Virtual super exceeds its device.');
-      if (position < size) regions.add(_Region(position, size - position, null));
+      if (position > size) {
+        throw const FlashException('Virtual super exceeds its device.');
+      }
+      if (position < size) {
+        regions.add(_Region(position, size - position, null));
+      }
       return VirtualSuperImage._(regions, size, inputs);
     } on Object {
-      for (final source in sources.values) { await source.close(); }
+      for (final source in sources.values) {
+        await source.close();
+      }
       rethrow;
     }
   }
 
-  Future<FlashSource> open({bool sparse = true}) async => _SuperSource(this, sparse);
-  Future<void> close() async { for (final source in _inputs.values) { await source.close(); } }
+  Future<FlashSource> open({bool sparse = true}) async =>
+      _SuperSource(this, sparse);
+  Future<void> close() async {
+    for (final source in _inputs.values) {
+      await source.close();
+    }
+  }
+
   Future<Uint8List> _read(int offset, int count, bool sparse) async {
     final total = sparse ? length : expandedLength;
-    if (offset < 0 || count < 0 || count > 8 << 20 || offset + count > total) throw RangeError('Invalid bounded virtual super read.');
+    if (offset < 0 || count < 0 || count > 8 << 20 || offset + count > total) {
+      throw RangeError('Invalid bounded virtual super read.');
+    }
     final output = Uint8List(count);
     var done = 0;
     if (sparse && offset < 28) {
@@ -193,20 +259,38 @@ final class VirtualSuperImage {
     }
     while (done < count) {
       final position = offset + done;
-      final region = _regions.firstWhere((r) => sparse
-        ? position >= r.encodedOffset && position < r.encodedOffset + r.encodedLength
-        : position >= r.offset && position < r.offset + r.length);
+      final region = _regions.firstWhere(
+        (r) => sparse
+            ? position >= r.encodedOffset &&
+                  position < r.encodedOffset + r.encodedLength
+            : position >= r.offset && position < r.offset + r.length,
+      );
       if (!sparse) {
-        final n = math.min(count - done, region.offset + region.length - position);
-        output.setRange(done, done + n, await region.readRaw(position - region.offset, n));
+        final n = math.min(
+          count - done,
+          region.offset + region.length - position,
+        );
+        output.setRange(
+          done,
+          done + n,
+          await region.readRaw(position - region.offset, n),
+        );
         done += n;
       } else {
-        final chunkIndex = (position - region.encodedOffset) ~/ (_maxRawChunk + 12);
-        final within = position - region.encodedOffset - chunkIndex * (_maxRawChunk + 12);
-        final chunkLength = math.min(_maxRawChunk, region.length - chunkIndex * _maxRawChunk);
+        final chunkIndex =
+            (position - region.encodedOffset) ~/ (_maxRawChunk + 12);
+        final within =
+            position - region.encodedOffset - chunkIndex * (_maxRawChunk + 12);
+        final chunkLength = math.min(
+          _maxRawChunk,
+          region.length - chunkIndex * _maxRawChunk,
+        );
         if (within < 12) {
-          final header = _chunkHeader(region.source == null ? sparseDontCare : sparseRaw,
-            (region.source == null ? region.length : chunkLength) ~/ 4096, region.source == null ? 0 : chunkLength);
+          final header = _chunkHeader(
+            region.source == null ? sparseDontCare : sparseRaw,
+            (region.source == null ? region.length : chunkLength) ~/ 4096,
+            region.source == null ? 0 : chunkLength,
+          );
           final n = math.min(count - done, 12 - within);
           output.setRange(done, done + n, header, within);
           done += n;
@@ -223,17 +307,27 @@ final class VirtualSuperImage {
 }
 
 final class _Region {
-  _Region(this.offset, this.length, this.source, {this.expectedHash, this.name});
+  _Region(
+    this.offset,
+    this.length,
+    this.source, {
+    this.expectedHash,
+    this.name,
+  });
   final int offset;
   final int length;
   final FlashSource? source;
   final String? expectedHash;
   final String? name;
   late int encodedOffset;
-  int get encodedLength => source == null ? 12 : length + ((length + _maxRawChunk - 1) ~/ _maxRawChunk) * 12;
+  int get encodedLength => source == null
+      ? 12
+      : length + ((length + _maxRawChunk - 1) ~/ _maxRawChunk) * 12;
   Future<Uint8List> readRaw(int offset, int count) async {
     final input = source;
-    if (input != null && offset + count <= input.length) return input.read(offset, count);
+    if (input != null && offset + count <= input.length) {
+      return input.read(offset, count);
+    }
     final result = Uint8List(count);
     if (input != null && offset < input.length) {
       final n = math.min(count, input.length - offset);
@@ -247,10 +341,16 @@ final class _SuperSource implements FlashSource {
   _SuperSource(this.image, this.sparse);
   final VirtualSuperImage image;
   final bool sparse;
-  @override int get length => sparse ? image.length : image.expandedLength;
-  @override Future<Uint8List> read(int offset, int length) => image._read(offset, length, sparse);
-  @override Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
-    if (chunkSize <= 0 || chunkSize > 8 << 20) throw ArgumentError.value(chunkSize);
+  @override
+  int get length => sparse ? image.length : image.expandedLength;
+  @override
+  Future<Uint8List> read(int offset, int length) =>
+      image._read(offset, length, sparse);
+  @override
+  Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
+    if (chunkSize <= 0 || chunkSize > 8 << 20) {
+      throw ArgumentError.value(chunkSize);
+    }
     final whole = Sha256Hasher();
     if (sparse) {
       whole.update(bytes: image._header);
@@ -266,59 +366,92 @@ final class _SuperSource implements FlashSource {
       final hasher = region.expectedHash == null ? null : Sha256Hasher();
       final cursor = await region.source?.cursor();
       try {
-      var offset = 0;
-      while (offset < region.length) {
-        final segmentEnd = math.min(region.length, offset + _maxRawChunk);
-        if (sparse) {
-          final header = _chunkHeader(sparseRaw, (segmentEnd - offset) ~/ 4096, segmentEnd - offset);
-          whole.update(bytes: header);
-          yield header;
-        }
-        while (offset < segmentEnd) {
-        final count = math.min(chunkSize, segmentEnd - offset);
-        final Uint8List bytes;
-        if (cursor != null && offset + count <= region.source!.length) {
-          bytes = await cursor.readExact(count);
-        } else {
-          bytes = Uint8List(count);
-          if (cursor != null && offset < region.source!.length) {
-            final raw = await cursor.readExact(region.source!.length - offset);
-            bytes.setRange(0, raw.length, raw);
+        var offset = 0;
+        while (offset < region.length) {
+          final segmentEnd = math.min(region.length, offset + _maxRawChunk);
+          if (sparse) {
+            final header = _chunkHeader(
+              sparseRaw,
+              (segmentEnd - offset) ~/ 4096,
+              segmentEnd - offset,
+            );
+            whole.update(bytes: header);
+            yield header;
+          }
+          while (offset < segmentEnd) {
+            final count = math.min(chunkSize, segmentEnd - offset);
+            final Uint8List bytes;
+            if (cursor != null && offset + count <= region.source!.length) {
+              bytes = await cursor.readExact(count);
+            } else {
+              bytes = Uint8List(count);
+              if (cursor != null && offset < region.source!.length) {
+                final raw = await cursor.readExact(
+                  region.source!.length - offset,
+                );
+                bytes.setRange(0, raw.length, raw);
+              }
+            }
+            if (offset == 0 &&
+                region.source is OtaPartitionSource &&
+                bytes.length >= 4 &&
+                ByteData.sublistView(bytes).getUint32(0, Endian.little) ==
+                    sparseMagic) {
+              throw const FlashException(
+                'A sparse-encoded OTA partition cannot be represented by virtual super.',
+              );
+            }
+            if (hasher != null && offset < region.source!.length) {
+              hasher.update(
+                bytes: Uint8List.sublistView(
+                  bytes,
+                  0,
+                  math.min(bytes.length, region.source!.length - offset),
+                ),
+              );
+            }
+            whole.update(bytes: bytes);
+            yield bytes;
+            offset += bytes.length;
           }
         }
-        if (offset == 0 && region.source is OtaPartitionSource && bytes.length >= 4 &&
-            ByteData.sublistView(bytes).getUint32(0, Endian.little) == sparseMagic) {
-          throw const FlashException('A sparse-encoded OTA partition cannot be represented by virtual super.');
+        if (hasher != null && hasher.finishHex() != region.expectedHash) {
+          throw FlashException(
+            '${region.name}.img does not match its manifest SHA-256.',
+          );
         }
-        if (hasher != null && offset < region.source!.length) {
-          hasher.update(bytes: Uint8List.sublistView(bytes, 0, math.min(bytes.length, region.source!.length - offset)));
-        }
-        whole.update(bytes: bytes);
-        yield bytes;
-        offset += bytes.length;
-        }
+      } finally {
+        await cursor?.close();
       }
-      if (hasher != null && hasher.finishHex() != region.expectedHash) {
-        throw FlashException('${region.name}.img does not match its manifest SHA-256.');
-      }
-      } finally { await cursor?.close(); }
     }
     if (sparse) image.streamSha256 = whole.finishHex();
   }
-  @override Future<FlashCursor> cursor() async => StreamingFlashCursor(stream(), length);
-  @override Future<void> close() async {}
+
+  @override
+  Future<FlashCursor> cursor() async => StreamingFlashCursor(stream(), length);
+  @override
+  Future<void> close() async {}
 }
 
 final class _MemorySource implements FlashSource {
   _MemorySource(this.bytes);
   final Uint8List bytes;
-  @override int get length => bytes.length;
-  @override Future<Uint8List> read(int offset, int length) async => Uint8List.sublistView(bytes, offset, offset + length);
-  @override Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
-    for (var p = 0; p < length; p += chunkSize) { yield await read(p, math.min(chunkSize, length - p)); }
+  @override
+  int get length => bytes.length;
+  @override
+  Future<Uint8List> read(int offset, int length) async =>
+      Uint8List.sublistView(bytes, offset, offset + length);
+  @override
+  Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
+    for (var p = 0; p < length; p += chunkSize) {
+      yield await read(p, math.min(chunkSize, length - p));
+    }
   }
-  @override Future<FlashCursor> cursor() async => RandomFlashCursor(this);
-  @override Future<void> close() async {}
+
+  @override
+  Future<FlashCursor> cursor() async => RandomFlashCursor(this);
+  @override
+  Future<void> close() async {}
 }
 
 /// An input sparse bloat file is expanded, exactly as the normal packer does.
@@ -330,25 +463,38 @@ final class _ExpandedImage implements FlashSource {
     }
   }
   static Future<FlashSource> open(FlashSource source) async {
-    if (source is OtaPartitionSource || !await isSparseSource(source)) return source;
+    if (source is OtaPartitionSource || !await isSparseSource(source)) {
+      return source;
+    }
     final header = ByteData.sublistView(await source.read(0, 28));
     if (header.getUint32(20, Endian.little) > 262144) {
-      throw const FlashException('Sparse super input exceeds the 262144-chunk index limit.');
+      throw const FlashException(
+        'Sparse super input exceeds the 262144-chunk index limit.',
+      );
     }
     return _ExpandedImage(source, await scanSparse(source));
   }
+
   final FlashSource source;
   final SparseScan scan;
   late final Float64List _ends;
-  @override int get length => scan.expandedBytes;
-  @override Future<Uint8List> read(int offset, int count) async {
-    if (offset < 0 || count < 0 || offset + count > length) throw RangeError('Invalid expanded input range.');
+  @override
+  int get length => scan.expandedBytes;
+  @override
+  Future<Uint8List> read(int offset, int count) async {
+    if (offset < 0 || count < 0 || offset + count > length) {
+      throw RangeError('Invalid expanded input range.');
+    }
     final output = Uint8List(count);
     var low = 0;
     var high = scan.chunks.length;
     while (low < high) {
       final mid = (low + high) ~/ 2;
-      if (_ends[mid + 1] <= offset) { low = mid + 1; } else { high = mid; }
+      if (_ends[mid + 1] <= offset) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
     }
     for (var i = low; i < scan.chunks.length; i++) {
       final chunk = scan.chunks[i];
@@ -358,25 +504,41 @@ final class _ExpandedImage implements FlashSource {
       final stop = math.min(offset + count, end);
       if (stop > start) {
         if (chunk.type == sparseRaw) {
-          output.setRange(start - offset, stop - offset, await source.read(chunk.dataOffset + start - position, stop - start));
+          output.setRange(
+            start - offset,
+            stop - offset,
+            await source.read(
+              chunk.dataOffset + start - position,
+              stop - start,
+            ),
+          );
         } else if (chunk.type == sparseFill) {
-          for (var p = start; p < stop; p++) { output[p - offset] = chunk.fill >> (((p - position) % 4) * 8) & 255; }
+          for (var p = start; p < stop; p++) {
+            output[p - offset] = chunk.fill >> (((p - position) % 4) * 8) & 255;
+          }
         }
       }
       if (end >= offset + count) break;
     }
     return output;
   }
+
   Stream<Uint8List> _verifiedSparse() async* {
     final hash = Sha256Hasher();
     await for (final bytes in source.stream()) {
       hash.update(bytes: bytes);
       yield bytes;
     }
-    if (hash.finishHex() != scan.digest) throw const FlashException('Sparse super input changed while streaming.');
+    if (hash.finishHex() != scan.digest) {
+      throw const FlashException('Sparse super input changed while streaming.');
+    }
   }
-  @override Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
-    if (chunkSize <= 0 || chunkSize > 8 << 20) throw ArgumentError.value(chunkSize);
+
+  @override
+  Stream<Uint8List> stream({int chunkSize = 1 << 20}) async* {
+    if (chunkSize <= 0 || chunkSize > 8 << 20) {
+      throw ArgumentError.value(chunkSize);
+    }
     final input = StreamingFlashCursor(_verifiedSparse(), source.length);
     try {
       for (final chunk in scan.chunks) {
@@ -390,17 +552,24 @@ final class _ExpandedImage implements FlashSource {
           } else {
             final bytes = Uint8List(count);
             if (chunk.type == sparseFill) {
-              for (var p = 0; p < count; p++) { bytes[p] = chunk.fill >> (((offset + p) % 4) * 8) & 255; }
+              for (var p = 0; p < count; p++) {
+                bytes[p] = chunk.fill >> (((offset + p) % 4) * 8) & 255;
+              }
             }
             yield bytes;
           }
         }
       }
       await input.skipTo(source.length);
-    } finally { await input.close(); }
+    } finally {
+      await input.close();
+    }
   }
-  @override Future<FlashCursor> cursor() async => StreamingFlashCursor(stream(), length);
-  @override Future<void> close() => source.close();
+
+  @override
+  Future<FlashCursor> cursor() async => StreamingFlashCursor(stream(), length);
+  @override
+  Future<void> close() => source.close();
 }
 
 Uint8List _sparseHeader(int blocks, int chunks) {
@@ -415,6 +584,7 @@ Uint8List _sparseHeader(int blocks, int chunks) {
   d.setUint32(20, chunks, Endian.little);
   return b;
 }
+
 Uint8List _chunkHeader(int kind, int blocks, int bytes) {
   final b = Uint8List(12);
   final d = ByteData.sublistView(b);

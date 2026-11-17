@@ -7,8 +7,7 @@ import 'dart:js_interop';
 
 import 'package:web/web.dart' as web;
 
-import 'fake_fastboot.dart'
-    show fakeFastbootChannelName, fakeFastbootMarker;
+import 'fake_fastboot.dart' show fakeFastbootChannelName, fakeFastbootMarker;
 
 web.BroadcastChannel? _channel;
 
@@ -36,10 +35,7 @@ void installFakeFastbootChannel({
       case 'configure':
         _post({'type': 'state', 'state': configure(message)});
       default:
-        _post({
-          'type': 'error',
-          'message': 'Unknown fake device command: $op',
-        });
+        _post({'type': 'error', 'message': 'Unknown fake device command: $op'});
     }
   }).toJS;
   _channel = channel;

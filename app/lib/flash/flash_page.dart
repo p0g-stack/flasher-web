@@ -56,7 +56,8 @@ class _FlashPageState extends State<FlashPage> {
     final screen = controller.screen;
     final connection = controller.connection;
     final certainty = controller.certainty;
-    final changed = screen != _lastScreen ||
+    final changed =
+        screen != _lastScreen ||
         connection != _lastConnection ||
         certainty != _lastCertainty;
     _lastScreen = screen;
@@ -274,10 +275,7 @@ class _FlashPageState extends State<FlashPage> {
                 error: true,
               )
             else if (controller.notice != null)
-              HintText(
-                controller.notice!,
-                key: const ValueKey('connectNotice'),
-              )
+              HintText(controller.notice!, key: const ValueKey('connectNotice'))
             else
               const HintText(
                 'Only USB devices with the fastboot interface (ff/42/03) are '
@@ -379,7 +377,9 @@ class _FlashPageState extends State<FlashPage> {
                 height: 16,
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
-            : _PhaseBadge(prepared?.resolved == true ? 'RESOLVED' : 'READ-ONLY'),
+            : _PhaseBadge(
+                prepared?.resolved == true ? 'RESOLVED' : 'READ-ONLY',
+              ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -398,10 +398,7 @@ class _FlashPageState extends State<FlashPage> {
               value: prepared?.mode ?? 'not checked',
               monospace: true,
             ),
-            LabeledValue(
-              label: 'Package',
-              value: controller.targetLabel,
-            ),
+            LabeledValue(label: 'Package', value: controller.targetLabel),
             LabeledValue(label: 'Job', value: controller.jobId),
             if (controller.prepareError != null) ...[
               const SizedBox(height: 10),
@@ -817,8 +814,7 @@ class _FlashPageState extends State<FlashPage> {
               alignment: Alignment.centerLeft,
               child: TextButton.icon(
                 key: const ValueKey('showRawEvidence'),
-                onPressed: () =>
-                    _showDiagnostics(raw: controller.rawFailure),
+                onPressed: () => _showDiagnostics(raw: controller.rawFailure),
                 icon: const Icon(Icons.code, size: 16),
                 label: const Text('Show raw evidence'),
               ),
@@ -930,26 +926,33 @@ class _FlashPageState extends State<FlashPage> {
   String _actionExplanation(Map<String, Object?> action) {
     final name = '${action['action']}';
     return switch (name) {
-      'retryRead' => 'Reopens the exact serial, checks the phone again and '
-          'repeats only the failed read and the rest of the plan. Any earlier '
-          'uncertain write stays uncertain.',
-      'reconnectDevice' => 'Waits for the same serial, checks the phone '
-          'again and resumes the refused or read-only step. Reconnecting never '
-          'settles a write.',
-      'recoverBootloader' => 'Checks the phone, reboots to bootloader, waits '
-          'for the same serial and checks again. A paused uncertain run stays '
-          'paused.',
-      'recoverFastbootd' => 'Checks the phone, reboots to fastbootd, waits '
-          'for the same serial and checks again. A paused uncertain run stays '
-          'paused.',
-      'recoverPowerCycle' => 'No reset command is sent. Confirm only after '
-          'the phone was unplugged, powered off and reconnected in bootloader.',
-      'rewriteStep' => 'Rewrites this step from byte zero after naming the '
-          'serial. Only a completed replacement settles it; the earlier '
-          'attempt stays in the receipt history.',
-      'wipeSuper' => 'Checks the phone, verifies snapshot status is exactly '
-          'none and flashes a metadata-only super image, then restarts the '
-          'logical writes. The phone cannot boot until the run completes.',
+      'retryRead' =>
+        'Reopens the exact serial, checks the phone again and '
+            'repeats only the failed read and the rest of the plan. Any earlier '
+            'uncertain write stays uncertain.',
+      'reconnectDevice' =>
+        'Waits for the same serial, checks the phone '
+            'again and resumes the refused or read-only step. Reconnecting never '
+            'settles a write.',
+      'recoverBootloader' =>
+        'Checks the phone, reboots to bootloader, waits '
+            'for the same serial and checks again. A paused uncertain run stays '
+            'paused.',
+      'recoverFastbootd' =>
+        'Checks the phone, reboots to fastbootd, waits '
+            'for the same serial and checks again. A paused uncertain run stays '
+            'paused.',
+      'recoverPowerCycle' =>
+        'No reset command is sent. Confirm only after '
+            'the phone was unplugged, powered off and reconnected in bootloader.',
+      'rewriteStep' =>
+        'Rewrites this step from byte zero after naming the '
+            'serial. Only a completed replacement settles it; the earlier '
+            'attempt stays in the receipt history.',
+      'wipeSuper' =>
+        'Checks the phone, verifies snapshot status is exactly '
+            'none and flashes a metadata-only super image, then restarts the '
+            'logical writes. The phone cannot boot until the run completes.',
       _ => 'The service decides what this action sends.',
     };
   }
@@ -1114,7 +1117,8 @@ class _FlashPageState extends State<FlashPage> {
               ),
               LabeledValue(
                 label: 'Verification',
-                value: '${(receipt['verification'] is Map) ? (receipt['verification'] as Map)['status'] ?? 'not-run' : 'not-run'} '
+                value:
+                    '${(receipt['verification'] is Map) ? (receipt['verification'] as Map)['status'] ?? 'not-run' : 'not-run'} '
                     '(OKAY is not a readback)',
               ),
               LabeledValue(
@@ -1125,7 +1129,8 @@ class _FlashPageState extends State<FlashPage> {
               if (abl != null)
                 LabeledValue(
                   label: 'ABL source',
-                  value: '${abl['version'] ?? ''} · ${abl['sha256'] ?? ''} · '
+                  value:
+                      '${abl['version'] ?? ''} · ${abl['sha256'] ?? ''} · '
                       '${abl['bytes'] ?? ''} bytes',
                   monospace: true,
                 ),
@@ -1188,7 +1193,7 @@ class _FlashPageState extends State<FlashPage> {
                       ],
                     ),
                   ),
-                ],
+              ],
               for (final error in _stringList(receipt['cleanupErrors']))
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
@@ -1235,17 +1240,15 @@ class _FlashPageState extends State<FlashPage> {
   Future<void> _download() async {
     final message = await widget.controller.downloadReceipt();
     if (!mounted || message == null) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _saveLog() async {
     final message = await widget.controller.saveLog();
     if (!mounted || message == null) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
@@ -1729,9 +1732,7 @@ class _SerialConfirmationDialogState extends State<_SerialConfirmationDialog> {
           key: const ValueKey('confirmDestructiveAction'),
           onPressed: ready ? () => Navigator.of(context).pop(true) : null,
           child: Text(
-            wipe
-                ? 'Clear super on $_serial'
-                : 'Rewrite from byte zero',
+            wipe ? 'Clear super on $_serial' : 'Rewrite from byte zero',
           ),
         ),
       ],
@@ -1748,9 +1749,9 @@ String _arbText(Object? arb) {
     if (major != null || minor != null || index != null) {
       return 'major $major · minor $minor · index $index';
     }
-    return arb.entries.map((entry) => '${entry.key}: ${entry.value}').join(
-      ' · ',
-    );
+    return arb.entries
+        .map((entry) => '${entry.key}: ${entry.value}')
+        .join(' · ');
   }
   return arb == null ? 'not reported' : '$arb';
 }

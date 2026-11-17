@@ -678,8 +678,7 @@ final class FlashController extends ChangeNotifier {
       'ota': _otaSnapshot(virtual['ota']),
       if (virtual['base'] != null) 'base': _otaSnapshot(virtual['base']),
       'bloat': _storeSnapshot(virtual['bloat']),
-      if (target?.vulnerableAbl != null)
-        'vulnerableAbl': target!.vulnerableAbl,
+      if (target?.vulnerableAbl != null) 'vulnerableAbl': target!.vulnerableAbl,
     };
   }
 
@@ -722,9 +721,9 @@ final class FlashController extends ChangeNotifier {
         _preparedRequest = null;
         _prepareError = describeLinkFailure(linkError);
         _log.add('Preparation evidence: ${jsonEncode(linkError)}');
-        _setConnection(_linkLost(linkError)
-            ? FlashConnection.lost
-            : FlashConnection.waiting);
+        _setConnection(
+          _linkLost(linkError) ? FlashConnection.lost : FlashConnection.waiting,
+        );
         return;
       }
       final prepared = PreparedFlash.fromMap(response);
@@ -944,7 +943,10 @@ final class FlashController extends ChangeNotifier {
   void _applyFlow(Map<String, Object?> event) {
     final flow = event['flow'];
     if (flow is Map) {
-      final connection = _enumByName(FlashConnection.values, flow['connection']);
+      final connection = _enumByName(
+        FlashConnection.values,
+        flow['connection'],
+      );
       final phase = _enumByName(FlashRunPhase.values, flow['phase']);
       final certainty = _enumByName(WriteCertainty.values, flow['certainty']);
       _flow = FlashFlowState(
@@ -1287,8 +1289,10 @@ final class FlashController extends ChangeNotifier {
     _stepTitle = '';
     _progress.clear();
     _setPhase(FlashRunPhase.preparing);
-    _log.add('Recovery ${action.name} requested for step '
-        '${(_receipt?['stepIndex'] is num ? (_receipt!['stepIndex']! as num).toInt() : 0) + 1}.');
+    _log.add(
+      'Recovery ${action.name} requested for step '
+      '${(_receipt?['stepIndex'] is num ? (_receipt!['stepIndex']! as num).toInt() : 0) + 1}.',
+    );
     _notify();
     final request = <String, Object?>{
       'runId': runId,

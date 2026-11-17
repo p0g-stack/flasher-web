@@ -63,16 +63,18 @@ final class FixtureOp {
   /// The payload carries the compressed stream; the extents read as the
   /// decoded bytes, so the manifest hashes and the partition image differ
   /// from the operation data exactly as they do in a real OTA.
-  FixtureOp.coded(int kind, List<FixtureExtent> dst, Uint8List decoded, {bool hash = true})
-    : this(
-        kind: kind,
-        dst: dst,
-        data: kind == fixtureReplaceXz
-            ? xzStore(decoded)
-            : zstdStore(decoded),
-        decoded: decoded,
-        hash: hash,
-      );
+  FixtureOp.coded(
+    int kind,
+    List<FixtureExtent> dst,
+    Uint8List decoded, {
+    bool hash = true,
+  }) : this(
+         kind: kind,
+         dst: dst,
+         data: kind == fixtureReplaceXz ? xzStore(decoded) : zstdStore(decoded),
+         decoded: decoded,
+         hash: hash,
+       );
 
   /// A ZERO operation: no payload data, extents read as zero.
   FixtureOp.zero(List<FixtureExtent> dst) : this(kind: fixtureZero, dst: dst);
@@ -223,9 +225,7 @@ final class OtaFixture {
         'ota-type=AB\n'
         'pre-device=$preDevice\n'
         'version_name=$versionName\n'
-        '${[
-          for (final entry in fields.entries) '${entry.key}=${entry.value}',
-        ].join('\n')}${fields.isEmpty ? '' : '\n'}',
+        '${[for (final entry in fields.entries) '${entry.key}=${entry.value}'].join('\n')}${fields.isEmpty ? '' : '\n'}',
       ),
     );
     payloadZipOffset = 30 + utf8.encode('payload.bin').length;

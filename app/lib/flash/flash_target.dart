@@ -174,7 +174,9 @@ String describeLinkFailure(Object? value) {
     return 'The USB interface is already in use. Close other flashing tabs or '
         'programs, then check the connection.';
   }
-  if (blame == 'host' || name == 'SecurityError' || name == 'PermissionDenied') {
+  if (blame == 'host' ||
+      name == 'SecurityError' ||
+      name == 'PermissionDenied') {
     return 'USB access was refused. Allow this site to use the phone and check '
         'your operating system’s USB permissions, then retry.';
   }
@@ -182,9 +184,18 @@ String describeLinkFailure(Object? value) {
     return 'No phone was selected. Choose the phone again.';
   }
   if (name == 'FlashException') return message;
-  if (const {'Timeout', 'TimeoutError', 'OperationDeadline', 'NoProgress',
-      'NetworkError', 'Disconnected', 'NotFoundError', 'ShortWrite', 'UsbError',
-      'NoDevice'}.contains(name)) {
+  if (const {
+    'Timeout',
+    'TimeoutError',
+    'OperationDeadline',
+    'NoProgress',
+    'NetworkError',
+    'Disconnected',
+    'NotFoundError',
+    'ShortWrite',
+    'UsbError',
+    'NoDevice',
+  }.contains(name)) {
     return "The phone isn't answering fastboot. Replug it or hold Power + "
         'Volume Down, then retry.';
   }

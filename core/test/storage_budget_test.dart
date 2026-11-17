@@ -59,7 +59,11 @@ void main() {
             .having(
               (error) => error.toString(),
               'message',
-              allOf(contains('500 bytes'), contains('100 bytes'), contains('app cap')),
+              allOf(
+                contains('500 bytes'),
+                contains('100 bytes'),
+                contains('app cap'),
+              ),
             ),
       ),
     );

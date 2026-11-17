@@ -28,10 +28,7 @@ class ExportCommand extends Command<int> {
         'ota',
         help: 'Full OTA ZIP path or HTTP(S) URL to read in place.',
       )
-      ..addOption(
-        'catalog',
-        help: 'Catalog release id to read through ranges.',
-      )
+      ..addOption('catalog', help: 'Catalog release id to read through ranges.')
       ..addOption(
         'base',
         help: 'Ace 6 conversion BASE full OTA ZIP path or HTTP(S) URL.',
@@ -60,11 +57,7 @@ class ExportCommand extends Command<int> {
             'X9U only: pack ABL 16.0.6 as abl.img. Use --no-vulnerable-abl to '
             'keep the OTA ABL; X9U requires one of the two.',
       )
-      ..addOption(
-        'out',
-        mandatory: true,
-        help: 'The ZIP file to write.',
-      );
+      ..addOption('out', mandatory: true, help: 'The ZIP file to write.');
   }
 
   @override

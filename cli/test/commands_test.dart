@@ -127,10 +127,7 @@ void main() {
 
     test('flash requires a selection, serial and bloat folder', () async {
       expect(await run(['flash']), 64);
-      expect(
-        await run(['flash', ...selection, '--serial', 'SERIAL1']),
-        64,
-      );
+      expect(await run(['flash', ...selection, '--serial', 'SERIAL1']), 64);
     });
 
     test('flash requires exactly one OTA source', () async {
