@@ -68,8 +68,9 @@ FastbootTransport _defaultFastbootFactory() {
   targetPlatform: TargetPlatform.vm | TargetPlatform.web,
 )
 base class FlasherService {
-  FlasherService({Object? transportFactory})
-    : _transportFactory = transportFactory ?? _defaultFastbootFactory {
+  FlasherService({Object? transportFactory, Object? flashPlace})
+    : _transportFactory = transportFactory ?? _defaultFastbootFactory,
+      _flashPlaceOverride = flashPlace {
     forwardLogs();
   }
 
@@ -77,6 +78,30 @@ base class FlasherService {
   /// the default is the native/WebUSB transport. Stored as [Object] because
   /// squadron_builder cannot describe a function-typed field.
   final Object _transportFactory;
+
+  // An injected transport needs matching capability facts, not the CI host's
+  // USB inventory. Object keeps this constructor compatible with codegen.
+  final Object? _flashPlaceOverride;
+
+  Future<PlaceInfo> _flashPlace() async {
+    final supplied = _flashPlaceOverride;
+    if (supplied != null) return supplied as PlaceInfo;
+    final here = await PlaceInfo.current();
+    if (const bool.fromEnvironment('FLASHER_FAKE_USB') &&
+        !here.facts.has(Fact.usbNative) &&
+        !here.facts.has(Fact.usbWeb)) {
+      // Only the compile-time fake transport supplies this capability. Real
+      // builds retain the checked USB facts and all native-library checks.
+      return PlaceInfo(
+        here.kind,
+        Facts({
+          for (final fact in here.facts.present) fact: true,
+          Fact.usbNative: true,
+        }),
+      );
+    }
+    return here;
+  }
 
   FastbootTransport _fastbootTransport() =>
       (_transportFactory as FastbootTransport Function())();
@@ -687,7 +712,7 @@ final class _FlashRun {
       final receipt = await applyConfirmedFlash(
         entry.prepared.withPackage(package),
         _service._fastbootTransport(),
-        await PlaceInfo.current(),
+        await _service._flashPlace(),
         emit: _emit,
         cancellation: _cancellation,
         previousReceipt: previous,

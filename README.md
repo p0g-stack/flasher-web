@@ -110,6 +110,11 @@ release build has no `FLASHER_FAKE_USB` define; release smoke checks both page
 and worker artifacts for the fake markers, then parses the synthetic OTA
 through the real Rust API in a fresh browser profile. It never enters Connect.
 CI validates only: it neither deploys the Worker nor writes to a physical device.
+Injected test transports supply their own `flashPlace` capability facts.
+The compile-time fake build supplies a USB capability when the host has none,
+while retaining the real Rust-library fact. Production builds continue to
+require the host's checked USB capabilities; no test needs `/dev/bus/usb` or
+an attached device.
 
 `tool/regen.sh` compares only the brick's generated inventory. Individual
 reasoned omissions/replacements are in `tool/regen.allow`; additive product

@@ -15,6 +15,13 @@ import 'package:test/test.dart';
 import 'ota_fixture.dart' show fixtureBlock, pattern;
 import 'virtual_fixture.dart';
 
+// These tests inject a recording transport, so its capabilities are supplied
+// explicitly. They must not depend on /dev/bus/usb existing on the test host.
+final _fixtureFlashPlace = PlaceInfo(
+  'fixture',
+  Facts({Fact.usbNative: true, Fact.native: true}),
+);
+
 /// The nine boot images every template flashes.
 const List<String> bootPartitions = [
   'boot',
@@ -1467,7 +1474,10 @@ void main() {
 
     final device = FixtureDevice(product: 'sun');
     final transport = FixtureTransport(device);
-    final service = FlasherService(transportFactory: () => transport);
+    final service = FlasherService(
+      transportFactory: () => transport,
+      flashPlace: _fixtureFlashPlace,
+    );
     Map<String, Object?> request(String file) => {
       'selection': {
         'device': 'Oneplus 13',
@@ -1522,6 +1532,7 @@ void main() {
     final device = FixtureDevice(product: 'sun');
     final service = FlasherService(
       transportFactory: () => FixtureTransport(device),
+      flashPlace: _fixtureFlashPlace,
     );
     Map<String, Object?> request(String bloat) => {
       'selection': {
@@ -1568,7 +1579,10 @@ void main() {
       addTearDown(fixture.dispose);
       final device = FixtureDevice(product: 'sun');
       final transport = FixtureTransport(device);
-      final service = FlasherService(transportFactory: () => transport);
+      final service = FlasherService(
+        transportFactory: () => transport,
+        flashPlace: _fixtureFlashPlace,
+      );
       Map<String, Object?> request() => {
         'selection': {
           'device': 'Oneplus 13',
@@ -1675,7 +1689,10 @@ void main() {
     addTearDown(fixture.dispose);
     final device = FixtureDevice(product: 'sun');
     final transport = FixtureTransport(device);
-    final service = FlasherService(transportFactory: () => transport);
+    final service = FlasherService(
+      transportFactory: () => transport,
+      flashPlace: _fixtureFlashPlace,
+    );
     Map<String, Object?> request() => {
       'selection': {
         'device': 'Oneplus 13',
