@@ -510,7 +510,7 @@ The reusable crates own their concerns:
   `https://github.com/p0g-stack/nusb` fork, with owned browser error evidence,
   endpoint rejection evidence and shared open leases. That pin becomes a plain
   version bump to the released minimum once nusb ships those APIs. Published
-  `fastboot-protocol` 0.4.0 supplies the response parser and command type. Owned
+  `fastboot-protocol` 0.4.1 supplies the response parser and command type. Owned
   chunks move into nusb buffers without a Rust-side copy; nusb owns WebUSB's
   required JS-buffer copy.
 - `device_link` defines the interfaces the core uses. Failure records keep the

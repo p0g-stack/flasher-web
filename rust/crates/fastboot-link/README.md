@@ -7,7 +7,7 @@ is a thin handle/lifetime shim.
 
 ## Dependencies and provenance
 
-- **fastboot-protocol 0.4.0** (released, `boardswarm/fastboot-rs`): the
+- **fastboot-protocol 0.4.1** (released, `boardswarm/fastboot-rs`): the
   `FastBootResponse` / `FastBootCommand` parsing and formatting. Upstream does
   not check the DATA length against the requested download, and its
   `DataDownload` borrows the client for the whole transfer, so it cannot back
@@ -16,6 +16,10 @@ is a thin handle/lifetime shim.
   checked transfer lengths, but this crate already implements those checks in
   `session.rs` and needs only the parser. Using released upstream keeps the
   dependency on crates.io; no fork or `/tmp` path is in the manifest.
+  The published 0.4.0 → 0.4.1 delta changes no library source: it updates
+  package metadata, development dependencies and the example's sparse-image
+  API (64-bit sizes). The existing transport/session suite passes with 0.4.1;
+  no device policy or protocol semantics were changed.
 - **nusb 0.2** (released upstream): native USB, endpoint descriptors, claimed
   interface, and bulk transfers. `1vivy/nusb@2d58dbc` has one unique fix that
   preserves WebUSB rejection name/message in its owned error. The browser path

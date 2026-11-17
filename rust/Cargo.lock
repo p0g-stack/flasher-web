@@ -331,9 +331,9 @@ dependencies = [
 
 [[package]]
 name = "fastboot-protocol"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d68604b2b5b85058d350ce6ecc153ac0a30306118099dfef2a2012544d4fee2e"
+checksum = "ac7d823da9a25dd1895dc2579d67d4758cf9d2f78ea86bdd82df524911775328"
 dependencies = [
  "bytes",
  "futures",

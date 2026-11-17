@@ -342,8 +342,8 @@ and the expected images.
   three changes not yet released: owned WebUSB rejection evidence for
   operations and endpoints, chooser cancellation distinguished from refusal,
   and the `#221` shared-lease follow-up. The pin becomes a plain version bump to
-  the released minimum once nusb ships them. `fastboot-protocol` remains
-  published 0.4.0.
+  the released minimum once nusb ships them. `fastboot-protocol` uses
+  published 0.4.1; its library sources are identical to 0.4.0.
 - **Patched Squadron.** squadron_process needs Squadron with its
   channel-factory patch; bootstrap runs `squadron_process:squadron_patch`,
   which puts it under `.dart_tool/` and writes `pubspec_overrides.yaml`.

@@ -7,11 +7,11 @@ publish = false
 description = "Reusable native USB / browser WebUSB fastboot transport with streaming downloads"
 
 [dependencies]
-# Released upstream 0.4.0 supplies the response parser and command type. The
+# Released upstream 0.4.1 supplies the response parser and command type. The
 # fork's extra `fetch`/custom-command helpers are not needed: this crate owns
 # its streaming session and length checks, which upstream's parser does not
 # replace. See docs/fastboot-transport.md for provenance.
-fastboot-protocol = { version = "0.4", default-features = false }
+fastboot-protocol = { version = "0.4.1", default-features = false }
 futures-lite = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
