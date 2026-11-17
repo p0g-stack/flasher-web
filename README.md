@@ -79,13 +79,13 @@ misreported as an inconsistent answer.
 
 Needs Flutter 3.47.9 / Dart 3.13.7, Node 26.13.1, Cargo with
 `wasm32-unknown-unknown`, cargo-expand, wasm-pack, Mason 0.1.4 and Chrome.
-The qualified generated baseline is p0g_app 0.9.1 (the 0.9.0 migration plus
-its qualification fixes), with `rust=true`, `sample=false`, org `dev.p0g`.
+The qualified generated baseline is p0g_app 0.9.2 (WebUI X v660 and root
+WifiEnable support), with `rust=true`, `sample=false`, org `dev.p0g`.
 `tool/p0g_app.json` is the generator hook's effective configuration.
 
 ```sh
-export BRICKS_REF=81f6282597bbc10371e09fb15b9b83450355ccb7
-export FLUTTER_P0G_REF=a00aa6af51690ec2353d55621dfd79fd0bccf55c
+export BRICKS_REF=4db4a419a44da5ae5f49c97bb21e2a5633b029b1
+export FLUTTER_P0G_REF=2612b4d73a4f643d49f30d0940917b15f4ae09a3
 dart pub global activate mason_cli 0.1.4
 dart pub global activate --source git https://github.com/p0g-stack/flutter_p0g --git-ref "$FLUTTER_P0G_REF"
 flutter_p0g precache --frb --no-webui
